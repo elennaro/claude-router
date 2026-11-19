@@ -1,9 +1,9 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import {
-  BUILTIN, adviseSwitch, effortRank, rank, agentTier, autoModel, needsSecondSample, briefHash, briefTier, stepUp, classifyByRules, costUsd, firstModel, isCacheBreak, isContinuation, merge, parseJev, parseSessionCheck, readLabel, spawnPick, turnEffort,
+  BUILTIN, adviseSwitch, effortRank, rank, agentTier, autoModel, needsSecondSample, briefHash, briefTier, stepUp, classifyByRules, costUsd, firstModel, isCacheBreak, isContinuation, merge, parseJev, parseSessionCheck, readLabel, spawnPick, turnEffort, withoutRouter,
 } from '../hooks/policy'
-import { boardHtml, withMode } from '../hooks/view'
+import { boardHtml, cardLayout, netWords, savedUsd, statsSvg, withMode } from '../hooks/view'
 import { RUNNER, type Step, labelOf } from '../hooks/db'
 import { shield } from '../hooks/guard'
 
@@ -173,9 +173,43 @@ test('a brief moves a subagent only on a sure class; Fable is never automatic; a
   expect(briefHash('Review the auth module')).not.toBe(briefHash('Review the billing module'))
 })
 
+test('the no-router cost: the asked model and effort, a warm cache for a moved turn, no saving when nothing changed', () => {
+  const u = { input_tokens: 1_000, output_tokens: 10_000, cache_read_input_tokens: 0, cache_creation_input_tokens: 80_000 }
+  const usd = (n: number) => Math.round(n * 1e6) // micro-dollars
+  // nothing changed (a Sonnet session the router left alone): the baseline is what it spent, not an Opus price
+  expect(usd(withoutRouter({ model: 'sonnet', effort: 'medium' }, { model: 'claude-sonnet-5-5', effort: 'medium' }, u, 80_000))).toBe(usd(costUsd('sonnet', u))) // a cache write on the same model happens either way
+  // a turn raised to high: with no router its output would be 1/1.4 as long, so the router spent extra
+  const raised = withoutRouter({ model: 'opus', effort: 'medium' }, { model: 'opus', effort: 'high' }, u)
+  expect(raised < costUsd('opus', u)).toBe(true)
+  expect(usd(raised)).toBe(usd(costUsd('opus', { ...u, output_tokens: 10_000 / 1.4 })))
+  // a turn moved to Haiku wrote the chat into Haiku's cache; Opus would have read it warm
+  const moved = withoutRouter({ model: 'opus', effort: 'medium' }, { model: 'haiku', effort: 'medium' }, u, 80_000)
+  expect(usd(moved)).toBe(usd(costUsd('opus', { ...u, cache_creation_input_tokens: 0, cache_read_input_tokens: 80_000 })))
+  expect(moved < costUsd('opus', u) / 2).toBe(true) // not the fake saving of pricing 80K as an Opus cache write
+})
+
+test('the Stats card: two columns in a narrow band, extra spend and dearer turns drawn in the accent', () => {
+  expect(cardLayout(100)).toEqual({ width: 800, perRow: 4 })
+  expect(cardLayout(50)).toEqual({ width: 400, perRow: 2 })
+  expect(cardLayout(10).width).toBe(320) // never narrower than two readable columns
+  const turn = (usd: number, baseUsd: number) => ({ id: 't', who: 'main', cls: 'debugging', model: 'opus', effort: 'high', picker: '', usd, baseUsd, steps: 1 })
+  const svg = statsSvg([{ label: 'This chat vs no router', value: '$0.52 extra', sub: '', isExtra: true }], [turn(2, 1), turn(1, 2)], 400, 2)
+  expect(svg).toContain('class="v x"')
+  expect(svg.match(/<rect class="g"[^>]*\/><rect class="x"/g)?.length).toBe(1) // only the turn that cost more than with no router
+  expect(svg).toContain('<title>debugging, Opus high: $2.00 spent, $1.00 with no router</title>')
+})
+
+test('the money words say which way it went, and savings and extra stay apart', () => {
+  expect(netWords({ actualUsd: 1, baselineUsd: 1.4, extraUsd: 0 })).toBe('saved $0.40')
+  expect(netWords({ actualUsd: 1.52, baselineUsd: 1, extraUsd: 0.6 })).toBe('$0.52 extra')
+  expect(netWords({ actualUsd: 1, baselineUsd: 1, extraUsd: 0 })).toBe('saved $0.00')
+  expect(savedUsd({ actualUsd: 1.52, baselineUsd: 1, extraUsd: 0.6 }).toFixed(2)).toBe('0.08') // a cheap subagent under a dear turn
+})
+
 test('cost math and the cache-break test', async () => {
   const u = { input_tokens: 1_000_000, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
-  expect(costUsd('claude-haiku-5-5', u)).toBe(0.1)
+  expect(Math.round(costUsd('claude-haiku-5-5', { ...u, input_tokens: 100_000 }) * 1e6)).toBe(10_000) // at the 100K line: the short price
+  expect(Math.round(costUsd('claude-haiku-5-5', u) * 1e6)).toBe(500_000) // a long prompt: Haiku's input costs 5x
   expect(costUsd('claude-opus-5-5', u)).toBe(4)
   expect(isCacheBreak(80000, 20000, 10_000)).toBe(true)
   expect(isCacheBreak(80000, 79000, 10_000)).toBe(false)
@@ -293,7 +327,7 @@ test('the app picker default (high) is routed too, and the status line says so',
   await step($, 'max') // the person switched to max mid-session: kept
 
   expect(sent).toEqual(['low', 'high', 'max'])
-  expect(lines[0]).toBe('route: mechanical · Haiku (auto) · effort low (picker high) · saved ~$0.00')
+  expect(lines[0]).toBe('route: mechanical · Haiku (auto) · effort low (picker high) · saved $0.00')
 })
 
 test('a routed subagent gets its tier effort; headless sessions keep the main effort', async (engine, on) => {
@@ -525,7 +559,7 @@ test('the band is one row; Stats opens the card; Settings turns routing off for 
 
   await band.press({ key: 'router-stats' })
   const card = await band.find({ type: 'Svg' })
-  expect(card?.props.alt).toMatch(/Saved this chat \$0\.00/)
+  expect(card?.props.alt).toMatch(/This chat vs no router saved \$0\.00/)
   expect(card?.props.alt).toMatch(/Now Haiku low \(auto\), you picked high/)
 
   await band.press({ key: 'router-settings' })
@@ -591,14 +625,30 @@ test('the ledger keeps each session per day; the classifier counts as spend with
   const label = 'Swap every variable called foo for bar in the utils module a' // cut at 60 characters
   expect(rows(batches, 'sessions').at(-1)).toEqual(['sess-1', 'proj', label])
   expect(rows(batches, 'days').reduce((n, r) => n + Number(r[2]), 0)).toBe(1)
-  // the first prompt's 3 classifier samples (who 'router', no baseline) and the 2 steps, moved to Haiku by itself (baseline: Opus)
+  // the first prompt's 3 classifier samples (who 'router', no baseline, all extra) and the 2 steps, moved to Haiku low by
+  // itself; with no router they run on Opus at the picker's high effort
   const usage = rows(batches, 'usage')
   expect(usage.every(r => r[0] === day && r[1] === 'sess-1' && r[3] === 'haiku')).toBe(true)
   expect(usage.map(r => r[2])).toEqual(['router', 'router', 'router', 'main', 'main'])
-  expect(usage.filter(r => r[2] === 'router').every(r => r[6] === 0)).toBe(true)
+  expect(usage.filter(r => r[2] === 'router').every(r => r[6] === 0 && r[7] === r[5])).toBe(true)
   const main = usage.find(r => r[2] === 'main')!
-  expect(Math.round(Number(main[6]) * 1e8)).toBe(14000) // $0.00014 on Opus
+  expect(Math.round(Number(main[6]) * 1e8)).toBe(23444) // Opus, output x 1.4/0.72 for high vs low: 10 x $4 + 9.72 x $20 per M
   expect(Math.round(Number(main[5]) * 1e8)).toBe(350) // $0.0000035 on Haiku
+  expect(main[7]).toBe(0) // cheaper than with no router: nothing extra
+})
+
+test("a subagent the router moved to Haiku is measured against its parent's model", async (engine, on) => {
+  const $ = engine as any // the test engine fills origin, wait and the other session-set fields
+  const batches: Array<Array<Step>> = []
+  wire(on, { sent: [], files: { '/home/.claude/routing.json': ROUTING }, batches })
+  on('agent.spawn', (_: unknown, e: { model?: string }) => ({ model: e.model ?? 'inherit', agentId: 'sub1' }))
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await $.agent.spawn({ prompt: 'find where the config is loaded', parentModel: 'claude-opus-5-5', subagentType: 'Explore' })
+  for await (const _ of $.turn.step({ turnId: 't', index: 0, model: 'haiku', effort: 'medium', messageCount: 1, agentId: 'sub1' })) { /* drain */ }
+  await end($)
+  const row = rows(batches, 'usage').find(r => r[2] === 'Explore')!
+  expect(row[3]).toBe('haiku')
+  expect(Number(row[6]) / Number(row[5]) > 4).toBe(true) // Opus prices are 5x Haiku's; a Haiku baseline would give about 1
 })
 
 test("0.2's JSON ledger is read into router.db once; a damaged file is skipped, a failed run tries again", async (engine, on) => {
@@ -622,7 +672,7 @@ test("0.2's JSON ledger is read into router.db once; a damaged file is skipped, 
   expect(opts.store.get('ledgerImported')).toBe(true)
   expect(rows(opts.batches, 'sessions')[0]).toEqual(['old-1', 'proj', 'Fix the parser'])
   expect(rows(opts.batches, 'days')[0]).toEqual(['2026-11-17', 'old-1', 3, 5, 9])
-  expect(rows(opts.batches, 'usage')[0]).toEqual(['2026-11-17', 'old-1', 'main', 'opus', 7, 2, 2])
+  expect(rows(opts.batches, 'usage')[0]).toEqual(['2026-11-17', 'old-1', 'main', 'opus', 7, 2, 2, 0])
   expect(rows(opts.batches, 'spawns')[0]).toEqual(['2026-11-17', 'old-1', 'Explore', 2, 1, 0])
 
   const before = opts.batches.length
@@ -735,7 +785,7 @@ test('the widget is a glance of two rows and the bars; expanded it is the Stats 
   await step($, 'high')
 
   const widget = await $.ui.mount({ ...PANE, props: { ...PANE.props, placement: 'widget', anchoredEdges: [] }, surface: 'desktop' })
-  expect((await widget.findAll({ type: 'Text' })).map((x: { text: string }) => x.text)).toEqual(['Routing', 'Haiku low (auto)', 'Saved this chat', '$0.00 · 95%'])
+  expect((await widget.findAll({ type: 'Text' })).map((x: { text: string }) => x.text)).toEqual(['Routing', 'Haiku low (auto)', 'Saved this chat', '$0.00 · 97%'])
   await widget.unmount()
 
   const dock = await $.ui.mount({ ...PANE, surface: 'desktop' })

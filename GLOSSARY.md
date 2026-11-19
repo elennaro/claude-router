@@ -35,3 +35,9 @@
 **False dear**: the router picked a higher tier than the needed tier. It only wastes money.
 
 **Baseline**: the first eval run, made before any tuning. It shows how the router works as built.
+
+**No-router cost**: what a step would have cost if the router were off: the model and effort the person or the parent chat asked for, at the same tokens. Not the same thing as the eval baseline.
+
+**Saved**: spend below the no-router cost, summed over the steps where the router went cheaper.
+
+**Extra spend**: spend above the no-router cost, summed over the steps where the router went stronger, plus the router's own classifier and session-check calls. Saved and extra spend are shown apart, never only netted.

@@ -9,7 +9,7 @@ What it buys, measured on 279 real-work cases ([evals/README.md](evals/README.md
 /plugin install router@claude-router
 ```
 
-Needs Claude Code 2.1.325+ and Node.js 22.13+ (for the savings ledger). Full docs: [router/README.md](router/README.md).
+Needs Claude Code 2.1.325+ and Node.js 22.13+ (for the spend ledger). Full docs: [router/README.md](router/README.md).
 
 | Folder | What is in it |
 |---|---|

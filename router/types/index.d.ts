@@ -7,12 +7,13 @@ export type Advice = { action: 'up' | 'down'; model: string; kind: 'compact' | '
 
 export type Hint = { cls: string; model: string; why: string; current: string }
 
-export type ModelTally = { input: number; output: number; cacheRead: number; cacheWrite: number; steps: number }
-
+// Spend against running with no router: baselineUsd is what the same steps would have cost on the asked model and
+// effort; extraUsd sums each step's cost above its baseline (stronger picks, the router's own calls), so
+// saved = baselineUsd - actualUsd + extraUsd and both directions stay visible.
 export type Tally = {
-  byModel: Record<string, ModelTally>
   actualUsd: number
   baselineUsd: number
+  extraUsd: number
 }
 
 // One session's spend on one local day, as the Board draws it from ~/.claude/router/router.db.
@@ -24,12 +25,12 @@ export type Bucket = {
   first: number
   last: number // epoch ms
   turns: number // main-loop turns
-  byModel: Record<string, { usd: number; base: number; steps: number }> // base: the same tokens on the main model; 0 for the classifier
+  byModel: Record<string, { usd: number; base: number; extra: number; steps: number }> // base: with no router; 0 for the classifier
   agents?: Record<string, AgentTally> // per subagent type
 }
 
 // A subagent type's runs on one day: routed = sent to another model than the parent's; respawned = the same brief again.
-export type AgentTally = { runs: number; routed: number; respawned: number; usd: number; base: number }
+export type AgentTally = { runs: number; routed: number; respawned: number; usd: number; base: number; extra: number }
 
 export type RouterView = {
   isOn: boolean
@@ -52,7 +53,7 @@ export type TurnLog = {
   effort: string
   picker: string
   usd: number
-  baseUsd: number // the same tokens priced on the main model
+  baseUsd: number // what it would have cost with no router (the asked model and effort)
   steps: number
   auto?: boolean // the router moved this main-chat turn to its class model
   asked?: boolean // the prompt named the model or effort

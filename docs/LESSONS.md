@@ -53,6 +53,12 @@ Newest at the bottom. Each entry: what we did, what happened, what we learned. N
     a subclass, the spend cap). A change that altered the session check's prompt replayed "for free" and scored 4
     fewer upgrades, purely from missing data. Lesson: in a replay, a miss must stop the run; a fallback written for
     real failures turns missing data into a plausible, wrong number.
+16. **Measuring savings against a fixed model.** The spend report priced every step "as if on Opus medium". A chat
+    the person had set to Sonnet showed a large saving the router never made, a turn raised from medium to high cost
+    nothing extra, and a turn moved to Haiku was charged a full Opus cache write that a warm Opus cache would have
+    read cheaply. Netting everything into one "saved" number also hid the extra spend behind cheap subagents. Lesson:
+    compare against what would have run with the router off (the asked model and effort), and keep saved and extra
+    spend apart.
 
 ## Right moves
 
@@ -100,3 +106,6 @@ Newest at the bottom. Each entry: what we did, what happened, what we learned. N
     1.2×) while sending 10 production bug reports below Opus high. The owner kept the quality-first table and the
     README now says what it buys: better answers for more spend, not savings. Lesson: when the evals contradict the
     product's promise, change the promise, not the evals.
+15. **Measuring effort's price instead of guessing it.** Effort changes how many tokens a model writes, not its
+    price per token. `evals/effort-cost.mjs` reads the replay store's paid runs: Opus high wrote 1.40x the output of
+    medium (n=158), low 0.72x. The spend report scales output by those factors, so a raised effort shows as extra.

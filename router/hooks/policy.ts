@@ -414,9 +414,37 @@ export const prices = () => PRICE
 
 export type Usage = { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number }
 
+// Haiku's input side costs 5x once a prompt passes 100K tokens (pricing page, 2026-11): explore subagents get there.
+// shortcut: the 5x is applied to cache reads and writes too; check the pricing page if Haiku long prompts matter.
+const HAIKU_LONG = 100_000
+
 export function costUsd(model: string, u: Usage): number {
-  const [i, o, r] = PRICE[family(model)] ?? [4, 20, 0.2]
+  const f = family(model)
+  const [i0, o, r0] = PRICE[f] ?? [4, 20, 0.2]
+  const prompt = u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens
+  const k = f === 'haiku' && prompt > HAIKU_LONG ? 5 : 1
+  const i = i0 * k, r = r0 * k
   return (u.input_tokens * i + u.output_tokens * o + u.cache_read_input_tokens * r + u.cache_creation_input_tokens * i * 1.25) / 1e6
+}
+
+// What one step costs at each effort, relative to medium on the same model: measured 2026-11-19 on 144-158 eval cases,
+// Opus, same prompts (evals/effort-cost.mjs). It is mostly thinking, so it scales the output side.
+// shortcut: measured on Opus up to high; xhigh and max reuse high, so their extra spend shows as a floor.
+export const EFFORT_COST: Record<string, number> = { low: 0.72, medium: 1, high: 1.4, xhigh: 1.4, max: 1.4 }
+const effortCost = (e: string | undefined) => (e && EFFORT_COST[e]) || 1
+
+// What a step would have cost with no router: on the model and effort the request came with (`asked`) instead of the
+// ones it ran on (`sent`). A step the router moved to another model re-read the chat as a cache write (`warm` tokens)
+// that the asked model would have read from its warm cache (audit 2026-11-19: Haiku moves booked fake savings).
+export function withoutRouter(asked: { model: string; effort?: string }, sent: { model: string; effort?: string }, u: Usage, warm = 0): number {
+  const moved = family(asked.model) !== family(sent.model)
+  const cached = moved ? Math.min(u.cache_creation_input_tokens, warm) : 0
+  return costUsd(asked.model, {
+    input_tokens: u.input_tokens,
+    output_tokens: (u.output_tokens * effortCost(asked.effort)) / effortCost(sent.effort),
+    cache_read_input_tokens: u.cache_read_input_tokens + cached,
+    cache_creation_input_tokens: u.cache_creation_input_tokens - cached,
+  })
 }
 
 // A cache break after an effort change: the step re-read far less than the one before.

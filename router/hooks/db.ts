@@ -8,10 +8,11 @@ import { DatabaseSync } from 'node:sqlite'
 let input = ''
 process.stdin.setEncoding('utf8') // a character split across two chunks must not break (Cyrillic labels did, audit 2026-11-19)
 for await (const c of process.stdin) input += c
-const { db, schema, steps } = JSON.parse(input)
+const { db, schema, migrate, steps } = JSON.parse(input)
 const d = new DatabaseSync(db)
 d.exec('PRAGMA busy_timeout = 5000')
 d.exec(schema)
+for (const m of migrate ?? []) { try { d.exec(m) } catch (e) { if (!/duplicate column/i.test(String(e))) throw e } } // already applied
 const out = []
 d.exec('BEGIN IMMEDIATE')
 try {
@@ -29,14 +30,18 @@ process.stdout.write(JSON.stringify(out))
 `
 
 // who: 'main' (the chat), 'router' (the classifier and session check: spend with no baseline) or a subagent type.
-// base: the same tokens priced on the main model.
+// base: what the same steps would have cost with no router (the asked model and effort; 0 for the router's own calls).
+// extra: the part of usd above base, summed per step, so savings and extra spend stay apart (saved = base - usd + extra).
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, project TEXT NOT NULL, label TEXT NOT NULL) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS days (day TEXT, session TEXT, turns INTEGER NOT NULL, first INTEGER NOT NULL, last INTEGER NOT NULL, PRIMARY KEY (day, session)) WITHOUT ROWID;
-CREATE TABLE IF NOT EXISTS usage (day TEXT, session TEXT, who TEXT, model TEXT, steps INTEGER NOT NULL, usd REAL NOT NULL, base REAL NOT NULL, PRIMARY KEY (day, session, who, model)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS usage (day TEXT, session TEXT, who TEXT, model TEXT, steps INTEGER NOT NULL, usd REAL NOT NULL, base REAL NOT NULL, extra REAL NOT NULL DEFAULT 0, PRIMARY KEY (day, session, who, model)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS spawns (day TEXT, session TEXT, type TEXT, runs INTEGER NOT NULL, routed INTEGER NOT NULL, respawned INTEGER NOT NULL, PRIMARY KEY (day, session, type)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY) WITHOUT ROWID;
 `
+
+// 0.4's ledger had no `extra`: older rows get 0 (their extra spend was never split out).
+export const MIGRATE = ['ALTER TABLE usage ADD COLUMN extra REAL NOT NULL DEFAULT 0']
 
 export type Step = { sql: string; params?: Array<string | number | null>; all?: true }
 
@@ -52,7 +57,7 @@ export async function run($: EngineInterface, home: string, steps: Array<Step>):
     if (have !== RUNNER) await $.fs.write(p.runner, RUNNER)
     runnerAt = p.runner
   }
-  const r = await $.process.run(['node', '--no-warnings', p.runner], { stdin: JSON.stringify({ db: p.db, schema: SCHEMA, steps }), timeoutMs: 15_000 })
+  const r = await $.process.run(['node', '--no-warnings', p.runner], { stdin: JSON.stringify({ db: p.db, schema: SCHEMA, migrate: MIGRATE, steps }), timeoutMs: 15_000 })
   if (r.exitCode !== 0) throw new Error(`sqlite runner exit ${r.exitCode}: ${(r.stderr || r.stdout).slice(-300)}`)
   // shortcut: a read over the 4 MiB output limit fails with this message; aggregate in SQL if a ledger ever gets there
   if (r.isStdoutTruncated) throw new Error('the ledger read is over 4 MiB; narrow the query')
@@ -89,9 +94,9 @@ export const dayRow = (day: string, session: string, turns: number, first: numbe
   params: [day, session, turns, first, last],
 })
 
-export const usageRow = (day: string, session: string, who: string, model: string, usd: number, base: number, steps = 1): Step => ({
-  sql: `INSERT INTO usage VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (day, session, who, model) DO UPDATE SET steps = steps + excluded.steps, usd = usd + excluded.usd, base = base + excluded.base`,
-  params: [day, session, who, model, steps, usd, base],
+export const usageRow = (day: string, session: string, who: string, model: string, usd: number, base: number, extra: number, steps = 1): Step => ({
+  sql: `INSERT INTO usage (day, session, who, model, steps, usd, base, extra) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (day, session, who, model) DO UPDATE SET steps = steps + excluded.steps, usd = usd + excluded.usd, base = base + excluded.base, extra = extra + excluded.extra`,
+  params: [day, session, who, model, steps, usd, base, extra],
 })
 
 export const spawnRow = (day: string, session: string, type: string, routed: number, respawned: number, runs = 1): Step => ({
@@ -107,7 +112,7 @@ export function legacySteps(b: Bucket): Array<Step> {
   return [
     sessionRow(b.session, b.project, labelOf(String(b.label ?? ''))),
     dayRow(b.day, b.session, b.turns ?? 0, b.first, b.last),
-    ...Object.entries(b.byModel ?? {}).map(([m, x]) => usageRow(b.day, b.session, 'main', m, x.usd, x.base, x.steps)),
+    ...Object.entries(b.byModel ?? {}).map(([m, x]) => usageRow(b.day, b.session, 'main', m, x.usd, x.base, Math.max(0, x.usd - x.base), x.steps)),
     ...Object.entries(b.agents ?? {}).map(([t, a]) => spawnRow(b.day, b.session, t, a.routed, a.respawned, a.runs)),
   ]
 }
@@ -116,7 +121,7 @@ export function legacySteps(b: Bucket): Array<Step> {
 
 // This project's totals across chats, and the ledger's first day.
 export const totalsQuery = (project: string): Array<Step> => [
-  { sql: 'SELECT coalesce(sum(u.usd), 0) AS usd, coalesce(sum(u.base), 0) AS base FROM usage u JOIN sessions s ON s.id = u.session WHERE s.project = ?', params: [project], all: true },
+  { sql: 'SELECT coalesce(sum(u.usd), 0) AS usd, coalesce(sum(u.base), 0) AS base, coalesce(sum(u.extra), 0) AS extra FROM usage u JOIN sessions s ON s.id = u.session WHERE s.project = ?', params: [project], all: true },
   { sql: 'SELECT min(first) AS since FROM days', all: true },
 ]
 
@@ -125,16 +130,16 @@ export type Totals = { proj: Tally; since: number | undefined }
 export function totalsOf(rows: Array<Array<Record<string, unknown>> | null>): Totals {
   const t = rows[0]?.[0] ?? {}
   const since = rows[1]?.[0]?.since
-  return { proj: { byModel: {}, actualUsd: Number(t.usd ?? 0), baselineUsd: Number(t.base ?? 0) }, since: typeof since === 'number' ? since : undefined }
+  return { proj: { actualUsd: Number(t.usd ?? 0), baselineUsd: Number(t.base ?? 0), extraUsd: Number(t.extra ?? 0) }, since: typeof since === 'number' ? since : undefined }
 }
 
 export const BOARD: Array<Step> = [
   { sql: 'SELECT d.day, d.session, s.project, s.label, d.turns, d.first, d.last FROM days d JOIN sessions s ON s.id = d.session', all: true },
-  { sql: 'SELECT day, session, who, model, steps, usd, base FROM usage', all: true },
+  { sql: 'SELECT day, session, who, model, steps, usd, base, extra FROM usage', all: true },
   { sql: 'SELECT day, session, type, runs, routed, respawned FROM spawns', all: true },
 ]
 
-const NO_AGENT: AgentTally = { runs: 0, routed: 0, respawned: 0, usd: 0, base: 0 }
+const NO_AGENT: AgentTally = { runs: 0, routed: 0, respawned: 0, usd: 0, base: 0, extra: 0 }
 
 // The Board's rows: one per session per day, as the view draws them.
 export function bucketsOf(rows: Array<Array<Record<string, any>> | null>): Array<Bucket> {
@@ -144,11 +149,11 @@ export function bucketsOf(rows: Array<Array<Record<string, any>> | null>): Array
   for (const u of usage) {
     const b = out.get(`${u.day}|${u.session}`)
     if (!b) continue
-    const m = b.byModel[u.model] ?? { usd: 0, base: 0, steps: 0 }
-    b.byModel[u.model] = { usd: m.usd + u.usd, base: m.base + u.base, steps: m.steps + u.steps }
+    const m = b.byModel[u.model] ?? { usd: 0, base: 0, extra: 0, steps: 0 }
+    b.byModel[u.model] = { usd: m.usd + u.usd, base: m.base + u.base, extra: m.extra + (u.extra ?? 0), steps: m.steps + u.steps }
     if (u.who !== 'main' && u.who !== 'router') {
       const a = b.agents?.[u.who] ?? NO_AGENT
-      b.agents = { ...b.agents, [u.who]: { ...a, usd: a.usd + u.usd, base: a.base + u.base } }
+      b.agents = { ...b.agents, [u.who]: { ...a, usd: a.usd + u.usd, base: a.base + u.base, extra: a.extra + (u.extra ?? 0) } }
     }
   }
   for (const x of spawns) {
