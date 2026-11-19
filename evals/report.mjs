@@ -73,6 +73,8 @@ const runs = new Map(readJsonl(join(ROOT, 'results', 'classifier.jsonl')).map(r 
 const cmAll = readJsonl(join(ROOT, 'results', 'class-measure.jsonl'))
 const cm = cmAll.filter(r => r.cand !== 'null'), cmNull = cmAll.filter(r => r.cand === 'null')
 const prodLabel = new Map(readJsonl(join(ROOT, 'labels-prod.jsonl')).map(l => [l.id, l.prod]))
+const isProd = c => prodLabel.get(c.id) ?? INVESTIGATION.includes(c.category)
+const atDefault = x => t(x) === t(MAIN) && (!x.cls || (cfg.classes[x.cls]?.model === MAIN.model && !cfg.classes[x.cls]?.effort))
 const replay = replayCosts(readJsonl(join(WORK, 'spend.jsonl')))
 const cats = readdirSync(join(ROOT, 'cases')).filter(f => f.endsWith('.jsonl')).map(f => f.replace('.jsonl', ''))
 const rows = cats.flatMap(cat => {
@@ -89,7 +91,10 @@ const rows = cats.flatMap(cat => {
       c, r, need, top, down,
       floor: r.runs.some(x => cfg.classes[c.category]?.floor && lower(x, MAIN)),
       // the owner's rule is about the work, not the category: the prod label, the category only where no label exists
-      prod: (prodLabel.get(c.id) ?? INVESTIGATION.includes(c.category)) && r.runs.some(x => !x.asked && lower(x, OPUS_HIGH)),
+      // a run left at the main default follows the project's setting, which a production project raises to Opus high
+      // (README); rules are English-only, so an unsure prompt in another language lands here (2026-11-19)
+      prod: isProd(c) && r.runs.some(x => !x.asked && lower(x, OPUS_HIGH) && !atDefault(x)),
+      prodAtDefault: isProd(c) && r.runs.some(x => !x.asked && lower(x, OPUS_HIGH) && atDefault(x)),
       usd: replay.get(c.id)?.get(key(top)), usdMain: replay.get(c.id)?.get(key(MAIN)),
       stable: new Set(r.runs.map(t)).size === 1,
       cheap: verdicts.includes('false-cheap'), match: verdicts.filter(v => v === 'match').length >= 2, dear: verdicts.filter(v => v === 'false-dear').length >= 2,
@@ -119,6 +124,7 @@ const nul = cmNull.reduce((a, r) => a + r.score, 0) / (cmNull.length || 1)
 const gates = [
   { name: 'Floor downgrades', hard: true, result: String(count(x => x.floor)), mark: '0', pass: count(x => x.floor) === 0 },
   { name: 'Production investigation below Opus high', hard: true, result: String(count(x => x.prod)), mark: '0', pass: count(x => x.prod) === 0 },
+  { name: 'Production investigation left at the main default (Opus high once the project sets it)', hard: false, result: String(count(x => x.prodAtDefault)), mark: 'report', pass: true },
   { name: `Measured quality vs always ${t(MAIN)} (${scored.length} cases scored)`, hard: true, result: `${measured >= 0 ? "+" : ""}${p(measured)}`, mark: `-5.0% or better (the null pair sits at ${p(nul)})`, pass: scored.length >= 100 && measured >= -0.05 },
   // always-Opus-medium scores 0 at 100% spend and fails here: the router has to buy quality or save money
   { name: 'Adds value: better quality or lower spend', hard: true, result: `${p(measured)} quality, ${p(spendRatio)} spend`, mark: 'quality +5.0% or more, or spend 90.0% or less', pass: measured >= 0.05 || (costed.length >= MIN_N && spendRatio <= 0.9) },

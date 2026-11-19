@@ -1,0 +1,4 @@
+{"id":"message-01","need":{"model":"sonnet","effort":"medium"},"owner":{"model":"sonnet","effort":"medium","rule":"owner 2026-11-19: a simple mail text is a Sonnet job, never Fable"}}
+{"id":"message-02","need":{"model":"sonnet","effort":"medium"},"owner":{"model":"sonnet","effort":"medium","rule":"owner 2026-11-19: short message fixes fit Haiku or Sonnet"}}
+{"id":"message-03","need":{"model":"sonnet","effort":"medium"},"owner":{"model":"sonnet","effort":"medium","rule":"same kind as message-01"}}
+{"id":"message-04","need":{"model":"sonnet","effort":"medium"},"owner":{"model":"sonnet","effort":"medium","rule":"same kind as message-01"}}

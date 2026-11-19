@@ -147,7 +147,7 @@ test('a model or effort named in the prompt is an explicit ask; talk about model
   expect(explicitAsk('from now on use sonnet')).toEqual({ model: 'sonnet', effort: undefined, agents: undefined, sticky: true })
   expect(explicitAsk('run sonnet subagents to check each file')?.agents).toBe('sonnet')
   expect(explicitAsk('run sonnet subagents to check each file')?.model).toBe(undefined)
-  expect(explicitAsk('сделай на опус, это важно')?.model).toBe('opus')
+  expect(explicitAsk('сделай на опус, это важно')).toBe(undefined) // keywords are English only; the classifier reads other languages
   expect(explicitAsk('write a LinkedIn post about Claude Opus pricing')).toBe(undefined)
   expect(explicitAsk('a short poem on haiku form')).toBe(undefined)
   expect(explicitAsk('compare haiku and sonnet costs for our classifier')).toBe(undefined)
@@ -160,7 +160,8 @@ test('a model or effort named in the prompt is an explicit ask; talk about model
 })
 
 test('a follow-up is a whole word at the start; a new task that starts with those letters is not', async () => {
-  for (const t of ['ok, do it', 'yes', 'and the tests too, same pattern', 'а теперь то же для тестов', 'ок, давай дальше по плану']) expect(isContinuation(t)).toBe(true)
+  for (const t of ['ok, do it', 'yes', 'and the tests too, same pattern', 'ок, давай']) expect(isContinuation(t)).toBe(true) // any language: short is a follow-up
+  expect(isContinuation('ок, давай дальше по плану')).toBe(false) // longer, not English: the classifier decides
   for (const t of ['android build is broken on CI since this morning', 'okta SSO returns 403 for new users', 'данные в отчёте не сходятся с базой', 'nowhere in the logs is the retry recorded', 'button click does nothing in prod after deploy']) expect(isContinuation(t)).toBe(false)
 })
 
@@ -187,14 +188,12 @@ test('production investigation asked as a read or an explain still reaches an Op
   expect(r('read logs/checkout-worker.log end to end. what actually broke last night?')).toBe('debugging')
   expect(r('explain what this trace means and where it actually breaks')).toBe('debugging')
   expect(r('look at the worker log and tell me why the export job keeps failing')).toBe('debugging')
-  expect(r('посмотри лог, что именно сломалось ночью')).toBe('debugging')
-  expect(r('https://github.com/acme/api/pull/412 глянь плиз')).toBe('code-review')
+  expect(r('https://github.com/acme/api/pull/412 глянь плиз')).toBe('code-review') // a PR link in any language
   expect(r('is it ok to keep the stripe secret key in a public env var? it ships to the browser')).toBe('security-review')
   expect(r('can I put it in NEXT_PUBLIC_STRIPE_KEY')).toBe('security-review')
   expect(r('why does the orders list skip one item between pages?')).toBe('debugging')
   expect(r('can we find approved top-ups with no ledger row? i think thats why balances are off')).toBe('debugging')
   expect(r('any build warnings worth fixing before the release?')).toBe('debugging')
-  expect(r('чё за варнинги в билде? критичное что-то?')).toBe('debugging')
   expect(r('Prove that the sampler in src/feed/sampler.ts gives every item probability k/n')).toBe('code-review')
   // and the plain versions stay with the classifier
   expect(r('prove that the square root of 2 is irrational')).toBe(undefined)

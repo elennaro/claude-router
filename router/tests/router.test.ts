@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import {
-  BUILTIN, adviseSwitch, effortRank, rank, agentTier, autoModel, needsSecondSample, briefHash, briefTier, stepUp, classifyByRules, costUsd, firstModel, isCacheBreak, isContinuation, merge, parseJev, parseSessionCheck, readLabel, spawnPick, turnEffort, withoutRouter,
+  BUILTIN, CLASS_LABELS, adviseSwitch, effortRank, rank, agentTier, autoModel, needsSecondSample, briefHash, briefTier, stepUp, classifyByRules, costUsd, firstModel, isCacheBreak, isContinuation, merge, parseJev, parseSessionCheck, readLabel, spawnPick, turnEffort, withoutRouter,
 } from '../hooks/policy'
 import { boardHtml, cardLayout, netWords, savedUsd, statsSvg, withMode } from '../hooks/view'
 import { RUNNER, type Step, labelOf } from '../hooks/db'
@@ -35,14 +35,15 @@ const CFG = merge(BUILTIN, {
   keywords: { architecture: ['seat budget'] },
 })
 
-test('rules pick the class, floors first, in English and Russian', async () => {
+test('rules pick the class, floors first; other languages go to the classifier', async () => {
   expect(classifyByRules('please review this PR for bugs', CFG)).toBe('code-review') // a PR review is code review, not creative critique
-  expect(classifyByRules('найди где лежит конфиг', CFG)).toBe(undefined) // a cheaper class by a broad rule: the classifier decides
+  expect(classifyByRules('find where the config lives', CFG)).toBe(undefined) // a cheaper class by a broad rule: the classifier decides
   expect(classifyByRules('rework the seat budget logic', CFG)).toBe('architecture')
   expect(classifyByRules('hello there', CFG)).toBe(undefined)
   expect(classifyByRules("what's the weather?", CFG)).toBe('explore')
   expect(classifyByRules('whats the NVDA price for last 2 days?', CFG)).toBe('explore')
-  expect(classifyByRules('какая погода завтра в Лиссабоне', CFG)).toBe('explore')
+  expect(classifyByRules('какая погода завтра в Лиссабоне', CFG)).toBe(undefined)
+  expect(classifyByRules('проведи ревью архитектуры', CFG)).toBe(undefined)
   expect(classifyByRules('add a weather widget to the app', CFG)).toBe(undefined)
 })
 
@@ -57,11 +58,6 @@ test('a broad rule never routes cheaper on its own (eval 2026-11-18 false-cheap 
   expect(classifyByRules("what's the weather in Porto tomorrow", BUILTIN)).toBe('explore') // a narrow rule that may route on its own
 })
 
-test('"арк" counts as story arc only as its own word', async () => {
-  const cfg = merge(CFG, { classes: { structure: { model: 'opus', effort: 'high', floor: true } } })
-  expect(classifyByRules('собери сюжетную арку на три серии', cfg)).toBe('structure')
-  expect(classifyByRules('маркетинг для станции на парковке', cfg)).toBe(undefined)
-})
 
 test('a session label keeps 60 characters and masks anything that looks like a secret', () => {
   expect(labelOf('<system-reminder>ctx</system-reminder>  fix   the parser')).toBe('fix the parser')
@@ -95,7 +91,7 @@ test('short replies continue the current task', async () => {
   expect(isContinuation('Write a new LinkedIn post about our bike-sharing launch in Lisbon')).toBe(false)
   expect(isContinuation('tell me the weather')).toBe(false)
   expect(isContinuation('and the tests too')).toBe(true)
-  expect(isContinuation('давай дальше')).toBe(true)
+  expect(isContinuation('давай')).toBe(true) // short: a follow-up in any language
 })
 
 test('floor classes never drop effort below the main default', async () => {
@@ -163,12 +159,22 @@ test('a brief moves a subagent only on a sure class; Fable is never automatic; a
   expect(briefTier('rare-hard', true, 'claude-opus-5-5', cfg)?.model).toBe('opus')
   expect(briefTier('rare-hard', true, 'claude-fable-5-2', cfg)?.model).toBe('fable')
   expect([stepUp('claude-haiku-5-5'), stepUp('sonnet'), stepUp('opus'), stepUp('fable')]).toEqual(['sonnet', 'opus', 'opus', 'fable'])
-  // an unsure strong class raises (production debugging gets its effort), never lowers, and a weak unsure one keeps the parent
-  const pick = (cls: string, parentModel: string) => spawnPick({ brief: { cls, sure: false }, parentModel, personChose: false }, cfg)
+  // an unsure strong class raises (production debugging gets its effort), never lowers; a weak unsure one is a defined
+  // task: the subagent default (Sonnet high), only ever lower than the parent; a brief never read keeps the parent
+  const pick = (cls: string | null | undefined, parentModel: string) => spawnPick({ brief: { cls, sure: false }, parentModel, personChose: false }, cfg)
   expect(pick('debugging', 'claude-opus-5-5').tier?.effort).toBe(cfg.classes.debugging!.effort)
   expect(pick('debugging', 'claude-fable-5-2')).toEqual({ model: 'fable', tier: undefined })
-  expect(pick('mechanical', 'claude-opus-5-5')).toEqual({ model: 'opus', tier: undefined })
+  expect(pick('mechanical', 'claude-opus-5-5')).toEqual({ model: 'sonnet', tier: { model: 'sonnet', effort: 'high' } })
+  expect(pick(null, 'claude-opus-5-5').model).toBe('sonnet') // read, no class: still a defined task
+  expect(pick(undefined, 'claude-opus-5-5')).toEqual({ model: 'opus', tier: undefined }) // too short to read: the parent's
   expect(pick('mechanical', 'claude-haiku-5-5')).toEqual({ model: 'opus', tier: undefined }) // weak and unsure: lifted to the main default
+  expect(pick('mechanical', 'claude-sonnet-5-5')).toEqual({ model: 'opus', tier: undefined }) // the default is never a raise or a stay
+  // a sure class at the main tier is a defined task too; a class that raises effort keeps its own tier unless it has a sub
+  expect(briefTier('docs', true, 'claude-opus-5-5', BUILTIN)?.model).toBe('sonnet')
+  expect(briefTier('debugging', true, 'claude-opus-5-5', BUILTIN)).toMatchObject({ model: 'opus', effort: 'high' })
+  expect(briefTier('scoped-code', true, 'claude-opus-5-5', BUILTIN)).toMatchObject({ model: 'sonnet', effort: 'high' })
+  expect(briefTier('explore', true, 'claude-opus-5-5', BUILTIN)).toMatchObject({ model: 'haiku', effort: 'medium' })
+  expect(briefTier('security-review', true, 'claude-opus-5-5', BUILTIN)).toMatchObject({ model: 'opus', effort: 'high' })
   expect(briefHash('Review  the\nauth module ')).toBe(briefHash('Review the auth module'))
   expect(briefHash('Review the auth module')).not.toBe(briefHash('Review the billing module'))
 })
@@ -345,7 +351,7 @@ test('a routed subagent gets its tier effort; headless sessions keep the main ef
   expect(sent).toEqual(['medium', 'medium'])
 })
 
-test('generic subagents go by their brief: sure and cheap moves, unsure stays on the parent, a repeat climbs, siblings share', async (engine, on) => {
+test('generic subagents go by their brief: sure and cheap moves, unsure gets the Sonnet default, a repeat climbs, siblings share', async (engine, on) => {
   const $ = engine as any // the test engine fills origin, wait and the other session-set fields
   const sent: Array<unknown> = []
   const files: Record<string, string> = { '/home/.claude/routing.json': ROUTING }
@@ -362,25 +368,25 @@ test('generic subagents go by their brief: sure and cheap moves, unsure stays on
   await step($, 'high', 'sub1') // mechanical: Haiku, effort low
   reply = 'mechanical 0.75'
   await spawn('Tidy the imports in the scripts folder and sort them')
-  await step($, 'high', 'sub2') // unsure: the parent's model and effort
+  await step($, 'high', 'sub2') // unsure: a defined task, the subagent default (Sonnet high)
   reply = 'mechanical 0.95'
   await spawn('Swap every variable called foo for bar across the utils folder')
   await spawn('please review this PR for bugs and missing edge cases', { workflow: { runId: 'wf_1', agentIndex: 1 } })
   await spawn('Swap every variable called baz for qux across the app folder', { workflow: { runId: 'wf_1', agentIndex: 2 } })
 
-  expect(spawned).toEqual(['haiku', undefined, 'sonnet', undefined, undefined]) // repeat: Haiku -> Sonnet; critique and its sibling: the parent's Opus
+  expect(spawned).toEqual(['haiku', 'sonnet', 'sonnet', undefined, undefined]) // repeat: Haiku -> Sonnet; critique and its sibling: the parent's Opus
   expect(sent).toEqual(['low', 'high'])
   await end($)
   // per run: [day, session, type, routed, respawned]; the brief itself is never stored
   const runs = rows(batches, 'spawns')
-  expect(runs.map(r => r.slice(1))).toEqual([['sess-1', 'general-purpose', 1, 1, 0], ['sess-1', 'general-purpose', 1, 0, 0], ['sess-1', 'general-purpose', 1, 1, 1], ['sess-1', 'general-purpose', 1, 0, 0], ['sess-1', 'general-purpose', 1, 0, 0]])
+  expect(runs.map(r => r.slice(1))).toEqual([['sess-1', 'general-purpose', 1, 1, 0], ['sess-1', 'general-purpose', 1, 1, 0], ['sess-1', 'general-purpose', 1, 1, 1], ['sess-1', 'general-purpose', 1, 0, 0], ['sess-1', 'general-purpose', 1, 0, 0]])
   const spent = rows(batches, 'usage').filter(r => r[2] === 'general-purpose')
   expect(spent.length).toBe(2) // sub1's and sub2's steps, each under its type
   expect(spent.every(r => Number(r[5]) > 0)).toBe(true)
   expect(JSON.stringify(batches)).not.toContain('Swap every variable')
 })
 
-test('subagents: a cheaper move needs two sure samples; rules raise a table type; unsure keeps the main default unless you chose the model', async (engine, on) => {
+test('subagents: a Haiku move needs two sure samples; rules raise a table type; unsure keeps the main default unless you chose the model', async (engine, on) => {
   const $ = engine as any // the test engine fills origin, wait and the other session-set fields
   let replies = ['mechanical 0.95', 'explore 0.95'] // two sure samples that disagree
   let i = 0
@@ -392,13 +398,13 @@ test('subagents: a cheaper move needs two sure samples; rules raise a table type
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
   const spawn = (prompt: string, more = {}) => $.agent.spawn({ prompt, subagentType: 'general-purpose', parentModel: 'claude-opus-5-5', ...more })
 
-  await spawn('Swap every variable called foo for bar across the utils folder') // disagree: stays on the parent
+  await spawn('Swap every variable called foo for bar across the utils folder') // disagree: not Haiku, the Sonnet default
   replies = ['mechanical 0.95']
   await spawn('Swap every variable called baz for qux across the app folder') // agree: Haiku
   await spawn('Find out why the payments service crashes on startup', { subagentType: 'Explore', parentModel: 'claude-sonnet-5-5' }) // Explore's Haiku, raised by the debugging rule
   replies = ['mechanical 0.5']
   await spawn('Look into the nightly export job and the numbers it sends', { parentModel: 'claude-sonnet-5-5' }) // unsure on a Sonnet parent: the main default
-  expect(spawned).toEqual([undefined, 'haiku', 'opus', 'opus'])
+  expect(spawned).toEqual(['sonnet', 'haiku', 'opus', 'opus'])
 
   const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
   await band.press({ key: 'router-settings' })
@@ -893,6 +899,16 @@ test('first-prompt pick: 3 agreeing samples of a cheaper, non-floor class only',
   expect(firstModel(['scoped-code'], 'claude-opus-5-5', cfg)).toBe(undefined) // a single sample never moves the chat
   expect(firstModel(['critique', 'critique', 'critique'], 'claude-opus-5-5', cfg)).toBe(undefined) // a floor
   expect(firstModel([null, null, null], 'claude-opus-5-5', cfg)).toBe(undefined)
+})
+
+test('a note to one person is a message on Sonnet, never final copy with a Fable tip (owner case 2026-11-19)', async () => {
+  expect(firstModel(['message', 'message', 'message'], 'claude-opus-5-5', BUILTIN)).toBe('sonnet')
+  expect(BUILTIN.classes.message!.floor).toBe(undefined)
+  expect(CLASS_LABELS).toContain('message') // no keyword rule: the classifier must be offered it
+  expect(classifyByRules('write a short email to Maria with the policy links, polite and to the point', BUILTIN)).toBe(undefined)
+  expect(firstModel(['mechanical', 'mechanical', 'mechanical'], 'claude-opus-5-5', BUILTIN)).toBe('sonnet')
+  // a production project (default raised to high) keeps a log read on its default
+  expect(firstModel(['long-read', 'long-read', 'long-read'], 'claude-opus-5-5', merge(BUILTIN, { main: { model: 'opus', effort: 'high' } }))).toBe(undefined)
 })
 
 test('session check: up on 2 of 3, down only on 3 sure of 3 and no floor at hand; compact or fresh by topic', async () => {

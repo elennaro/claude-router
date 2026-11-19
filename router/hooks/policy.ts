@@ -16,6 +16,9 @@ export type Config = {
   classes: Record<string, Tier>
   agents: Record<string, Partial<Tier>>
   keywords: Record<string, string[]>
+  // A subagent on a defined task: briefs no class claims, and classes at the main tier with no `sub` of their own, get this
+  // instead of the parent's model. Classes that raise effort, floors and investigations keep their own tier.
+  subagent?: { model: string; effort?: string }
 }
 
 // The calibrated defaults every install starts from; a routing.json only overrides. Each tier is the cheapest the evals
@@ -25,23 +28,32 @@ export const BUILTIN: Config = {
   main: { model: 'opus', effort: 'medium' },
   autoEffort: true,
   classifier: { model: 'haiku' },
+  // 2026-11-19 subagent eval: two labelers put most defined-task briefs at Sonnet high, and the tool loop passed Sonnet
+  // on every repo task at about 40% of Opus's cost. Moved runs 22% -> 51%, false cheap unchanged.
+  subagent: { model: 'sonnet', effort: 'high' },
   classes: {
     // 2026-11-19 calibration (evals/results/class-report.md): per class, against Opus medium, judged by a judge checked
     // on gold pairs. Pooled over 133 cases per tier: Opus high +22 (better), Sonnet high -30, Haiku -52, Opus low -52
     // (worse); no group of classes kept quality below Opus medium. So chat stays Opus medium or high, and Haiku works
     // only as a subagent on lookups and tiny edits (tool-loop suite)
-    explore: { model: 'opus', sub: { model: 'haiku', effort: 'medium' }, why: 'look things up: web search, a page, weather, prices, news; search files, read logs, summarize. No writing, no code changes' },
-    mechanical: { model: 'opus', sub: { model: 'haiku', effort: 'medium' }, why: 'reformat, translate, convert, split or fit text. Code only when it is a self-contained edit of about 10 lines that nothing else uses (one private helper, a one-off script for one clear job)' },
+    // 2026-11-19 acceptance eval (each answer graded alone against the person's checklist, results/accept-report.md):
+    // Sonnet medium was accepted on every case Opus medium was in the classes set to sonnet below, so a chat whose first
+    // prompt is surely one of them starts on Sonnet. Summaries, docs, explain and code comments lost a case each: kept.
+    explore: { model: 'sonnet', sub: { model: 'haiku', effort: 'medium' }, why: 'look things up: web search, a page, weather, prices, news; search files, read logs, summarize. No writing, no code changes' },
+    mechanical: { model: 'sonnet', sub: { model: 'haiku', effort: 'medium' }, why: 'reformat, translate, convert, split or fit text. Code only when it is a self-contained edit of about 10 lines that nothing else uses (one private helper, a one-off script for one clear job)' },
+    // owner 2026-11-19: "a simple mail text" was read as final copy and offered Fable; a note to one person is not
+    // public copy. Acceptance eval: Sonnet medium passed every short message and text fix that Opus medium passed
+    message: { model: 'sonnet', effort: 'medium', why: 'an email, chat message or reply to one person or a small group: write it, fix its grammar or translate it' },
     brainstorm: { model: 'opus', why: 'angles, hooks, titles, names' },
-    'scoped-code': { model: 'opus', effort: 'high', why: 'bug fixes, spec-driven work, feature iteration; renames and any code change that reaches other files or callers' },
+    'scoped-code': { model: 'opus', effort: 'high', sub: { model: 'sonnet', effort: 'high' }, why: 'bug fixes, spec-driven work, feature iteration; renames and any code change that reaches other files or callers' },
     docs: { model: 'opus', why: 'everyday docs, slides, spreadsheets' },
     'repeat-agent': { model: 'opus', why: 'repeated investigation, review, drafting' },
     'image-prompt': { model: 'opus', why: 'prompts for image models' },
     'learn-explain': { model: 'opus', why: 'explain a concept, how something works, teach me; no changes' },
-    'data-analysis': { model: 'opus', why: 'analyze data, CSV or spreadsheet numbers, write SQL' },
-    'test-writing': { model: 'opus', why: 'write or extend tests for existing code; results checkable by running them' },
+    'data-analysis': { model: 'sonnet', why: 'analyze data, CSV or spreadsheet numbers, write SQL' },
+    'test-writing': { model: 'sonnet', why: 'write or extend tests for existing code; results checkable by running them' },
     'devops-config': { model: 'opus', effort: 'high', why: 'CI, Docker, deploy scripts, env and tool config' },
-    'long-read': { model: 'opus', why: 'read a long file, transcript, report or thread and pull out what matters' },
+    'long-read': { model: 'sonnet', why: 'read a long file, transcript, report or thread and pull out what matters' },
     engineering: { model: 'opus', effort: 'high', why: 'everyday engineering, debugging, multi-PR work' },
     vision: { model: 'opus', effort: 'high', why: 'computer use, screenshot- or image-heavy loops' },
     debugging: { model: 'opus', effort: 'high', why: 'find why something fails, crashes or hangs; root cause before the fix' },
@@ -51,7 +63,7 @@ export const BUILTIN: Config = {
     critique: { model: 'opus', effort: 'high', floor: true, why: 'judge hard-to-judge work: images, video, writing, other agents\' output' },
     architecture: { model: 'opus', effort: 'high', floor: true, why: 'system design, plans, ADRs, cross-module refactors' },
     'security-review': { model: 'opus', effort: 'high', floor: true, why: 'security review, vulnerabilities, threat model; misses are costly' },
-    'final-copy': { model: 'fable', effort: 'high', floor: true, why: 'words the audience sees or hears; Opus high, with a Fable button' },
+    'final-copy': { model: 'fable', effort: 'high', floor: true, why: 'public copy an audience sees or hears: posts, ads, landing pages, newsletters, scripts, voice-over. Not a note to one person; Opus high, with a Fable button' },
     'brand-visual': { model: 'fable', effort: 'high', floor: true, why: 'brand guidelines, logo use, scene and composition direction; Opus high, with a Fable button' },
     'rare-hard': { model: 'fable', effort: 'xhigh', floor: true, why: 'migration, major rewrite, deep research, long agent runs; Opus xhigh, with a Fable button' },
   },
@@ -90,58 +102,57 @@ export function merge(base: Config, over: Partial<Config> | undefined): Config {
 // Highest priority first: floors win over cheaper classes when several match.
 // A third element `true` marks a rule exact enough to pick a cheaper class by itself.
 const RULES: Array<[string, RegExp, boolean?]> = [
-  ['rare-hard', /\b(migrat\w*|major refactor|rewrite the whole|deep research)\b|миграци|глубок\w* исследован/i],
+  ['rare-hard', /\b(migrat\w*|major refactor|rewrite the whole|deep research)\b/i],
   // a secret placed where the public can read it is a security question however it is asked (eval 2026-11-19)
-  ['security-review', /\b(security (review|audit)|vulnerabilit\w*|pentest|threat model|owasp|injection risk)\b|\b(secret|api|private) key\b.{0,80}\b(public|client|browser|frontend|exposed|committed)\b|NEXT_PUBLIC_\w*(SECRET|KEY)|уязвимост|аудит безопасност/i],
-  ['architecture', /\b(architect\w*|system design|adr\b|design doc|tech plan|solution design)\b|архитектур|дизайн системы|солюшн/i],
-  ['brand-visual', /\b(brand ?book|brand visual|logo|scene direction|composition|key visual)\b|брендбук|логотип|композици/i],
+  ['security-review', /\b(security (review|audit)|vulnerabilit\w*|pentest|threat model|owasp|injection risk)\b|\b(secret|api|private) key\b.{0,80}\b(public|client|browser|frontend|exposed|committed)\b|NEXT_PUBLIC_\w*(SECRET|KEY)/i],
+  ['architecture', /\b(architect\w*|system design|adr\b|design doc|tech plan|solution design)\b/i],
+  ['brand-visual', /\b(brand ?book|brand visual|logo|scene direction|composition|key visual)\b/i],
   // a PR link is a review ask; so is proving or verifying what a source file does (eval 2026-11-19: a proof about a
   // production sampler went to math at the default)
-  ['code-review', /\b(code review|review (the|this|my) (pr|pull request|diff|code|commit|changes|branch))\b|\/pull\/\d+|\b(prove|verify) (that )?.{0,80}\b[\w-]+\/[\w./-]+\.(tsx?|jsx?|py|kt|java|go|rs|rb|cs|cpp|swift)\b|ревью кода|код-ревью/i],
-  ['critique', /\b(review|critique|judge|cross-?check|qc|audit)\b|ревью|проверь|критик|оцени/i],
-  ['math', /\b(prove that|proof of|derive the|solve (the|this) equation|integral|probability of)\b|докажи|реши уравнение|вероятность того/i],
-  ['structure', /\b(outline|episode arc|story ?arc|structure of|beat sheet)\b|структур|план эпизода|(?<![а-яё])арк[аеиоуы]?(?![а-яё])/i], // "арк" only as its own word, not inside "маркетинг"
-  ['final-copy', /\b(final (copy|script|text|draft)|voice ?over script|linkedin post|caption|headline copy)\b|финальн\w* текст|сценари|пост для/i],
-  ['vision', /\b(screenshot|computer use|click through|look at the image)\b|скриншот/i],
-  ['image-prompt', /\b(comfy\w*|qwen-?image|image prompt|lora|controlnet)\b|промпт для картин/i],
-  ['brainstorm', /\b(brainstorm|ideas? for|angles?|hooks?|titles?|names? for)\b|идеи|мозговой штурм|варианты назван/i],
-  ['devops-config', /\b(dockerfile|docker compose|ci pipeline|github actions|kubernetes|k8s|nginx|terraform|helm chart|deploy script)\b|докер|пайплайн ci/i],
-  ['data-analysis', /\b(analy[sz]e (the |this |my )?(data|dataset|csv|sales|numbers|metrics)|sql query|write (a |the )?query|pivot table)\b|проанализируй данные|sql-запрос/i],
-  ['docs', /\b(slides?|deck|spreadsheet|docx|pptx|document|readme)\b|презентаци|слайд|документ/i],
-  ['test-writing', /\b(write|add|generate) (more |the |a )?(unit |integration |e2e )?tests?\b|test coverage|напиши тест|покрой тестами/i],
-  ['scoped-code', /\b(fix (the|a|this)|bug|failing test|rename|typo|small change|implement)\b|исправь|баг/i],
+  ['code-review', /\b(code review|review (the|this|my) (pr|pull request|diff|code|commit|changes|branch))\b|\/pull\/\d+|\b(prove|verify) (that )?.{0,80}\b[\w-]+\/[\w./-]+\.(tsx?|jsx?|py|kt|java|go|rs|rb|cs|cpp|swift)\b/i],
+  ['critique', /\b(review|critique|judge|cross-?check|qc|audit)\b/i],
+  ['math', /\b(prove that|proof of|derive the|solve (the|this) equation|integral|probability of)\b/i],
+  ['structure', /\b(outline|episode arc|story ?arc|structure of|beat sheet)\b/i],
+  ['final-copy', /\b(final (copy|script|text|draft)|voice ?over script|linkedin post|caption|headline copy)\b/i],
+  ['vision', /\b(screenshot|computer use|click through|look at the image)\b/i],
+  ['image-prompt', /\b(comfy\w*|qwen-?image|image prompt|lora|controlnet)\b/i],
+  ['brainstorm', /\b(brainstorm|ideas? for|angles?|hooks?|titles?|names? for)\b/i],
+  ['devops-config', /\b(dockerfile|docker compose|ci pipeline|github actions|kubernetes|k8s|nginx|terraform|helm chart|deploy script)\b/i],
+  ['data-analysis', /\b(analy[sz]e (the |this |my )?(data|dataset|csv|sales|numbers|metrics)|sql query|write (a |the )?query|pivot table)\b/i],
+  ['docs', /\b(slides?|deck|spreadsheet|docx|pptx|document|readme)\b/i],
+  ['test-writing', /\b(write|add|generate) (more |the |a )?(unit |integration |e2e )?tests?\b|test coverage/i],
+  ['scoped-code', /\b(fix (the|a|this)|bug|failing test|rename|typo|small change|implement)\b/i],
   // finding what broke, from a log or a trace, is debugging even when asked as "read" or "explain" (eval 2026-11-19:
   // production log reads filed under long-read, explore and learn-explain went below Opus high); so are build warnings,
   // a list that skips items and numbers that are off
-  ['debugging', /\b(debug|stack ?trace|traceback|segfault|crash(es|ing)?|why (does|do|is|are|did) .{0,60}(fail|break|crash|hang|skips?|drops?|loses?|duplicates?|miss(es)?)|why .{0,40}\b(is|are) (off|wrong|missing|negative)|what (actually )?(broke|went wrong)|where (it|this) (actually )?(breaks|fails)|why .{0,60}keeps? (failing|crashing|dying|hanging|timing out)|(build|compiler|lint) (warnings?|errors?)|(warnings?|errors?) in (the )?build)\b|отлад|падает|не запускается|что (именно |реально )?(сломалось|упало|пошло не так)|варнинг|ворнинг|(ошибк|предупрежден)\w* (в |при )?(билд|сборк)/i],
-  ['long-read', /\b(read (the )?(whole|entire|full)|go through (all|the whole)|summari[sz]e (this|the) (book|report|transcript|pdf|thread))\b|прочитай (весь|всю|целиком)/i],
-  ['explore', /\b(find|search|where is|grep|list (all|the)|summari[sz]e|read the logs?|look up)\b|найди|где находится|поищи|суммир/i],
+  ['debugging', /\b(debug|stack ?trace|traceback|segfault|crash(es|ing)?|why (does|do|is|are|did) .{0,60}(fail|break|crash|hang|skips?|drops?|loses?|duplicates?|miss(es)?)|why .{0,40}\b(is|are) (off|wrong|missing|negative)|what (actually )?(broke|went wrong)|where (it|this) (actually )?(breaks|fails)|why .{0,60}keeps? (failing|crashing|dying|hanging|timing out)|(build|compiler|lint) (warnings?|errors?)|(warnings?|errors?) in (the )?build)\b/i],
+  ['long-read', /\b(read (the )?(whole|entire|full)|go through (all|the whole)|summari[sz]e (this|the) (book|report|transcript|pdf|thread))\b/i],
+  ['explore', /\b(find|search|where is|grep|list (all|the)|summari[sz]e|read the logs?|look up)\b/i],
   // a lookup asked as a question; only the question form, so "add a weather widget" stays out
-  ['explore', /^(what'?s|what is|what are|what was|how much|how is|is it|will it)\b.*\b(weather|forecast|prices?|stocks?|exchange rate|news|score)\b|^(какая|какой|какие|сколько|что с)\s.*(погод|прогноз|курс|цен|новост)/i, true],
-  ['mechanical', /\b(reformat|format this|translate|split subtitles|convert to|shorten)\b|переведи|отформатируй|сократи/i],
-  ['learn-explain', /^(explain|teach me|eli5|how does|how do .{0,40} work|what is the difference)\b|^(объясни|что такое|как работает|в чём разница)/i],
+  ['explore', /^(what'?s|what is|what are|what was|how much|how is|is it|will it)\b.*\b(weather|forecast|prices?|stocks?|exchange rate|news|score)\b/i, true],
+  ['mechanical', /\b(reformat|format this|translate|split subtitles|convert to|shorten)\b/i],
+  ['learn-explain', /^(explain|teach me|eli5|how does|how do .{0,40} work|what is the difference)\b/i],
 ]
 
-export const CLASS_LABELS = [...new Set(RULES.map(([c]) => c).concat(['engineering']))]
+export const CLASS_LABELS = [...new Set(RULES.map(([c]) => c).concat(['engineering', 'message']))] // classes with no keyword rule: the classifier alone names them
 
 // A model or effort named in the prompt itself. It wins for that turn, floors included; "from now on" keeps it for the chat.
 export type Ask = { model?: string; effort?: string; agents?: string; sticky: boolean }
-const FAMILY_WORD: Record<string, string> = { хайку: 'haiku', сонет: 'sonnet', соннет: 'sonnet', опус: 'opus', фейбл: 'fable' }
-const FAM = '(haiku|sonnet|opus|fable|хайку|сонет|соннет|опус|фейбл)'
+// English keywords only, in every rule here: other languages reach the Haiku classifier, which reads any language (2026-11-19)
+const FAM = '(haiku|sonnet|opus|fable)'
 
 export function explicitAsk(text: string): Ask | undefined {
   const t = text.toLowerCase()
-  const fam = (w: string | undefined) => (w ? (FAMILY_WORD[w] ?? w) : undefined)
   const first = (re: RegExp) => re.exec(t)?.slice(1).find(Boolean)
-  const agents = fam(first(new RegExp(`\\b(?:use|run|spawn)\\s+${FAM}\\s+(?:sub)?agents?\\b|\\b(?:sub)?agents?\\s+(?:on|with|using)\\s+${FAM}\\b|(?:субагент\\S*|агент\\S*)\\s+на\\s+${FAM}`)))
+  const agents = first(new RegExp(`\\b(?:use|run|spawn)\\s+${FAM}\\s+(?:sub)?agents?\\b|\\b(?:sub)?agents?\\s+(?:on|with|using)\\s+${FAM}\\b`))
   // a family next to a verb of choosing; "a post about opus", "why is the haiku model slower" are not asks (audit 2026-11-18)
-  const model = fam(first(new RegExp(`\\b(?:use|using|switch to|run (?:it|this) (?:on|with)|do (?:it|this) (?:on|with)|answer with|with the)\\s+(?:the\\s+)?${FAM}\\b(?!\\s+(?:sub)?agents?)|(?:используй|через|сделай на|запусти на|ответь на)\\s+${FAM}(?!\\s+(?:суб)?агент)`)))
+  const model = first(new RegExp(`\\b(?:use|using|switch to|run (?:it|this) (?:on|with)|do (?:it|this) (?:on|with)|answer with|with the)\\s+(?:the\\s+)?${FAM}\\b(?!\\s+(?:sub)?agents?)`))
   // an effort as an instruction ("with low effort", "effort: high", "high effort please" at the end), not "a low effort change"
   const level = first(/\b(?:with|at|on|use)\s+(low|medium|high|xhigh|max)\s+effort\b|\beffort\s*[:=]?\s*(low|medium|high|xhigh|max)\b|\b(low|medium|high|xhigh|max)\s+effort(?:\s+(?:please|pls))?\s*[.!]?\s*$/)
-  const think = /\bthink harder\b/.test(t) ? 'xhigh' : /\bthink hard\b|подумай (как следует|хорошенько|глубже)/.test(t) ? 'high' : /\b(no need to think|don't overthink)\b|не думай долго/.test(t) ? 'low' : undefined
+  const think = /\bthink harder\b/.test(t) ? 'xhigh' : /\bthink hard\b/.test(t) ? 'high' : /\b(no need to think|don't overthink)\b/.test(t) ? 'low' : undefined
   const effort = level ?? think
   if (!model && !effort && !agents) return undefined
-  const sticky = /\b(from now on|for the rest of (this|the) (chat|session)|for this (whole )?(chat|session))\b|с этого момента|до конца (чата|сессии)|в этом чате/.test(t)
+  const sticky = /\b(from now on|for the rest of (this|the) (chat|session)|for this (whole )?(chat|session))\b/.test(t)
   return { model, effort, agents, sticky }
 }
 
@@ -209,12 +220,12 @@ export function classifyByRules(text: string, cfg: Config): string | undefined {
   return undefined
 }
 
-// "yes", "go on", "ок" continue the current task: keep the previous class.
+// "yes", "go on" continue the current task: keep the previous class.
 export function isContinuation(text: string): boolean {
   const t = text.trim()
   // shortcut: words at the start only; a follow-up phrased like a new task reaches the classifier, which is told to call it default
   // whole words only (audit 2026-11-18: "android build is broken", "okta SSO returns 403" read as follow-ups)
-  return t.length < 12 || /^(yes|yep|ok|okay|sure|go on|go ahead|continue|do it|now|and|also|then|but|great|thanks|fix it|да|ок|окей|давай|продолжай|теперь|и|а|ещё|еще|спасибо)(?![\wа-яё])/i.test(t)
+  return t.length < 12 || /^(yes|yep|ok|okay|sure|go on|go ahead|continue|do it|now|and|also|then|but|great|thanks|fix it)(?!\w)/i.test(t)
 }
 
 const RANK: Record<string, number> = { haiku: 1, sonnet: 2, opus: 3, fable: 4 }
@@ -227,13 +238,18 @@ export const rank = (model: string) => RANK[family(model)] ?? 3
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 export const effortRank = (e: string) => EFFORTS.indexOf(e)
 
-// A class's tier as a subagent gets it: its `sub` tier where it has one.
-export const subTier = (t: Tier | undefined): Tier | undefined => (t?.sub ? { ...t, ...t.sub } : t)
+// A class's tier as a subagent gets it: its `sub` tier where it has one, else the subagent default for a class at the
+// main tier (no raised effort, no floor), else the class's own.
+export function subTier(t: Tier | undefined, cfg: Config): Tier | undefined {
+  if (t?.sub) return { ...t, ...t.sub }
+  const atMain = t && !t.floor && !t.effort && family(t.model) === family(cfg.main.model)
+  return atMain && cfg.subagent ? { ...t, ...cfg.subagent } : t
+}
 
 // Resolve an agents-table entry (direct tier or a class reference) to a tier; no entry: undefined (the brief decides).
 export function agentTier(type: string, cfg: Config): Tier | undefined {
   const entry = cfg.agents[type]
-  const cls = entry?.class ? subTier(cfg.classes[entry.class]) : undefined
+  const cls = entry?.class ? subTier(cfg.classes[entry.class], cfg) : undefined
   if (cls) return { ...cls, ...entry, model: entry?.model ?? cls.model }
   if (entry?.model) return entry as Tier
   return undefined
@@ -243,7 +259,7 @@ export function agentTier(type: string, cfg: Config): Tier | undefined {
 // Only a sure class moves it; anything else runs on the parent's model, so a guess never makes it cheaper.
 // Fable is never automatic (owner, 2026-11-18): a Fable class runs on Opus unless the parent is on Fable already.
 export function briefTier(cls: string | null | undefined, sure: boolean, parentModel: string, cfg: Config): Tier | undefined {
-  const t = cls && sure ? subTier(cfg.classes[cls]) : undefined
+  const t = cls && sure ? subTier(cfg.classes[cls], cfg) : undefined
   if (!t) return undefined
   const model = family(t.model) === 'fable' && family(parentModel) !== 'fable' ? 'opus' : family(t.model)
   return { ...t, model, class: cls! }
@@ -252,7 +268,7 @@ export function briefTier(cls: string | null | undefined, sure: boolean, parentM
 // A sure Haiku answer that would put a subagent below its parent's model needs a second sample to agree
 // (eval 2026-11-18: one sure "explore" sent Sonnet-level briefs to Haiku).
 export function needsSecondSample(cls: string | null | undefined, sure: boolean, parentModel: string, cfg: Config): boolean {
-  const t = cls && sure ? subTier(cfg.classes[cls]) : undefined
+  const t = cls && sure ? subTier(cfg.classes[cls], cfg) : undefined
   return Boolean(t && rank(t.model) < rank(parentModel))
 }
 
@@ -281,6 +297,10 @@ export function spawnPick(f: SpawnFacts, cfg: Config): { model: string; tier: Ti
   if (raised && tier && (rank(raised.model) > rank(tier.model) || (rank(raised.model) === rank(tier.model) && eff(raised) > eff(tier)))) tier = raised
   // rules only raise: a rule's class under the parent's model (a Fable parent, a critique rule on Opus) is no reason to go lower
   if (f.brief?.byRule && tier && rank(tier.model) < rank(f.parentModel)) tier = undefined
+  // a defined task (read, no class claims it surely, no strong class even unsure): the subagent default, only ever
+  // lower. A brief never read (too short, or the classifier failed: cls undefined) keeps the parent's model (eval
+  // 2026-11-19: "run tests" on a production app)
+  if (b && b.cls !== undefined && !tier && cfg.subagent && !isStrong(b.cls, cfg) && rank(cfg.subagent.model) < rank(f.parentModel)) tier = { ...cfg.subagent }
   // unsure: the parent's model, but not below the main default unless the person chose the chat's model
   // (eval 2026-11-18: an unsure production-debugging brief ran on a Sonnet parent)
   const lift = !tier && rank(f.parentModel) < rank(cfg.main.model) && !f.personChose ? cfg.main.model : undefined
@@ -339,6 +359,8 @@ export function autoModel(cls: string | null, context: number, requested: string
 export function firstModel(samples: Array<string | null | undefined>, current: string, cfg: Config): string | undefined {
   const cls = samples[0]
   if (!cls || samples.length < 3 || samples.some(x => x !== cls)) return undefined
+  // a project that raised its default above medium is production work (README): its chats never start cheaper
+  if (effortRank(cfg.main.effort) > effortRank('medium')) return undefined
   const t = cfg.classes[cls]
   if (!t || t.floor || rank(t.model) >= rank(current)) return undefined
   return t.model
@@ -400,7 +422,7 @@ export function adviseSwitch(samples: Array<SessionVerdict | undefined>, current
 }
 
 // API-equivalent prices per million tokens (platform.claude.com models overview, 2026-11).
-// shortcut: Haiku uses its <=100K-prompt price and cache write is 1.25x input; refine if Haiku sees long prompts.
+// Haiku's entries are its <=100K-prompt price; costUsd applies the 5x rate above that. Cache write is 1.25x input.
 export const BUILTIN_PRICE: Record<string, [number, number, number]> = {
   haiku: [0.1, 0.5, 0.01],
   sonnet: [2, 10, 0.1],

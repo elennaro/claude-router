@@ -1,8 +1,8 @@
 # claude-router
 
-A Claude Code plugin that picks the model and effort for every turn, subagent and outside-agent call: hard work and production-code investigation get Opus at high effort, lookups inside subagents go to Haiku, and nothing drops below the tier its work needs. Fable is offered as a button, never picked automatically.
+A Claude Code plugin that picks the model and effort for every turn, subagent and outside-agent call: hard work and production-code investigation get Opus at high effort, a chat that opens with a message, translation, lookup, long read, data or test task starts on Sonnet, subagents on defined tasks go to Sonnet and lookups to Haiku, and nothing drops below the tier its work needs. Fable is offered as a button, never picked automatically.
 
-What it buys, measured on 279 real-work cases ([evals/README.md](evals/README.md)): answers judged 15.6% better than always running Opus medium, for about 1.3× its spend. It spends more where that pays off; it is not a cost cutter, because in the evals every cheaper tier lost quality on chat answers.
+What it buys, measured on 283 real-work cases ([evals/README.md](evals/README.md)): answers judged 15.6% better than always running Opus medium, for about 1.2× its spend. It spends more where that pays off. It moves work to Sonnet only where Sonnet's answers passed the person's checklist as often as Opus medium's did.
 
 ```
 /plugin marketplace add OWNER/claude-router

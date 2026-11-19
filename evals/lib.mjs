@@ -9,7 +9,7 @@ import { BUILTIN, merge } from '../router/hooks/policy.ts'
 
 export const ROOT = dirname(fileURLToPath(import.meta.url))
 export const WORK = join(ROOT, 'work') // private, gitignored: mined prompts, raw answers, spend
-export const CAP_USD = Number(process.env.EVAL_CAP_USD ?? 40)
+export const CAP_USD = Number(process.env.EVAL_CAP_USD ?? 5) // the most this one run may spend; the ledger keeps the all-time total
 const EMPTY = join(WORK, 'empty') // runs start here: no project CLAUDE.md, no project settings
 mkdirSync(EMPTY, { recursive: true })
 
@@ -28,7 +28,7 @@ export const cfgFor = project => {
 
 const SPEND = join(WORK, 'spend.jsonl')
 export const spent = () => readJsonl(SPEND).reduce((a, r) => a + (r.usd ?? 0), 0)
-let total = spent()
+let total = 0 // this run only, so EVAL_CAP_USD=1 means one more dollar
 
 export class CapReached extends Error {} // stops a run: no more paid calls
 

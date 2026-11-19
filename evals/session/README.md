@@ -19,7 +19,7 @@ investigation takes the stronger label, everything else takes Fable's.
 
 ## Run
 
-From `evals/`, in Git Bash (spend counts against `EVAL_CAP_USD`, the total in `work/spend.jsonl`):
+From `evals/`, in Git Bash (each run spends at most `EVAL_CAP_USD`, default $5; every call is logged in `work/spend.jsonl`):
 
 ```
 node session/run.mjs      # 3 whole runs (RUNS=3), ~1,300 Haiku calls through claude -p, under $1

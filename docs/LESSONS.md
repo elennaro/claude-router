@@ -59,6 +59,15 @@ Newest at the bottom. Each entry: what we did, what happened, what we learned. N
     read cheaply. Netting everything into one "saved" number also hid the extra spend behind cheap subagents. Lesson:
     compare against what would have run with the router off (the asked model and effort), and keep saved and extra
     spend apart.
+17. **Keywords in the owner's languages.** The rules carried Russian words next to the English ones, because the
+    first eval cases were written in both. A user in any third language got worse routing than a Russian speaker, and the eval looked
+    better than the product was. Removing them moved 3 Russian production prompts (of 279) from Opus high to the
+    default, which no change to the classifier's wording fixed. Lesson: keep hand rules in one language and let the
+    classifier read the rest; measure the gap and document the fix (here, a production project sets its default to
+    Opus high) instead of hiding it.
+18. **Spending a capped eval on the baseline first.** The acceptance eval graded every tier on all 288 cases, tier by
+    tier, so the Opus medium baseline took $35 of the $43 cap and the tier being decided got 20 cases. Lesson: under a
+    cap, choose the cases the decision needs first and run the tiers in pairs on them.
 
 ## Right moves
 
@@ -109,3 +118,13 @@ Newest at the bottom. Each entry: what we did, what happened, what we learned. N
 15. **Measuring effort's price instead of guessing it.** Effort changes how many tokens a model writes, not its
     price per token. `evals/effort-cost.mjs` reads the replay store's paid runs: Opus high wrote 1.40x the output of
     medium (n=158), low 0.72x. The spend report scales output by those factors, so a raised effort shows as extra.
+16. **Grading each answer alone against the person's checklist.** The side-by-side judge picked a side even between
+    two Opus medium answers, so every cheaper tier looked worse. A checklist written from the request only, and a
+    grader that sees one answer and no model name, asks the question that matters: would the person accept this as
+    done? Sonnet medium was accepted on every case Opus medium was in messages, mechanical edits, lookups, long reads,
+    data and tests (75 cases, about $5), so those chats now start on Sonnet. Lesson: measure "good enough", not "as
+    good as".
+17. **Owner cases expose class edges.** "Write a simple email" was read as final copy and offered Fable, because
+    every final-copy case in the eval was public copy and none was a note to one person. A new `message` class with no
+    keywords, and four cases like it, fixed it in every language. Lesson: when the owner says a pick is wrong, add the
+    case first, then look for the missing neighbour class.

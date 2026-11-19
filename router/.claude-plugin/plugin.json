@@ -1,6 +1,6 @@
 {
   "name": "router",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Router mode: per-turn effort by task class, the chat model picked on the first prompt, a session check with compact-and-switch buttons, subagents routed by type or brief, and a lean savings ledger.",
   "types": "./types/index.d.ts"
 }
