@@ -1,0 +1,7 @@
+{
+  "$comment": "Fake content-studio project (video episodes, scripts, generated stills). Mirrors the shape of a real studio project's overrides without its names.",
+  "keywords": {
+    "structure": ["beat plan", "episode plan", "outline the episode"],
+    "image-prompt": ["still prompt", "clip prompt", "shot prompt"]
+  }
+}

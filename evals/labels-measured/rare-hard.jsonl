@@ -1,0 +1,3 @@
+{"id":"rare-hard-01","need":{"model":"opus","effort":"high"},"steps":[{"cand":"opus-high","ref":"opus-medium","verdict":"better","by":"fable","scores":[2,2]},{"cand":"fable-high","ref":"opus-high","verdict":"worse","by":"fable","scores":[-2,-2]}]}
+{"id":"rare-hard-02","need":{"model":"fable","effort":"high"},"steps":[{"cand":"opus-high","ref":"opus-medium","verdict":"better","by":"fable","scores":[1,1]},{"cand":"fable-high","ref":"opus-high","verdict":"better","by":"fable","scores":[1,1]}]}
+{"id":"rare-hard-04","need":{"model":"fable","effort":"high"},"steps":[{"cand":"opus-high","ref":"opus-medium","verdict":"better","by":"opus","scores":[-1,1,1]},{"cand":"fable-high","ref":"opus-high","verdict":"better","by":"fable","scores":[1,2]}]}

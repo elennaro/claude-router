@@ -1,0 +1,5 @@
+node_modules/
+router/.claude-plugin/types/
+evals/results/
+evals/work/
+*.log

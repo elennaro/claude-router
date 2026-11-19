@@ -1,0 +1,1034 @@
+import { atom, read, update } from 'claude-code'
+import type { EngineInterface, Register, SessionMessage } from 'claude-code'
+
+import type { Advice, Bucket, ChatModel, Hint, Tally, RouterView, TurnLog } from '../types'
+import { BOARD, type Step, type Totals, IMPORTED, bucketsOf, dayRow, isAlreadyImported, labelOf, legacySteps, run, sessionRow, spawnRow, totalsOf, totalsQuery, usageRow } from './db'
+import { shield } from './guard'
+import { claudeFamily } from './latest'
+import {
+  type AgentName, type Call, type Env, type PriceCheck, type Tool, type Versions, ROLES, agyModels, checkPrices, checkVersions, codexModels,
+  env, outsideCall, runAgy, runCodex, updateTool, versions,
+} from './outside'
+import {
+  type Ask, AUTO, BUILTIN, CLASS_LABELS, type Config, type Usage, type SessionWindow, adviseSwitch, agentTier, autoModel, classifierPrompt, firstModel, parseSessionCheck, sessionCheckPrompt, sessionCheckSystem, classifierSystem, classifyByRules, costUsd, explicitAsk, family,
+  classifyPlan, isCacheBreak, merge, settleAnswers, readLabel, prices, rank, setPrices, turnEffort, briefHash, isHarder, needsSecondSample, spawnPick,
+} from './policy'
+import { type Cell, NAMES, TOOL_NAMES, barsSvg, boardHtml, money, saved, savedPct, statsSvg, withMode } from './view'
+
+const PANE = 'router'
+const hint = atom({ plugin: 'router', key: 'hint' } as const, null)
+const isHidden = atom({ plugin: 'router', key: 'isHidden' } as const, false)
+const EMPTY_TALLY: Tally = { byModel: {}, actualUsd: 0, baselineUsd: 0 }
+const tally = atom({ plugin: 'router', key: 'tally' } as const, EMPTY_TALLY, { shape: 'tally-1' })
+const EMPTY_VIEW: RouterView = { isOn: true, autoEffort: true, routeModels: true, perMessage: 'unknown', lastClass: null, lastEffort: null, pickerEffort: null, rerouted: 0, routedAgents: 0 }
+const view = atom({ plugin: 'router', key: 'view' } as const, EMPTY_VIEW, { shape: 'view-3' })
+const log = atom({ plugin: 'router', key: 'log' } as const, [] as Array<TurnLog>, { shape: 'log-2' })
+const panel = atom({ plugin: 'router', key: 'panel' } as const, 'none' as 'none' | 'stats' | 'settings')
+const isWidgetOpen = atom({ plugin: 'router', key: 'isWidgetOpen' } as const, false)
+const modes = atom({ plugin: 'router', key: 'modes' } as const, { global: null as string | null, project: null as string | null, isProject: false })
+const tools = atom({ plugin: 'router', key: 'tools' } as const, null as Versions | null)
+const updating = atom({ plugin: 'router', key: 'updating' } as const, null as Tool | null)
+const chat = atom({ plugin: 'router', key: 'chat' } as const, { model: null, by: null } as ChatModel) // the chat's model: picked on its first prompt, or by the person
+const advice = atom({ plugin: 'router', key: 'advice' } as const, null as Advice | null)
+const TODO_TOOLS = ['TodoWrite', 'mcp__ccd_turn__update_plan'] // the task list as Claude Code and the desktop app keep it
+
+const pretty = (m: string) => NAMES[family(m)] ?? m
+
+type Def = { model?: string; effort?: string }
+
+// Session state; module variables start over on a reload, which is fine for all of these.
+type State = {
+  cfg: Config
+  home: string
+  root: string
+  project: string
+  sources: string // which routing.json files loaded
+  lastClass: string | null
+  lastHintModel: string | null
+  hasClassified: boolean // any prompt classified yet (continuations skip Haiku after that)
+  hadClass: boolean // any class found yet (the first one may show a hint)
+  skipEffortThisTurn: boolean
+  sure: boolean // the last class came from a rule or a confident (>= 0.85) classifier answer
+  switchTurn: boolean // this prompt's own turn may run on its class model (a follow-up goes back to the picked model)
+  headless: boolean // claude -p runs (scripts, agent harnesses): their frontmatter decides, the router only counts
+  agentEffort: Map<string, string>
+  defs: Map<string, Def>
+  prev: { effort: string; read: number; at: number; model: string } // main-loop cache guard
+  lastContext: number // prompt tokens of the last main-loop step
+  cleanChanges: number
+  baseEffort: string // the effort the session started on: the app picker's default, routed like main.effort
+  rerouted: number // main-loop turns sent at another effort than the picker's
+  lastRerouted: string // turnId last counted in rerouted
+  agentType: Map<string, string> // agentId -> subagent type, for the dashboard log
+  paneOpened: boolean
+  session: string // session id, the ledger's key
+  label: string // the first prompt, shortened: how the Board names the session
+  lastLedgerTurn: string
+  pending: Array<Step> // ledger rows not yet in router.db
+  scheduled: boolean // a flush is on the clock
+  warned: boolean // the "could not save" toast was shown
+  totals: Totals // this project across chats, from router.db's last flush
+  routeModels: boolean
+  ask: Ask | undefined // a model or effort named in this prompt (or kept "from now on")
+  stickyAsk: Ask | undefined
+  seenPrompt: boolean // a prompt reached the router in this session (the first one may pick the chat's model)
+  samples: Array<string | null | undefined> // this prompt's classifier answers (3 on the first prompt)
+  turnCount: number // prompts the router saw in this session
+  quietUntil: number // no new session-check offer before this turn
+  declined: string | null // the trigger whose offer was turned down: quiet until another trigger fires
+  switching: boolean // a switch button is compacting or clearing: its own compaction is no trigger
+  queue: Promise<unknown> // serial(): router.db batches, one at a time
+  briefs: Map<string, string> // brief hash -> the model its subagent ran on: a repeat goes one tier up
+  siblings: Map<string, string> // workflow run -> the highest model its routed agents got: siblings share it (and its cache)
+  v: Env | undefined
+}
+
+async function readJson($: EngineInterface, path: string): Promise<any> {
+  try {
+    if (!(await $.fs.exists(path))) return undefined
+    return JSON.parse(String(await $.fs.read(path)))
+  } catch {
+    $.ui.toast(`router: ${path} is not valid JSON, ignored`)
+    return undefined
+  }
+}
+
+// Frontmatter `model:` / `effort:` of an agent definition.
+function frontmatter(text: string): Def {
+  const head = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)?.[1] ?? ''
+  const pick = (k: string) => new RegExp(`^${k}:\\s*["']?([\\w.\\[\\]-]+)`, 'm').exec(head)?.[1]
+  return { model: pick('model'), effort: pick('effort') }
+}
+
+async function load($: EngineInterface, s: State) {
+  s.home = ((await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME')) ?? '').replace(/\\/g, '/')
+  s.root = (await $.session.root()).replace(/\\/g, '/')
+  s.project = s.root.split('/').filter(Boolean).pop() ?? 'unknown'
+  const g = await readJson($, `${s.home}/.claude/routing.json`)
+  const p = s.root.toLowerCase() === s.home.toLowerCase() ? undefined : await readJson($, `${s.root}/.claude/routing.json`)
+  s.cfg = merge(merge(BUILTIN, g), p)
+  s.sources = [g ? 'global' : '', p ? 'project' : ''].filter(Boolean).join(' + ') || 'built-in only'
+  const m = { global: typeof g?.mode === 'string' ? g.mode : null, project: typeof p?.mode === 'string' ? p.mode : null, isProject: s.root.toLowerCase() !== s.home.toLowerCase() }
+  await update($, modes, () => m)
+  s.session = await $.session.id().catch(() => s.session)
+  // shortcut: 0.2's store totals, now in router.db; drop this once no 0.2 install is left
+  const old = (await $.store.get('projects')) as Array<string> | undefined
+  if (old) { for (const k of [...old.map(n => `tally:${n}`), 'projects', 'ledgerSince']) await $.store.delete(k) }
+  void importLegacy($, s).catch(() => undefined) // a failed import tries again next session
+  void flush($, s) // this project's totals for the band
+  const checked = (await $.store.get('prices')) as PriceCheck | undefined
+  if (checked?.table) setPrices(checked.table) // last week's check of the pricing page
+  const stored = (await $.store.get('perMessage')) as RouterView['perMessage'] | undefined
+  await update($, view, (v): RouterView => ({ ...v, isOn: s.cfg.mode !== 'off', autoEffort: s.cfg.autoEffort, perMessage: stored ?? 'unknown' }))
+  // a reload starts the module empty while the session's atoms stay: take the chat's switches back from them
+  const v = await read($, view)
+  s.routeModels = v.routeModels
+  s.baseEffort ||= v.pickerEffort ?? ''
+}
+
+async function definition($: EngineInterface, s: State, type: string): Promise<Def> {
+  const known = s.defs.get(type)
+  if (known) return known
+  let found: Def = {}
+  for (const dir of [`${s.root}/.claude/agents`, `${s.home}/.claude/agents`]) {
+    const path = `${dir}/${type}.md`
+    try {
+      if (await $.fs.exists(path)) { found = frontmatter(String(await $.fs.read(path))); break }
+    } catch { /* unreadable definition: treat as unpinned */ }
+  }
+  s.defs.set(type, found)
+  return found
+}
+
+const pad = (n: number) => String(n).padStart(2, '0')
+const dayOf = (t: number) => { const d = new Date(t); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` }
+
+const NO_PREV = { effort: '', read: 0, at: 0, model: '' }
+const MAX_PENDING = 6000 // shortcut: with node missing for good, the oldest unsaved rows drop; raise if a day ever needs more
+
+// The ledger row's day and session: a /clear's new chat reads its new id here.
+async function stamp($: EngineInterface, s: State): Promise<{ day: string; now: number }> {
+  const now = await $.clock.now()
+  if (!s.session) s.session = await $.session.id().catch(() => 'session')
+  return { day: dayOf(now), now }
+}
+
+// Rows wait in memory and go to router.db in one batch about every 2 s, at the session's end, and before the Board.
+function later($: EngineInterface, s: State, steps: Array<Step>) {
+  s.pending.push(...steps)
+  if (s.pending.length > MAX_PENDING) s.pending.splice(0, s.pending.length - MAX_PENDING)
+  if (s.scheduled) return
+  s.scheduled = true
+  $.clock.after(2_000, async () => { await flush($, s) })
+}
+
+// One batch: the waiting rows, then this project's totals back. A failed run keeps the rows for the next one.
+function flush($: EngineInterface, s: State) {
+  return serial(s, async () => {
+    s.scheduled = false
+    const steps = s.pending
+    s.pending = []
+    try {
+      const rows = await run($, s.home, [...steps, ...totalsQuery(s.project)])
+      s.totals = totalsOf(rows.slice(steps.length))
+    } catch (err) {
+      s.pending = [...steps, ...s.pending].slice(-MAX_PENDING)
+      if (!s.warned) $.ui.toast(`router: savings stats need Node.js 22.13 or newer on PATH; routing works without it. (${String(err).slice(0, 100)})`)
+      s.warned = true
+    }
+  })
+}
+
+// 0.2 kept the ledger as JSON files, one per session per day: read them into router.db once, in one transaction.
+// shortcut: a mod cannot delete files, so the old folder stays (the README says it can go); drop once no 0.2 install is left
+function importLegacy($: EngineInterface, s: State) {
+  return serial(s, async () => {
+    if (await $.store.get('ledgerImported')) return
+    const dir = `${s.home}/.claude/router/ledger`
+    const steps: Array<Step> = []
+    for (const day of await $.fs.list(dir).catch(() => [])) {
+      if (day.kind !== 'dir') continue
+      for (const f of await $.fs.list(`${dir}/${day.name}`).catch(() => [])) {
+        if (f.kind !== 'file' || !f.name.endsWith('.json')) continue
+        const b = await $.fs.read(`${dir}/${day.name}/${f.name}`).then(t => JSON.parse(String(t)) as Bucket).catch(() => undefined)
+        if (b?.byModel && typeof b.day === 'string' && typeof b.session === 'string') steps.push(...legacySteps(b)) // a damaged file is skipped
+      }
+    }
+    // several sessions can start at once after an update: the marker row lets only one batch through (audit 2026-11-19)
+    if (steps.length) await run($, s.home, [IMPORTED, ...steps]).catch(err => { if (!isAlreadyImported(err)) throw err })
+    await $.store.set('ledgerImported', true)
+  })
+}
+
+// One subagent run: per type only (runs, routed, re-spawned), never its brief.
+async function countAgent($: EngineInterface, s: State, type: string, routed: boolean, respawned: boolean) {
+  const { day } = await stamp($, s)
+  later($, s, [spawnRow(day, s.session, type, Number(routed), Number(respawned))])
+}
+
+// One at a time: flushes take the waiting rows and hand back totals; hooks run at once (parallel subagents).
+// A unit must never call serial itself.
+function serial<T>(s: State, fn: () => Promise<T>): Promise<T> {
+  const r = s.queue.then(fn, fn)
+  s.queue = r.catch(() => undefined)
+  return r
+}
+
+// `baseline` false: spend routing added (the classifier), which running everything on the main model would not have.
+async function record($: EngineInterface, s: State, model: string, u: Usage, turnId?: string, baseline0 = true, agent?: string) {
+  const actual = costUsd(model, u)
+  const baseline = baseline0 ? costUsd(s.cfg.main.model, u) : 0
+  const f = family(model)
+  await update($, tally, (t): Tally => {
+    const m = t.byModel[f] ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, steps: 0 }
+    return {
+      byModel: { ...t.byModel, [f]: { input: m.input + u.input_tokens, output: m.output + u.output_tokens, cacheRead: m.cacheRead + u.cache_read_input_tokens, cacheWrite: m.cacheWrite + u.cache_creation_input_tokens, steps: m.steps + 1 } },
+      actualUsd: t.actualUsd + actual,
+      baselineUsd: t.baselineUsd + baseline,
+    }
+  })
+  const { day, now } = await stamp($, s)
+  const isNewTurn = Boolean(turnId && turnId !== s.lastLedgerTurn)
+  if (isNewTurn) s.lastLedgerTurn = turnId!
+  later($, s, [
+    sessionRow(s.session, s.project, s.label),
+    dayRow(day, s.session, Number(isNewTurn), now),
+    usageRow(day, s.session, agent ?? (baseline0 ? 'main' : 'router'), f, actual, baseline),
+  ])
+}
+
+async function probeLog($: EngineInterface, path: string, line: object) {
+  let old = ''
+  try { old = (await $.fs.exists(path)) ? String(await $.fs.read(path)) : '' } catch { old = '' }
+  await $.fs.write(path, old + JSON.stringify(line) + '\n')
+}
+
+// The model this step runs on in the main chat: the class model for a sure AUTO class on the prompt's own turn,
+// only ever cheaper than the requested one, never a floor class, never on ultrathink.
+function stepModel(s: State, requested: string): string | undefined {
+  if (s.cfg.mode === 'off' || s.headless || !s.routeModels || !s.switchTurn || s.skipEffortThisTurn || !s.lastClass) return undefined
+  return autoModel(s.lastClass, s.lastContext, requested, s.cfg)
+}
+
+// One Haiku label: Jev-style, a class with its confidence; an unsure answer routes nothing.
+// -> { cls: class | null (no clear class) | undefined (failed or late), sure }
+async function haiku($: EngineInterface, s: State, text: string): Promise<{ cls: string | null | undefined; sure: boolean }> {
+  const labels = CLASS_LABELS.filter(c => s.cfg.classes[c])
+  try {
+    const r = await $.model.complete({
+      model: s.cfg.classifier.model,
+      effort: 'low',
+      maxTokens: 40, // eval 2026-11-18: at 20, 16 of 41 Haiku replies ran out while still thinking
+      timeoutMs: 4000, // never hold the prompt long; a late answer routes nothing
+      system: classifierSystem(labels, s.cfg),
+      prompt: classifierPrompt(text),
+    })
+    if (r.isAnswered && r.usage) await record($, s, s.cfg.classifier.model, r.usage, undefined, false) // routing's own cost counts against the savings
+    if (!r.isAnswered) return { cls: undefined, sure: false }
+    return readLabel(r.text, labels, s.cfg)
+  } catch {
+    return { cls: undefined, sure: false } // classifier failed: keep the current class
+  }
+}
+
+// A subagent's brief: rules first (they only raise), then one Haiku sample; only a sure answer moves the agent,
+// and a move below the parent needs a second sample to agree.
+async function briefClass($: EngineInterface, s: State, text: string, parentModel: string): Promise<{ cls: string | null | undefined; sure: boolean; byRule?: true }> {
+  const byRule = classifyByRules(text, s.cfg)
+  if (byRule) return { cls: byRule, sure: true, byRule: true }
+  if (text.trim().length < 12) return { cls: undefined, sure: false }
+  const first = await haiku($, s, text)
+  if (!needsSecondSample(first.cls, first.sure, parentModel, s.cfg)) return first
+  const second = await haiku($, s, text)
+  return { cls: first.cls, sure: second.sure && second.cls === first.cls }
+}
+
+// Rules always run (free); Haiku for a new task of 12+ characters (follow-ups like "ok, do it" skip it).
+// The chat's first prompt asks Haiku 3 times at once: only an answer all three agree on may move the chat (firstModel).
+// -> a class; null = a new task with no class (back to the default); undefined = keep the current class.
+// strict (the chat runs on the router's own cheaper pick): a long prompt is read even when it opens like a follow-up
+// ("now rebuild the billing engine"), and a failed classifier counts as no class, so the chat goes back to the default.
+async function classify($: EngineInterface, s: State, text: string, isFirst = false, strict = false): Promise<string | null | undefined> {
+  const plan = classifyPlan(text, s.hasClassified, isFirst, strict, s.cfg)
+  if ('keep' in plan) return undefined
+  s.hasClassified = true
+  if ('rule' in plan) { s.sure = true; s.samples = []; return plan.rule }
+  const r = settleAnswers(await Promise.all(Array.from({ length: plan.ask }, () => haiku($, s, text))), strict)
+  s.samples = r.samples
+  s.sure = r.sure
+  return r.cls
+}
+
+// What the session check reads: the last 8 typed prompts and the newest todo list and plan, from the transcript.
+async function sessionWindow($: EngineInterface, s: State): Promise<SessionWindow> {
+  const msgs = ((await $.session.messages().catch(() => [])) as Array<SessionMessage>) ?? []
+  const prompts = msgs.filter(m => m.role === 'user' && m.text.trim() && !m.toolResults?.length).map(m => m.text.trim()).slice(-8)
+  let todos: string | undefined
+  let plan: string | undefined
+  for (const m of msgs) {
+    for (const t of m.toolUses ?? []) {
+      const items = t.input.todos ?? t.input.items // Claude Code's TodoWrite, the desktop app's task list
+      if (TODO_TOOLS.includes(t.tool) && Array.isArray(items)) todos = (items as Array<{ content?: string; status?: string }>).map(x => `[${x.status ?? '?'}] ${x.content ?? ''}`).join('\n')
+      if (t.tool === 'ExitPlanMode' && typeof t.input.plan === 'string') plan = t.input.plan
+    }
+  }
+  return { prompts, todos, plan, turns: s.turnCount, model: (await read($, chat)).model ?? (await $.session.model()), lastClass: s.lastClass }
+}
+
+// The session check: Haiku judges the work still ahead 3 times; adviseSwitch decides; the band offers it, never acts.
+// Quiet for 10 turns after an offer, and a declined trigger stays quiet until a different trigger fires.
+async function sessionCheck($: EngineInterface, s: State, trigger: string) {
+  if (s.cfg.mode === 'off' || s.headless || !s.routeModels || s.switching) return
+  if (s.turnCount < s.quietUntil || s.declined === trigger) return
+  if (s.declined && s.declined !== trigger) s.declined = null
+  const w = await sessionWindow($, s)
+  if (w.prompts.length < 2) return
+  const ask = () => $.model.complete({ model: s.cfg.classifier.model, effort: 'low', maxTokens: 40, timeoutMs: 8000, system: sessionCheckSystem, prompt: sessionCheckPrompt(w) }).catch(() => undefined)
+  const runs = await Promise.all([ask(), ask(), ask()])
+  for (const r of runs) if (r?.isAnswered && r.usage) await record($, s, s.cfg.classifier.model, r.usage, undefined, false)
+  const a = adviseSwitch(runs.map(r => (r?.isAnswered ? parseSessionCheck(r.text) : undefined)), w.model, trigger, s.cfg, s.lastClass)
+  if (!a || family(a.model) === family(w.model)) return
+  s.quietUntil = s.turnCount + 10
+  await update($, advice, () => a)
+}
+
+// The offer's buttons. Compact first so the new model re-reads a short summary, not the whole chat; or start fresh.
+async function switchChat($: EngineInterface, s: State, model: string, kind: 'compact' | 'fresh' | 'now') {
+  s.switching = true
+  try {
+    if (kind === 'compact') {
+      const r = await $.session.compact({ instructions: 'Keep the goal, the plan, open tasks, decisions made, file paths and the next step.' })
+      if ('skip' in r && r.skip) { $.ui.toast(`router: compaction was skipped (${r.skip}); the model stays`); return }
+      s.prev = NO_PREV // our own compaction skips our compact hook
+    }
+    if (kind === 'fresh') await $.command.run({ command: 'clear' })
+    await update($, chat, (c): ChatModel => ({ ...c, model, by: 'you' }))
+    await update($, advice, () => null)
+    await update($, hint, () => null)
+  } catch {
+    $.ui.toast('router: wait for the current turn to finish, then press it again')
+  } finally {
+    s.switching = false
+  }
+}
+
+// After a /clear the process goes on with a new chat: its ledger file, label, asks, first-prompt pick, subagent memory,
+// cache guard and session-check state start over. The on/off and effort/models switches stay. A switch button that
+// cleared keeps the model it is about to set.
+async function clearChat($: EngineInterface, s: State) {
+  Object.assign(s, {
+    session: '', label: '', lastLedgerTurn: '', stickyAsk: undefined, ask: undefined, seenPrompt: false, hasClassified: false,
+    hadClass: false, lastClass: null, lastHintModel: null, switchTurn: false, sure: false, samples: [], turnCount: 0, quietUntil: 0, declined: null,
+    prev: NO_PREV, lastContext: 0, rerouted: 0, lastRerouted: '',
+  })
+  for (const m of [s.briefs, s.siblings, s.agentEffort, s.agentType]) m.clear()
+  if (!s.switching) await update($, chat, (c): ChatModel => ({ ...c, model: null, by: null, effort: null }))
+  await update($, advice, () => null)
+  await update($, hint, () => null)
+  await update($, tally, () => EMPTY_TALLY)
+  await update($, log, (): Array<TurnLog> => [])
+  await update($, view, (v): RouterView => ({ ...v, lastClass: null, rerouted: 0, routedAgents: 0 }))
+}
+
+// Settings: the person picks this chat's model (no auto moves for the chat then), or Auto gives it back to the router.
+async function pickModel($: EngineInterface, v: string) {
+  if (v === 'auto') return update($, chat, (c): ChatModel => ({ ...c, model: null, by: null }))
+  await update($, chat, (c): ChatModel => ({ ...c, model: v, by: 'you' }))
+  await update($, advice, () => null)
+  await update($, hint, () => null)
+  const isNew = (await $.session.usage().catch(() => undefined))?.context.tokens === undefined
+  if (!isNew) $.ui.toast(`router: ${pretty(v)} from the next request; it reads this chat once without cache`)
+}
+
+// "Not now": the same trigger stays quiet until a different one fires.
+async function decline($: EngineInterface, s: State) {
+  s.declined = (await read($, advice))?.trigger ?? null
+  await update($, advice, () => null)
+}
+
+async function suggest($: EngineInterface, s: State, cls: string) {
+  const isFirst = !s.hadClass
+  s.hadClass = true
+  const prevRank = s.lastClass ? rank(s.cfg.classes[s.lastClass]?.model ?? s.cfg.main.model) : null
+  s.lastClass = cls
+  const tier = s.cfg.classes[cls]
+  if (!tier) return
+  if (AUTO.includes(cls) && s.sure) { await update($, hint, () => null); return } // the turn itself moves to that model: no tip
+  const current = (await read($, chat)).model ?? (await $.session.model()) // the chat's own pick, when it has one
+  const isShift = prevRank !== null && prevRank !== rank(tier.model)
+  if (family(tier.model) === family(current)) {
+    await update($, hint, () => null)
+  } else if ((isFirst || isShift) && rank(tier.model) > rank(current) && s.lastHintModel !== tier.model) {
+    // upgrades only: one prompt's class can't judge a whole session, so it never proposes a cheaper model for the chat (owner, 2026-11-18)
+    s.lastHintModel = tier.model
+    const h: Hint = { cls, model: tier.model, why: tier.why ?? '', current: family(current) }
+    await update($, hint, () => h)
+    await update($, isHidden, () => false)
+  }
+}
+
+async function status($: EngineInterface, s: State): Promise<string> {
+  const v = await read($, view)
+  const t = await read($, tally)
+  return [
+    `Router ${v.isOn ? 'on' : 'off'} · project ${s.project} · auto effort ${v.autoEffort ? 'on' : 'off'} · per-message effort ${v.perMessage}`,
+    `Routing: ${s.sources} · ${Object.keys(s.cfg.classes).length} classes · main ${s.cfg.main.model}/${s.cfg.main.effort}`,
+    `Last class: ${v.lastClass ?? '-'} · last effort: ${v.lastEffort ?? '-'} (picker ${s.baseEffort || '-'}) · turns re-routed: ${s.rerouted} · agents routed: ${v.routedAgents}`,
+    `This session (API-equivalent): $${t.actualUsd.toFixed(2)} vs $${t.baselineUsd.toFixed(2)} all-${s.cfg.main.model} → saved $${(t.baselineUsd - t.actualUsd).toFixed(2)}`,
+  ].join('\n')
+}
+
+// A person is here once a surface draws the session (the REPL, or the desktop app attaching later): route,
+// and bring back the widget if they kept it open last time. The band above the prompt needs nothing.
+async function seat($: EngineInterface, s: State) {
+  if (s.headless && (await $.session.surfaces()).length > 0) s.headless = false
+  if (s.headless || s.paneOpened) return
+  s.paneOpened = true
+  if ((await $.store.get('widget')) === true) await showWidget($, true)
+}
+
+// The widget is the pane in its small form: the person drags it into the session rail; no call can.
+async function showWidget($: EngineInterface, isShown: boolean) {
+  await $.store.set('widget', isShown)
+  await update($, isWidgetOpen, () => isShown)
+  if (isShown) void $.ui.open({ id: PANE, title: 'Router', placement: 'widget' })
+  else await $.ui.close({ id: PANE }).catch(() => undefined)
+}
+
+// Turns routing on or off in the global or the project routing.json, keeping the rest of the file as written.
+async function setScope($: EngineInterface, s: State, scope: 'global' | 'project', mode: 'on' | 'off') {
+  const path = scope === 'global' ? `${s.home}/.claude/routing.json` : `${s.root}/.claude/routing.json`
+  try {
+    const old = (await $.fs.exists(path)) ? String(await $.fs.read(path)) : undefined
+    await $.fs.write(path, withMode(old, mode))
+  } catch {
+    $.ui.toast(`router: could not update ${path} (is it valid JSON?)`)
+    return
+  }
+  s.defs.clear()
+  await load($, s)
+}
+
+async function openFile($: EngineInterface, file: string) {
+  const windows = (await $.env.get('OS')) === 'Windows_NT'
+  const mac = !windows && (await $.process.run(['uname'])).stdout.trim() === 'Darwin'
+  // explorer, not `cmd /c start`: cmd would read & ^ | in a user's path as commands
+  await $.process.run(windows ? ['explorer', file.replace(/\//g, '\\')] : [mac ? 'open' : 'xdg-open', file])
+}
+
+// Builds the Board fresh from every project's tally and opens it in the browser.
+async function openBoard($: EngineInterface, s: State) {
+  await flush($, s)
+  const buckets = bucketsOf(await serial(s, () => run($, s.home, BOARD)))
+  const file = `${s.home}/.claude/router/board.html`
+  const now = await $.clock.now()
+  const since = s.totals.since ?? now
+  const priceNote = ((await $.store.get('prices')) as PriceCheck | undefined)?.note
+  await $.fs.write(file, boardHtml(buckets, await read($, log), s.session, pretty(s.cfg.main.model), new Date(now).toLocaleString(), dayOf(since), await read($, tools), priceNote))
+  await openFile($, file)
+}
+
+// Everything the band, the widget and the Stats card show.
+async function facts($: EngineInterface, s: State) {
+  const v = await read($, view)
+  const turns = await read($, log)
+  const chat = await read($, tally)
+  const proj = s.totals.proj
+  const m = await read($, modes)
+  const main = [...turns].reverse().find(x => x.who === 'main')
+  const where = m.project === 'off' ? 'in this project' : m.global === 'off' && m.project !== 'on' ? 'everywhere' : 'in this chat'
+  const now = main ? `${pretty(main.model)} ${main.effort || ''}${main.asked ? ' (you asked)' : main.auto ? ' (auto)' : ''}`.trim() : `${pretty(s.cfg.main.model)} ${s.cfg.main.effort}`
+  const since = new Date(s.totals.since ?? (await $.clock.now())).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+  const chatMode: 'off' | 'effort' | 'models' | 'both' = !v.isOn ? 'off' : !v.autoEffort ? 'models' : v.routeModels ? 'both' : 'effort'
+  const cost = (await $.session.usage().catch(() => undefined))?.cost?.usd // the app's own total, /cost's, every request included
+  return { v, turns, chat, proj, m, main, where, now, since, chatMode, cost }
+}
+
+function cells(s: State, f: Awaited<ReturnType<typeof facts>>): Array<Cell> {
+  const base = pretty(s.cfg.main.model)
+  const picked = f.main?.picker && f.main.picker !== f.main.effort ? `you picked ${f.main.picker}` : `task: ${f.main?.cls ?? 'none yet'}`
+  return [
+    { label: 'Saved this chat', value: money(saved(f.chat)), sub: `${savedPct(f.chat)}% vs ${base}, turns it saw` },
+    { label: `${s.project}, all chats`, value: money(saved(f.proj)), sub: `${savedPct(f.proj)}% saved since ${f.since}` },
+    { label: 'Now', value: f.v.isOn ? f.now : 'Off', sub: !f.v.isOn ? `off ${f.where}` : f.chatMode === 'effort' ? 'effort only' : f.chatMode === 'models' ? 'models only' : picked },
+    { label: 'Spent this chat', value: money(f.cost ?? f.chat.actualUsd), sub: `re-routed ${f.v.rerouted} ${f.v.rerouted === 1 ? 'turn' : 'turns'}, ${f.v.routedAgents} ${f.v.routedAgents === 1 ? 'agent' : 'agents'}` },
+  ]
+}
+
+// Shared by /route and the dashboard's buttons.
+async function setMode($: EngineInterface, s: State, isOn: boolean) {
+  s.cfg = { ...s.cfg, mode: isOn ? 'on' : 'off' }
+  await update($, view, (v): RouterView => ({ ...v, isOn }))
+}
+
+async function setAutoEffort($: EngineInterface, s: State, isOn: boolean) {
+  s.cfg = { ...s.cfg, autoEffort: isOn }
+  await update($, view, (v): RouterView => ({ ...v, autoEffort: isOn }))
+}
+
+async function setRouteModels($: EngineInterface, s: State, isOn: boolean) {
+  s.routeModels = isOn
+  if (!isOn) await update($, hint, () => null)
+  await update($, view, (v): RouterView => ({ ...v, routeModels: isOn }))
+}
+
+// This chat's routing: off, effort only, models only, or both.
+async function setChat($: EngineInterface, s: State, mode: 'off' | 'effort' | 'models' | 'both') {
+  await setMode($, s, mode !== 'off')
+  if (mode === 'off') return
+  await setAutoEffort($, s, mode !== 'models')
+  await setRouteModels($, s, mode !== 'effort')
+}
+
+// Only two steps on the same model, with no compaction or /clear between them (both reset prev), say anything about effort.
+async function guardCache($: EngineInterface, s: State, sent: string, read0: number, now: number, model: string) {
+  if (s.prev.effort && s.prev.model === family(model) && sent !== s.prev.effort) {
+    if (isCacheBreak(s.prev.read, read0, now - s.prev.at)) {
+      await $.store.set('perMessage', 'unsupported')
+      await update($, view, (v): RouterView => ({ ...v, perMessage: 'unsupported' }))
+      $.ui.toast('router: an effort change broke the prompt cache; auto effort is off (/route effort retest to measure again)')
+    } else if (s.prev.read > 20000 && ++s.cleanChanges >= 2) {
+      await $.store.set('perMessage', 'ok')
+      await update($, view, (v): RouterView => ({ ...v, perMessage: 'ok' }))
+    }
+  }
+  s.prev = { effort: sent, read: read0, at: now, model: family(model) }
+  await update($, view, (v): RouterView => ({ ...v, lastEffort: sent || null }))
+}
+
+const where = async ($: EngineInterface, s: State) => (s.v ??= await env($))
+
+async function refreshTools($: EngineInterface, s: State, force = false) {
+  const v = await where($, s)
+  const t = await (force ? checkVersions($, v) : versions($, v)).catch(() => null)
+  await update($, tools, () => t)
+  const p = await checkPrices($, prices(), force).catch(() => undefined)
+  if (p) setPrices(p.table)
+  if (p?.note && Date.now() - p.at < 60_000) $.ui.toast(`router: ${p.note}`)
+}
+
+// The Settings buttons and /route update: run the update, then re-check versions and model lists.
+async function runUpdate($: EngineInterface, s: State, tool: Tool): Promise<string> {
+  await update($, updating, () => tool)
+  try {
+    const msg = await updateTool($, await where($, s), tool)
+    const t = ((await $.store.get('versions')) as Versions | undefined) ?? null
+    await update($, tools, () => t)
+    $.ui.toast(`router: ${msg}`.slice(0, 200))
+    return msg
+  } finally {
+    await update($, updating, () => null)
+  }
+}
+
+// Outside agents: always the newest model of the role's family, the owner's standard flags.
+async function answer($: EngineInterface, s: State, agent: AgentName, call: Call) {
+  const tier = s.cfg.outside[agent]?.[call.role]
+  if (!tier) return { deny: `router: no ${agent} role "${call.role}" in routing.json (roles: ${ROLES.join(', ')})` }
+  const v = await where($, s)
+  const a = agent === 'codex' ? await runCodex($, v, tier, call, await codexModels($, v)) : await runAgy($, tier, call, await agyModels($))
+  if ('error' in a) return { deny: `router: ${a.error}` }
+  await $.ui.status(`route: ${agent} ${call.role} · ${a.model} ${a.effort}`)
+  return { result: `[${agent} ${a.model}, effort ${a.effort}]\n\n${a.text}` }
+}
+
+export const register: Register = on => {
+  const s: State = {
+    cfg: BUILTIN, home: '', root: '', project: 'unknown', sources: 'built-in only', lastClass: null, lastHintModel: null,
+    hasClassified: false, hadClass: false, skipEffortThisTurn: false, headless: false, agentEffort: new Map(), defs: new Map(),
+    prev: NO_PREV, lastContext: 0, cleanChanges: 0, baseEffort: '', rerouted: 0, lastRerouted: '', agentType: new Map(), paneOpened: false,
+    session: 'session', label: '', lastLedgerTurn: '', pending: [], scheduled: false, warned: false, totals: { proj: EMPTY_TALLY, since: undefined }, routeModels: true, sure: false, switchTurn: false,
+    ask: undefined, stickyAsk: undefined, v: undefined, seenPrompt: false, samples: [], turnCount: 0, quietUntil: 0, declined: null, switching: false,
+    briefs: new Map(), siblings: new Map(), queue: Promise.resolve(),
+  }
+
+  on('session.start', async ($, e, next) => {
+    s.headless = !e.isInteractive // until a surface attaches: claude -p never gets one
+    await load($, s)
+    await $.command.register({
+      name: 'route',
+      description: 'Router mode: on | off | status | board | widget | effort on|off|retest | models on|off|refresh | update claude|codex|antigravity | reload',
+      argumentHint: 'on|off|status|board|widget|effort on|effort off|effort retest|models on|models off|models refresh|update codex|reload',
+    })
+    for (const [name, label] of [['codex', 'Codex (OpenAI)'], ['antigravity', 'Antigravity (Google Gemini)']] as const) {
+      const roles = ROLES.map(r => { const t = s.cfg.outside[name]?.[r]; return t ? `${r}: ${t.why ?? t.family}` : '' }).filter(Boolean).join('; ')
+      await $.tool.register({
+        name,
+        description: `Ask ${label} for a second opinion or a side job, read-only, on its newest model for the role. Use this instead of running \`${name === 'codex' ? 'codex exec' : 'agy -p'}\` in Bash. Roles: ${roles}. Returns the agent's answer as text.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            role: { type: 'string', enum: [...ROLES], description: 'Why you are asking: review, validate, deep, visual or quick' },
+            brief: { type: 'string', description: 'The full, self-contained brief: what to look at, what to answer, the output format' },
+            dir: { type: 'string', description: 'Absolute folder the agent works in (default: the session folder)' },
+            images: { type: 'array', items: { type: 'string' }, description: 'Absolute paths of images to attach' },
+          },
+          required: ['role', 'brief'],
+        },
+      }).catch(() => undefined)
+    }
+    await seat($, s)
+    // the weekly CLI check runs after the session is up, never holding the first prompt
+    $.clock.after(5_000, async () => { await refreshTools($, s) })
+    return next(e)
+  })
+
+  on('tool.call', { tool: 'mcp__router__codex' }, async ($, e) => answer($, s, 'codex', e as unknown as Call).catch((err: unknown) => ({ deny: `router: codex call failed: ${String(err).slice(0, 300)}` })))
+  on('tool.call', { tool: 'mcp__router__antigravity' }, async ($, e) => answer($, s, 'antigravity', e as unknown as Call).catch((err: unknown) => ({ deny: `router: antigravity call failed: ${String(err).slice(0, 300)}` })))
+
+  // Claude calling an outside agent in Bash gets pointed to the tool, which picks the model and the flags.
+  on('tool.call', { tool: 'Bash' }, async ($, e, next) => shield($, e, next, async go => {
+    const agent = s.cfg.mode === 'off' ? undefined : outsideCall(e.command)
+    if (!agent) return go(e)
+    return { deny: `router: call ${agent === 'codex' ? 'Codex' : 'Antigravity'} through the mcp__router__${agent} tool (role + brief), not in Bash. The tool runs the newest model for the role with the standard flags. Load it with ToolSearch if it is not listed.` }
+  }))
+
+  // Session-check triggers: a compaction, a finished task list, an approved plan (every 20 prompts: prompt.submit).
+  // Each runs after its event in the background, so nothing waits on Haiku.
+  // Only the main chat's own events count: not a subagent's compaction or task list, not a precompute, not a rejected plan.
+  on('session.compact', async ($, e, next) => shield($, e, next, async go => {
+    const r = await go(e)
+    if (e.agentId || e.trigger === 'precompute' || ('skip' in r && r.skip)) return r
+    s.prev = NO_PREV // the cache starts over: the next steps say nothing about effort
+    if (!s.switching) $.clock.after(500, async () => { await sessionCheck($, s, 'compact') })
+    return r
+  }))
+  on('tool.call', { tool: new RegExp(`^(${TODO_TOOLS.join('|')})$`) }, async ($, e, next) => shield($, e, next, async go => {
+    const r = await go(e)
+    const input = e as unknown as Record<string, unknown> // a tool's arguments arrive flat on the event
+    const list = (input.todos ?? input.items) as Array<{ status?: string }> | undefined
+    if (!e.agentId && !r.deny && !r.isError && Array.isArray(list) && list.length && list.every(x => x.status === 'completed')) $.clock.after(500, async () => { await sessionCheck($, s, 'todos-done') })
+    return r
+  }))
+  on('tool.call', { tool: 'ExitPlanMode' }, async ($, e, next) => shield($, e, next, async go => {
+    const r = await go(e)
+    if (!e.agentId && !r.deny && !r.isError) $.clock.after(500, async () => { await sessionCheck($, s, 'plan') })
+    return r
+  }))
+  // A /clear ends this chat with no session.start for the next: everything that belonged to it starts over.
+  // The waiting rows go first: the end has one short time limit for every hook, and a save cut off there is lost.
+  on('session.end', async ($, e, next) => {
+    await flush($, s)
+    const r = await next(e)
+    if (e.reason === 'clear') await clearChat($, s)
+    return r
+  })
+
+  // The desktop app hosts sessions through the SDK: they start with no surface, and the app attaches later.
+  on('session.attach', async ($, e, next) => {
+    const r = await next(e)
+    await seat($, s)
+    return r
+  })
+
+  on('command.run', { command: 'route' }, async ($, e) => {
+    const arg = e.args.trim().toLowerCase()
+    if (arg === 'on' || arg === 'off') {
+      await setMode($, s, arg === 'on')
+      return { text: `Router mode ${arg} for this session.` }
+    }
+    if (arg === 'effort on' || arg === 'effort off') {
+      await setAutoEffort($, s, arg === 'effort on')
+      return { text: `Auto effort ${s.cfg.autoEffort ? 'on' : 'off'} for this session.` }
+    }
+    if (arg === 'models on' || arg === 'models off') {
+      await setRouteModels($, s, arg === 'models on')
+      return { text: `Model routing ${s.routeModels ? 'on' : 'off'} for this session.` }
+    }
+    if (arg === 'effort retest') {
+      await $.store.delete('perMessage')
+      s.cleanChanges = 0
+      await update($, view, (v): RouterView => ({ ...v, perMessage: 'unknown' }))
+      return { text: 'Per-message effort status reset; the cache guard will measure it again.' }
+    }
+    if (arg === 'reload') {
+      s.defs.clear()
+      await load($, s)
+      return { text: `Routing reloaded for ${s.project}.` }
+    }
+    if (arg === 'widget' || arg === 'dash') {
+      await showWidget($, true)
+      return { text: 'Router widget opened. Drag it into the session rail to keep it there.' }
+    }
+    if (arg === 'board') {
+      await openBoard($, s)
+      return { text: 'Router board opened in the browser.' }
+    }
+    if (arg === 'models refresh') {
+      const v = await where($, s)
+      const [c, a] = await Promise.all([codexModels($, v, true), agyModels($, true)])
+      const list = (m: Record<string, { slug: string }>) => Object.values(m).map(x => x.slug).join(', ') || 'none found'
+      return { text: `Newest models now: Codex ${list(c)} · Antigravity ${list(a)} · Claude: haiku, sonnet, opus, fable (Claude Code resolves each to its newest).` }
+    }
+    const up = /^update (claude|codex|antigravity)$/.exec(arg)
+    if (up) return { text: await runUpdate($, s, up[1] as Tool) }
+    return { text: await status($, s) }
+  })
+
+  on('prompt.submit', async ($, e, next) => shield($, e, next, async go => {
+    await seat($, s) // in case the surface joined before this module (re)loaded
+    // the first prompt names the session on the Board (labelOf: 60 characters, secrets masked)
+    if (!e.command && !e.isMeta && !s.label) s.label = labelOf(e.text)
+    if (s.cfg.mode === 'off' || s.headless || e.command || e.isMeta) { s.switchTurn = false; return go(e) }
+    // typed over a running turn, the prompt joins that turn: it may raise the turn's routing, never lower it
+    const midTurn = e.turnId !== undefined
+    const asked = explicitAsk(e.text)
+    if (asked?.sticky) s.stickyAsk = asked
+    if (!midTurn || asked) s.ask = asked ?? s.stickyAsk
+    const ultra = /\bultrathink\b/i.test(e.text)
+    s.skipEffortThisTurn = midTurn ? s.skipEffortThisTurn || ultra : ultra
+    s.sure = false
+    s.samples = []
+    // the chat's first prompt: no answer yet, so no cache to lose by picking the chat's model now
+    const isFirst = !midTurn && !s.seenPrompt && (await $.session.usage().catch(() => undefined))?.context.tokens === undefined
+    s.seenPrompt = true
+    s.turnCount++
+    if (s.turnCount % 20 === 0) $.clock.after(500, async () => { await sessionCheck($, s, 'periodic') })
+    const chosen = await read($, chat)
+    const strict = chosen.by === 'auto' && Boolean(chosen.model) // the router's own cheap pick: re-check, and doubt means back to the default
+    const cls = await classify($, s, e.text, isFirst && !asked?.model && s.routeModels, strict)
+    if (midTurn && !(cls === null && strict) && !(cls && isHarder(cls, s.lastClass, s.cfg))) return go(e) // nothing harder: the turn keeps its routing
+    s.switchTurn = !midTurn && Boolean(cls) && s.sure // every prompt starts on the picked model; only a sure quick task moves its own turn
+    if (isFirst && !asked?.model && s.routeModels && !chosen.by) {
+      const m = firstModel(s.samples, await $.session.model(), s.cfg)
+      if (m) await update($, chat, (c): ChatModel => ({ ...c, model: m, by: 'auto' }))
+    } else if (chosen.by === 'auto' && chosen.model && cls !== undefined && (cls === null || rank(s.cfg.classes[cls]?.model ?? s.cfg.main.model) > rank(chosen.model))) {
+      // a new task the router's own pick may be too weak for (or one it can't place): back to the default; the chat is still short
+      await update($, chat, (c): ChatModel => ({ ...c, model: null, by: null }))
+    }
+    if (cls && s.routeModels) await suggest($, s, cls)
+    else if (cls) s.lastClass = cls // effort-only: the class still sets the effort, with no model tip
+    else if (cls === null) s.lastClass = null // a new task with no class: back to the default effort
+    await update($, view, (v): RouterView => ({ ...v, lastClass: s.lastClass }))
+    return go(e)
+  }))
+
+  on('agent.spawn', async ($, e, next) => shield($, e, next, async go => {
+    // every started run counts on the Board (a denied one does not); a resume is the same run going on
+    const named = async (x: typeof e, routed = false, respawned = false) => {
+      const r = await go(x)
+      if (r.agentId) s.agentType.set(r.agentId, e.subagentType) // for the dashboard log
+      if (!r.deny && !e.resume) await countAgent($, s, e.subagentType, routed, respawned)
+      return r
+    }
+    if (s.cfg.mode === 'off' || e.fork || e.resume) return named(e)
+    if (s.ask?.agents) return named({ ...e, model: s.ask.agents }) // the prompt asked for this model's subagents
+    // an exact version means its family: the newest model of it runs
+    if (e.model) return named(claudeFamily(e.model) ? { ...e, model: claudeFamily(e.model)! } : e) // explicit model on the call wins
+    const def: Def = e.subagentType.includes(':') ? { model: 'plugin' } : await definition($, s, e.subagentType)
+    if (def.model && claudeFamily(def.model)) return named({ ...e, model: claudeFamily(def.model)! }) // pinned to a version in frontmatter
+    if (def.model && def.model !== 'inherit') return named(e) // pinned to a family in frontmatter
+    // a type in the table by its entry; any other (general-purpose, claude, an unpinned agent of yours) by its brief
+    const inTable = Boolean(s.cfg.agents[e.subagentType])
+    const run = e.workflow?.runId
+    // a workflow may hide its script behind one placeholder prompt, so its agents are matched as siblings, never as repeats
+    const hash = run ? undefined : briefHash(e.prompt)
+    const before = hash ? s.briefs.get(hash) : undefined
+    const { model, tier } = spawnPick({
+      brief: inTable ? undefined : await briefClass($, s, e.prompt, e.parentModel),
+      tableTier: inTable ? agentTier(e.subagentType, s.cfg) : undefined,
+      rule: inTable ? classifyByRules(e.prompt, s.cfg) : undefined,
+      parentModel: e.parentModel,
+      personChose: (await read($, chat)).by === 'you',
+      prior: before,
+      sibling: run ? s.siblings.get(run) : undefined,
+    }, s.cfg)
+    const moved = s.routeModels && model !== family(e.parentModel)
+    const started = await named(moved ? { ...e, model } : e, moved, Boolean(before)) // effort-only, or the parent's model: as asked
+    if (started.deny) return started
+    if (run) s.siblings.set(run, model)
+    if (hash) s.briefs.set(hash, model)
+    if (started.agentId && tier?.effort && !def.effort) s.agentEffort.set(started.agentId, tier.effort)
+    if (moved || tier?.effort) await update($, view, (v): RouterView => ({ ...v, routedAgents: v.routedAgents + 1 }))
+    return started
+  }))
+
+  on('turn.step', async function* ($, e, next) {
+    let effort = e.effort
+    const probe = await $.env.get('ROUTER_PROBE_EFFORTS')
+    const isMain = e.agentId === undefined && !probe && s.cfg.mode !== 'off' && !s.headless
+    // the chat's own pick (the first prompt's, or the person's in Settings); the person's effort beats the class
+    const picked = isMain ? await read($, chat) : null
+    // a model or effort named in the prompt wins over everything, floors included
+    const ask = isMain ? s.ask : undefined
+    const asked = ask?.model && family(ask.model) !== family(e.model) ? ask.model : undefined
+    // then the chat's model, and under it a sure quick task's one-turn move, unless the person chose the model
+    const base = picked?.model && family(picked.model) !== family(e.model) ? picked.model : undefined
+    const model = asked ?? (e.agentId === undefined && !probe && picked?.by !== 'you' ? stepModel(s, base ?? e.model) ?? base : base)
+    if (e.agentId === undefined && e.effort !== undefined) {
+      if (probe) {
+        effort = probe as typeof effort // measurement mode (evals): force one effort on the main loop
+      } else {
+        const v = await read($, view)
+        if (!s.baseEffort) {
+          s.baseEffort = String(e.effort)
+          await update($, view, (x): RouterView => ({ ...x, pickerEffort: s.baseEffort }))
+        }
+        const target = turnEffort(s.lastClass, s.cfg, model ?? e.model) ?? s.cfg.main.effort
+        // the starting effort is the app picker's default and gets routed; one the person changes to later (/effort, ultrathink) is theirs
+        const isDefault = String(e.effort) === s.baseEffort
+        if (s.cfg.mode !== 'off' && !s.headless && s.cfg.autoEffort && isDefault && v.perMessage !== 'unsupported' && !s.skipEffortThisTurn && target) effort = target as typeof effort
+      }
+    } else if (e.agentId && e.effort !== undefined && s.agentEffort.has(e.agentId)) {
+      effort = s.agentEffort.get(e.agentId) as typeof effort
+    }
+    if (picked?.effort && e.effort !== undefined && !s.skipEffortThisTurn) effort = picked.effort as typeof effort
+    if (ask?.effort && e.effort !== undefined) effort = ask.effort as typeof effort
+    const changed = effort !== e.effort || model !== undefined
+    const result = yield* next(changed ? { ...e, effort, ...(model ? { model } : {}) } : e)
+    const u = result.usage
+    if (!u) return result
+    await record($, s, u.model, u, e.agentId === undefined ? e.turnId : undefined, true, e.agentId ? (s.agentType.get(e.agentId) ?? 'agent') : undefined)
+    const sent = String(effort ?? '')
+    // one log row per main-loop turn or subagent run, its steps summed
+    const id = e.agentId ?? e.turnId
+    const usd = costUsd(u.model, u)
+    const baseUsd = costUsd(s.cfg.main.model, u)
+    await update($, log, (rows): Array<TurnLog> => {
+      const i = rows.findIndex(r => r.id === id) // subagent steps interleave with the main loop's
+      const auto = Boolean(model) && !asked
+      const isAsked = Boolean(asked || ask?.effort)
+      if (i >= 0) return rows.map((r, k) => (k === i ? { ...r, usd: r.usd + usd, baseUsd: r.baseUsd + baseUsd, steps: r.steps + 1, effort: sent, model: family(u.model), auto, asked: isAsked } : r))
+      const who = e.agentId ? (s.agentType.get(e.agentId) ?? 'agent') : 'main'
+      const row: TurnLog = { id, who, cls: e.agentId ? '-' : (s.lastClass ?? 'default'), model: family(u.model), effort: sent, picker: String(e.effort ?? ''), usd, baseUsd, steps: 1, auto, asked: isAsked }
+      return [...rows, row].slice(-30)
+    })
+    if (e.agentId === undefined) {
+      const now = await $.clock.now()
+      s.lastContext = u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens
+      const probeFile = await $.env.get('ROUTER_PROBE_LOG')
+      if (probeFile) await probeLog($, probeFile, { at: now, index: e.index, effort: sent, model: u.model, read: u.cache_read_input_tokens, write: u.cache_creation_input_tokens, input: u.input_tokens, output: u.output_tokens })
+      // another model has its own prompt cache: guardCache compares only steps on the same model
+      if (!probe) await guardCache($, s, sent, u.cache_read_input_tokens, now, u.model)
+      if (!probe && !s.headless && s.cfg.mode !== 'off') {
+        if ((sent !== String(e.effort) || model) && s.lastRerouted !== e.turnId) {
+          s.lastRerouted = e.turnId
+          s.rerouted++
+          await update($, view, (x): RouterView => ({ ...x, rerouted: s.rerouted }))
+        }
+        const t = await read($, tally)
+        await $.ui.status(`route: ${s.lastClass ?? 'default'}${model ? ` · ${pretty(model)} ${asked ? '(you asked)' : '(auto)'}` : ''} · effort ${sent}${ask?.effort ? ' (you asked)' : sent !== String(e.effort) ? ` (picker ${e.effort})` : ''} · saved ~${money(t.baselineUsd - t.actualUsd)}`)
+      }
+    }
+    return result
+  })
+
+  // However the widget closes (its close mark, the app, an unload), the Settings switch and the next session follow.
+  on('ui.close', async ($, e, next) => shield($, e, next, async go => {
+    const r = await go(e)
+    if (e.id === PANE && e.origin.kind !== 'plugin') {
+      await update($, isWidgetOpen, () => false)
+      if (e.origin.kind === 'person') await $.store.set('widget', false)
+    }
+    return r
+  }))
+
+  // The band: one row above the prompt, in the style of Claude's own, stacked with other mods' bands.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (e.props.hasSurvey) return next(e)
+    const below = await next(e).catch(() => undefined) // other mods share this slot: theirs draw below ours
+    const el = $.ui.resolve(e)
+    const { Box, Text, Button } = el
+    const Svg = 'Svg' in el ? el.Svg : undefined // text glyphs break in the desktop's proportional font; an SVG draws real columns
+    const stack = (mine: NonNullable<typeof below>) => (below ? <Box flexDirection="column">{mine}{below}</Box> : mine)
+    const f = await facts($, s)
+    const open = await read($, panel)
+    const tip = await read($, hint)
+    const isHint = tip !== null && !(await read($, isHidden)) && f.v.isOn
+    const flip = (p: 'stats' | 'settings') => () => update($, panel, x => (x === p ? 'none' : p))
+    const board = () => openBoard($, s).catch(() => $.ui.toast('router: could not open the board'))
+    const picked = await read($, chat)
+    const undo = () => update($, chat, (c): ChatModel => ({ ...c, model: null, by: 'you' })) // back to the default; auto stays off for this chat
+
+    const row = (
+      <Box key="router-row" flexDirection="row" alignItems="center" gap={2} width={e.props.bodyColumns}>
+        <Button key="router-dot" plain onPress={flip('stats')}>
+          <Text color={f.v.isOn ? 'success' : 'inactive'}>●</Text> Router
+        </Button>
+        {f.v.isOn && <Text wrap="truncate-end">{f.now}</Text>}
+        {f.v.isOn && picked.by === 'auto' && picked.model && <Button key="router-chat-undo" plain dimColor label={`Picked ${pretty(picked.model)} for this chat · Undo`} onPress={undo} />}
+        {f.v.isOn && <Text dimColor wrap="truncate-end">saved {money(saved(f.chat))}</Text>}
+        {!f.v.isOn && <Text dimColor wrap="truncate-end">off {f.where}</Text>}
+        {open !== 'settings' && Object.values((await read($, tools))?.tools ?? {}).some(x => x.isBehind) && <Button key="router-update-tip" plain label="Update available" onPress={flip('settings')} />}
+        <Box flexGrow={1} />
+        <Button key="router-board" plain label="Board" onPress={board} />
+        <Button key="router-stats" plain label={open === 'stats' ? 'Hide stats' : 'Stats'} onPress={flip('stats')} />
+        <Button key="router-settings" plain label={open === 'settings' ? 'Done' : 'Settings'} onPress={flip('settings')} />
+      </Box>
+    )
+    // An offer gets its own row, so the model and the savings above never truncate; buttons do the switch.
+    const offer = f.v.isOn ? await read($, advice) : null
+    const isNew = (await $.session.usage().catch(() => undefined))?.context.tokens === undefined // nothing answered yet: no cache to lose
+    const offerRow = offer
+      ? (
+          <Box key="router-offer" flexDirection="row" alignItems="center" gap={2} width={e.props.bodyColumns}>
+            <Text color="warning" wrap="wrap">{offer.action === 'up' ? `The work ahead looks harder: ${pretty(offer.model)} fits it better.` : `The work ahead looks lighter: ${pretty(offer.model)} can do it at the same quality.`}</Text>
+            <Button key="router-offer-compact" {...(offer.kind === 'compact' ? { variant: 'primary' as const } : { plain: true as const })} label={`Compact and switch to ${pretty(offer.model)}`} onPress={() => switchChat($, s, offer.model, 'compact')} />
+            <Button key="router-offer-fresh" {...(offer.kind === 'fresh' ? { variant: 'primary' as const } : { plain: true as const })} label={`Fresh start on ${pretty(offer.model)}`} onPress={() => switchChat($, s, offer.model, 'fresh')} />
+            <Button key="router-offer-no" plain dimColor label="Not now" onPress={() => decline($, s)} />
+          </Box>
+        )
+      : isHint && tip
+        ? (
+            <Box key="router-offer" flexDirection="row" alignItems="center" gap={2} width={e.props.bodyColumns}>
+              <Text color="warning" wrap="wrap">{pretty(tip.model)} fits {tip.cls} better.</Text>
+              <Button key="router-tip-switch" variant="primary" label={isNew ? `Switch to ${pretty(tip.model)}` : `Compact and switch to ${pretty(tip.model)}`} onPress={() => switchChat($, s, tip.model, isNew ? 'now' : 'compact')} />
+              <Button key="router-hide" plain dimColor label="Dismiss" onPress={() => update($, isHidden, () => true)} />
+            </Box>
+          )
+        : null
+    const head = offerRow ? <Box key="router-head" flexDirection="column" width={e.props.bodyColumns}>{row}{offerRow}</Box> : row
+    if (open === 'none') return stack(head)
+
+    if (open === 'stats') {
+      const c = cells(s, f)
+      const card = Svg
+        ? <Svg key="router-card" source={statsSvg(c, f.turns, 720, 4, pretty(s.cfg.main.model))} alt={c.map(x => `${x.label} ${x.value}, ${x.sub}`).join('; ')} />
+        : (
+            <Box key="router-card" flexDirection="row" gap={2}>
+              {c.map(x => (
+                <Box key={x.label} flexDirection="column" width={Math.max(14, Math.floor(e.props.bodyColumns / 4) - 2)}>
+                  <Text dimColor wrap="truncate-end">{x.label}</Text>
+                  <Text bold wrap="truncate-end">{x.value}</Text>
+                  <Text dimColor wrap="truncate-end">{x.sub}</Text>
+                </Box>
+              ))}
+            </Box>
+          )
+      return stack(<Box flexDirection="column" gap={1} width={e.props.bodyColumns}>{head}{card}</Box>)
+    }
+
+    // Settings: plain switches; the chosen side of each is the filled button.
+    const seg = <V extends string>(key: string, label: string, options: Array<[V, string]>, value: V, set: (v: V) => unknown) => (
+      <Box key={key} flexDirection="row" alignItems="center" gap={1}>
+        <Text dimColor>{label}</Text>
+        {options.map(([v, text]) => (
+          <Button key={`${key}-${v}`} label={text} {...(v === value ? { variant: 'primary' as const } : { plain: true as const, dimColor: true })} onPress={() => set(v)} />
+        ))}
+      </Box>
+    )
+    const ONOFF: Array<['on' | 'off', string]> = [['on', 'On'], ['off', 'Off']]
+    const globalOn = f.m.global !== 'off'
+    const projectOn = f.m.project === null ? globalOn : f.m.project !== 'off'
+    const widgetOpen = await read($, isWidgetOpen)
+    const t = await read($, tools)
+    const busy = await read($, updating)
+    const recheck = () => refreshTools($, s, true)
+    const cli = (k: Tool) => {
+      const x = t?.tools[k]
+      return (
+        <Box key={`router-cli-${k}`} flexDirection="row" alignItems="center" gap={1}>
+          <Text>{TOOL_NAMES[k]} {x?.have ?? (t ? 'not found' : '…')}</Text>
+          {busy === k
+            ? <Text dimColor>updating…</Text>
+            : x?.isBehind
+              ? <Button key={`router-up-${k}`} variant="primary" label={`Update to ${x.latest}`} onPress={() => runUpdate($, s, k)} />
+              : k === 'antigravity' && x?.have
+                ? <Button key={`router-up-${k}`} plain dimColor label="Check for update" onPress={() => runUpdate($, s, k)} />
+                : <Text dimColor>{x?.latest ? 'latest' : ''}</Text>}
+        </Box>
+      )
+    }
+    const settings = (
+      <Box key="router-settings-box" flexDirection="column" gap={1}>
+        <Box flexDirection="row" alignItems="center" gap={3}>
+          {seg('router-global', 'Everywhere', ONOFF, globalOn ? 'on' : 'off', v => setScope($, s, 'global', v))}
+          {f.m.isProject && seg('router-project', `In ${s.project}`, ONOFF, projectOn ? 'on' : 'off', v => setScope($, s, 'project', v))}
+          <Box flexGrow={1} />
+          <Button key="router-widget" plain label={widgetOpen ? 'Hide widget' : 'Show widget'} onPress={() => showWidget($, !widgetOpen)} />
+          <Button key="router-rules" plain label="Edit rules" onPress={() => openFile($, `${s.home}/.claude/routing.json`).catch(() => $.ui.toast('router: could not open routing.json'))} />
+        </Box>
+        {seg('router-chat', 'This chat', [['off', 'Nothing'], ['effort', 'Effort'], ['models', 'Models'], ['both', 'Effort and models']], f.chatMode, v => setChat($, s, v))}
+        {seg('router-model', 'Model', [['auto', 'Auto'], ['haiku', 'Haiku'], ['sonnet', 'Sonnet'], ['opus', 'Opus'], ['fable', 'Fable']], picked.by === 'you' ? family(picked.model ?? s.cfg.main.model) : 'auto', v => pickModel($, v))}
+        {seg('router-effort', 'Effort', [['auto', 'Auto'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra high'], ['max', 'Max']], picked.effort ?? 'auto', v => update($, chat, (c): ChatModel => ({ ...c, effort: v === 'auto' ? null : v })))}
+        <Box key="router-clis" flexDirection="row" alignItems="center" gap={3}>
+          <Text dimColor>Newest models need current tools</Text>
+          {cli('claude')}
+          {cli('codex')}
+          {cli('antigravity')}
+          <Box flexGrow={1} />
+          <Button key="router-recheck" plain dimColor label="Re-check" onPress={recheck} />
+        </Box>
+        <Text dimColor wrap="wrap">
+          {f.m.isProject ? `The ${s.project} switch wins over Everywhere; both are saved in routing.json. ` : 'Saved in ~/.claude/routing.json. '}This chat's choices last until the session ends. Effort: each turn's effort follows the task. Models: subagents get the model that fits, and a tip suggests a model switch. A Model or Effort you pick here wins for this chat; Auto gives it back to the router.
+        </Text>
+      </Box>
+    )
+    return stack(<Box flexDirection="column" gap={1} width={e.props.bodyColumns}>{head}{settings}</Box>)
+  }).catch(($, e, next) => next(e))
+
+  // The widget: a glance in the session rail (clicks may not reach it there); expanded, the Stats card.
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    const el = $.ui.resolve(e)
+    const { Box, Button, Text } = el
+    const Svg = 'Svg' in el ? el.Svg : undefined
+    const f = await facts($, s)
+    const line = (key: string, label: string, value: string) => (
+      <Box key={key} flexDirection="row" justifyContent="space-between" gap={2}>
+        <Text>{label}</Text>
+        <Text dimColor wrap="truncate-end">{value}</Text>
+      </Box>
+    )
+    if (e.props.placement === 'widget') {
+      return (
+        <Box flexDirection="column" gap={1}>
+          {line('w-now', 'Routing', f.v.isOn ? f.now : `off ${f.where}`)}
+          {line('w-saved', 'Saved this chat', `${money(saved(f.chat))} · ${savedPct(f.chat)}%`)}
+          {Svg && f.turns.length > 1 && <Svg key="w-bars" source={barsSvg(f.turns, 220, 24)} alt={`Cost of the last ${f.turns.length} turns`} />}
+        </Box>
+      )
+    }
+    const c = cells(s, f)
+    return (
+      <Box flexDirection="column" gap={1}>
+        {Svg
+          ? <Svg key="p-card" source={statsSvg(c, f.turns, 360, 2, pretty(s.cfg.main.model))} alt={c.map(x => `${x.label} ${x.value}, ${x.sub}`).join('; ')} />
+          : c.map(x => line(`p-${x.label}`, x.label, `${x.value} · ${x.sub}`))}
+        <Box flexDirection="row" gap={2}>
+          <Button key="p-board" plain label="Open board" onPress={() => openBoard($, s).catch(() => $.ui.toast('router: could not open the board'))} />
+        </Box>
+      </Box>
+    )
+  })
+}
+

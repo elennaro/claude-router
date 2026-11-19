@@ -1,0 +1,119 @@
+# Router evals
+
+Four suites test the router's decisions against labeled cases, through `claude -p` on a subscription. All of them run the plugin's own code (`router/hooks/policy.ts`) on its **built-in** config. To test a candidate config, set `EVAL_ROUTING=<file>`; the machine's own `~/.claude/routing.json` is never read.
+
+| Suite | What it decides | Cases | Run (from `evals/`) |
+|---|---|---|---|
+| Per prompt | the turn's class, model and effort | `cases/` (31 categories), measured labels in `labels-measured/` | `node run-classifier.mjs`, `node measure.mjs` (quality of routed-down tiers), `node report.mjs` |
+| Session check | offer a switch up or down mid-session | `session/cases/` (64 cases, 10 sequences) | `node session/run.mjs`, `node session/report.mjs` |
+| Subagents | a subagent's model and effort from its type or brief | `subagents/cases.jsonl` (40 briefs) | `node subagents/run.mjs`, `node subagents/report.mjs` |
+| Tool loop | whether Haiku can do its jobs: find, count, run and report, and a tiny self-contained edit | `toolloop/tasks.mjs` (12 tasks on a seeded synthetic repo, real tools, exact checks, no judge) | `node toolloop/checks.test.mjs`, `node toolloop/run.mjs`, `node toolloop/report.mjs` |
+
+Haiku writes code only as a self-contained edit of about 10 lines that nothing else uses (a private helper, a one-off script). Renames and any change that reaches other files are `scoped-code`. The tool-loop suite keeps one such change (`rename`) as a control.
+
+Labels: the **needed tier** is the cheapest model and effort that keeps top quality. Per prompt, it is measured by replay (`measure.mjs`): candidate answers judged against Opus medium in both orders. A deciding verdict (a cheaper tier worse, Opus high better) is confirmed on a second, independent answer and stands only if the repeat agrees: one judgment flips about 19% of the time, two agreeing ones by chance about 4%. The session and subagent labels come from two labelers (Opus high, Fable high). Where they disagree, Fable's label wins, except production-code investigation, where the stronger label wins. Spend is capped by `EVAL_CAP_USD` (ledger: `work/spend.jsonl`).
+
+## Acceptance criteria (release gates)
+
+A release ships only when every **hard** gate passes on the built-in config. **Targets** are where the cost win is: they are tracked every run, and a miss is reported but does not block a release.
+
+### Engineering (hard)
+
+| Gate | Pass |
+|---|---|
+| `claude plugin test router` | all pass |
+| `node router/tests/db.check.mjs` | ok |
+| `claude plugin validate router` | passes |
+| Mutation check on changed logic (break it, a test fails) | every mutation caught |
+| Clean install from the marketplace into an empty config | loads, routes a prompt, writes `router.db` |
+| Anonymity: term scan of every published file, model audit of every eval case | 0 hits, all cases pass |
+
+### Per prompt (measured labels, 3 runs per case)
+
+| Gate | Meaning | Pass | |
+|---|---|---|---|
+| Floor downgrades | a floor class routed below the main default | 0 | hard |
+| Production-code investigation below Opus high | debugging, code review, security review of production code | 0 | hard |
+| False cheap | any of 3 runs below the needed tier | <= 3% | hard |
+| Quality kept, noise-relative | on cases routed below Opus medium, from their measured replays: judged "worse" rate <= the noise rate + 5 points (noise: Opus medium vs itself, 19% worse), and worse minus better <= +5 points | both | hard |
+| Unstable | runs disagree on the tier | <= 15% | target |
+| False dear | 2 of 3 runs dearer than needed | <= 30% | target |
+| Cost | spend vs all-Opus-medium on the same cases | report | target |
+
+Tier match is reported, not gated: with labels this noisy (one judge verdict flips about 20% of the time), an exact-match gate measures the labels more than the router.
+
+### Session check
+
+| Gate | Meaning | Pass | |
+|---|---|---|---|
+| False downgrade | an offer below the gold model | <= 3% | hard |
+| Flips | A->B->A in the router's path beyond gold's own | 0 | hard |
+| Proposal precision | offers with the gold action and model / all offers | >= 85% | hard |
+| Missed upgrade | gold says up, no up offered | <= 20% | hard |
+| Needless offers on "stay" cases | an offer where gold says stay | <= 5% | target |
+
+Missed upgrade was 10% in the first draft. It is set to 20% because an upgrade offer needs 2 of 3 Haiku samples to agree, and one case is about 1.2 points.
+
+### Subagents
+
+| Gate | Meaning | Pass | |
+|---|---|---|---|
+| False cheap | any of 3 runs below the needed tier (Fable needs count as Opus at that effort: subagents have no Fable button) | <= 3% | hard |
+| Production-code investigation below Opus high | as above | 0 | hard |
+| Unstable | briefs whose runs got different tiers | <= 15% | target |
+| Moved | runs that left the parent's model | report | target |
+
+### Tool loop
+
+| Gate | Meaning | Pass | |
+|---|---|---|---|
+| Haiku on explore tasks | pass rate within 5 points of Opus medium (3 runs per task) | yes | hard: else `explore` leaves Haiku |
+| Haiku on tiny edits | pass rate within 5 points of Opus medium | yes | hard: else `mechanical` code leaves Haiku |
+| Rename control | pass rates per tier | report | target |
+
+## The store and the fast loop
+
+Every model output an eval has paid for (answers, judge verdicts, Jev and Haiku replies) lives in one SQLite file,
+`work/eval.db` (gitignored). A run reads it first and asks a model only for what is missing; each output is paid once.
+
+```
+node fast.mjs               # all suites replayed from the store, every gate, $0 (EVAL_OFFLINE=1: a miss fails, never pays)
+```
+
+Free to change and re-score with `fast.mjs`: the class table's models and efforts, rules, thresholds, effort logic,
+report gates. Paid once, then free: a change to the classifier's words or labels (run the suite without EVAL_OFFLINE;
+only the changed prompts are asked), and new cases.
+
+An offline miss stops the run, like the spend cap, so `fast.mjs` fails and names the missing call instead of
+scoring it as "the classifier failed". The usual cause: a policy change that alters what a model is shown. The
+session check's prompt includes the last class, so a change to how classes are read needs a small paid session run.
+
+The measurements replay too. `EVAL_OFFLINE=1 MEASURE_OUT=<file> SAMPLES=3 node measure-class.mjs` rebuilds the
+per-class judgments from the store (checked: 663 of 663 identical, $0), and `EVAL_OFFLINE=1 node calibrate/run.mjs`
+rebuilds the judge calibration. So a new judge, threshold or scoring rule over the same answers costs only its own
+new calls. Two things do not replay: tool-loop runs (a run edits a throwaway repo, so only its checked result in
+`results/toolloop.jsonl` is kept; changing a check means re-running), and the first per-case Fable labels, made before
+the store existed (only their verdicts survive). Neither feeds a hard gate now.
+
+Quality is scored from `results/class-measure.jsonl` (`measure-class.mjs`): each case's tiers judged against Opus
+medium, with a null pair (Opus medium against itself) showing what "no difference" looks like. The router's pick on a
+case gets that tier's score on the case, else the tier's pooled score.
+
+## Judge calibration
+
+The judges are checked on gold pairs where the better answer is known without asking a model (public data only, so
+outside services such as Jev may see it): JudgeBench, CodeJudgeBench (codegen, repair, test writing), human-rated Java
+readability, idiomatic Kotlin against a Java-style rewrite, and Kotlin HumanEval answers with one hidden bug that the
+task's own tests catch (needs `kotlinc` and `java`). Every judge call is cached on disk, so a re-run is free.
+
+```
+node calibrate/gold.mjs      # public pairs -> work/gold/pairs.jsonl
+node calibrate/kotlin.mjs    # Kotlin test-checked pairs (kotlinc), added to the same file
+node calibrate/run.mjs       # production judge, Opus alone, Jev, and the Jev cascade -> results/calibration.md
+```
+
+Jev needs `TYPESAFE_API_KEY` in the environment.
+
+## Reading the numbers
+
+One case is about 1-1.5 points. A gate missed by less than one case is re-run once before it counts as a fail. Reports list every failing case with its runs, so a fix can go after the cause, not the number.

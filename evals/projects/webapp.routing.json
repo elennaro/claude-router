@@ -1,0 +1,6 @@
+{
+  "$comment": "Fake web-app project (TypeScript backend and frontend).",
+  "keywords": {
+    "architecture": ["bounded context", "aggregate design"]
+  }
+}

@@ -1,0 +1,4 @@
+{"id":"engineering-01","need":{"model":"opus","effort":"high"},"steps":[{"cand":"opus-high","ref":"opus-medium","verdict":"better","by":"fable","scores":[1,1]}]}
+{"id":"engineering-02","need":{"model":"opus","effort":"high"},"steps":[{"cand":"opus-high","ref":"opus-medium","verdict":"better","by":"fable","scores":[1,1]}]}
+{"id":"engineering-03","need":{"model":"opus","effort":"high"},"steps":[{"cand":"opus-high","ref":"opus-medium","verdict":"better","by":"fable","scores":[1,1]}]}
+{"id":"engineering-04","need":{"model":"opus","effort":"high"},"steps":[{"cand":"opus-high","ref":"opus-medium","verdict":"better","by":"fable","scores":[1,1]}]}

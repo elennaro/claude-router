@@ -1,0 +1,9 @@
+{"id":"very-short-01","category":"very-short","prompt":"hi","project":"plain","lang":"en","shape":"synthetic"}
+{"id":"very-short-02","category":"very-short","prompt":"спасибо, всё работает","project":"plain","lang":"ru","shape":"from-real"}
+{"id":"very-short-03","category":"very-short","prompt":"сколько времени в Токио","project":"plain","lang":"ru","shape":"synthetic"}
+{"id":"very-short-04","category":"very-short","prompt":"run the tests","project":"webapp","lang":"en","shape":"synthetic"}
+{"id":"very-short-05","category":"very-short","prompt":"задеплой на staging","project":"webapp","lang":"mixed","shape":"synthetic"}
+{"id":"very-short-06","category":"very-short","prompt":"закоммить и запушь","project":"webapp","lang":"ru","shape":"from-real"}
+{"id":"very-short-07","category":"very-short","prompt":"what's our task today?","project":"brand","lang":"en","shape":"from-real"}
+{"id":"very-short-08","category":"very-short","prompt":"fix lint in utils.ts","project":"webapp","lang":"en","shape":"synthetic","fixtures":[{"path":"src/utils.ts","content":"import { format } from 'date-fns'\nimport { useState } from 'react'\n\nvar DEFAULT_LOCALE = 'en'\n\nexport function formatPrice(amount: any, currency = 'EUR') {\n  if (amount == null) return ''\n  let value = Number(amount)\n  return new Intl.NumberFormat(DEFAULT_LOCALE, { style: 'currency', currency }).format(value)\n}\n\nexport function shortDate(d: Date) {\n  return format(d, 'dd.MM.yyyy')\n}\n\nexport function slugify(s: string) {\n  return s.toLowerCase().trim().replace(/\\s+/g, '-').replace(/[^a-z0-9-]/g, '')\n}\n\nexport const sleep = (ms) => new Promise(r => setTimeout(r, ms))\n"}]}
+{"id":"very-short-09","category":"very-short","prompt":"5 хуков для рилса","project":"studio","lang":"ru","shape":"synthetic"}

@@ -1,0 +1,38 @@
+{
+  "$comment": "Eval categories: one per main-chat task class, plus tricky groups. 'cover' says what the 8-10 cases must span. Cases are written fresh and anonymized; real prompts only teach their shape.",
+  "classes": {
+    "mechanical": { "cover": "translate, reformat, convert units/format, split or shorten given text, rename in given text, fix punctuation; EN and RU; short and long inputs" },
+    "explore": { "cover": "web lookups (weather, prices, scores, release versions, opening hours), find a file or symbol, list things in a repo, read logs, summarize a short file; questions and commands" },
+    "brainstorm": { "cover": "titles, hooks, angles, names, episode ideas, taglines; creative and product contexts" },
+    "scoped-code": { "cover": "small well-specified code changes: fix a named bug, rename across a module, add a flag, implement a small spec'd function, typo in code" },
+    "docs": { "cover": "everyday docs, README edits, slide outlines, spreadsheets, meeting notes, internal how-tos" },
+    "image-prompt": { "cover": "prompts and settings for local image or video generation (ComfyUI-style workflows, LoRA, ControlNet, negative prompts), editing such prompts" },
+    "engineering": { "cover": "everyday multi-file engineering: features across modules, integration work, refactors of moderate size, performance fixes, working through a spec" },
+    "vision": { "cover": "look at a screenshot or image, compare two renders, check a UI against a mockup, drive a browser or desktop app" },
+    "final-copy": { "cover": "words the audience reads or hears: social posts, video voice-over scripts, landing page copy, newsletters, final episode scripts; EN and RU" },
+    "structure": { "cover": "episode arcs, beat sheets, long-form outlines, chapter structure, course outlines, cross-section consistency of a long document" },
+    "critique": { "cover": "judge creative or visual work: review a script, critique an image set, QC a deck, judge which of several drafts is best; not code review" },
+    "brand-visual": { "cover": "brand-book pages, logo usage, scene and composition direction, key visuals, visual identity decisions" },
+    "architecture": { "cover": "system design, ADRs, technical plans, data model design, cross-module boundaries, choosing between technologies" },
+    "rare-hard": { "cover": "migrations, major rewrites, deep multi-source research, leading many subagents on a long job" },
+    "learn-explain": { "cover": "explain a concept, how a library works, difference between two approaches, teach me X; no changes requested" },
+    "data-analysis": { "cover": "analyze a CSV or spreadsheet, compute metrics, write SQL, find trends in numbers, build a chart from data" },
+    "test-writing": { "cover": "write unit or integration tests for existing code, raise coverage, add a regression test for a described bug" },
+    "devops-config": { "cover": "CI pipelines, Dockerfiles, deploy scripts, env config, package manager and tool setup, scheduled jobs" },
+    "long-read": { "cover": "read a long transcript, report, PDF, chat export or log and pull out decisions, risks or a summary" },
+    "debugging": { "cover": "find why something fails, crashes, hangs or gives wrong output; stack traces, flaky tests, works-on-my-machine" },
+    "code-review": { "cover": "review a PR, diff, branch or commit for bugs, security and missing cases" },
+    "math": { "cover": "proofs, probability, statistics questions, derivations, quantitative estimates with reasoning" },
+    "security-review": { "cover": "security review of code or config, threat model, injection and auth risks, secrets handling" }
+  },
+  "groups": {
+    "follow-up": { "cover": "short continuations after a prior task ('ok do it', 'and the tests too', 'make it shorter', 'давай'); each case gives the prior task in history; the needed tier is the prior task's" },
+    "russian": { "cover": "tasks written in Russian or mixed Russian/English across dev and creative work, from trivial to hard" },
+    "very-short": { "cover": "prompts under 25 characters that are new tasks or chat: 'hi', 'thanks', 'what time is it in Tokyo', 'run the tests', 'deploy'" },
+    "mixed-task": { "cover": "one prompt with two kinds of work ('find the bug and fix it', 'research X then write the post'); the needed tier is the harder part's" },
+    "misleading-words": { "cover": "trigger words in the wrong sense: 'review my outline' (creative), 'translate the architecture diagram into a checklist', 'find a better word', 'test this headline'" },
+    "project-specific": { "cover": "the same words meaning different things per project type (webapp, studio, brand); each case names its project; use project keywords from evals/projects" },
+    "explicit-ask": { "cover": "the prompt names a model or effort ('use haiku for this', 'think hard', 'do it with opus', 'на sonnet', 'from now on use sonnet', 'low effort'); the needed tier is exactly what was asked" },
+    "general-chat": { "cover": "greetings, thanks, meta questions about the assistant, small talk, quick opinions" }
+  }
+}

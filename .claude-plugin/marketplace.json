@@ -1,0 +1,14 @@
+{
+  "name": "claude-router",
+  "description": "Router mode for Claude Code: the right model and effort for every turn, subagent and outside-agent call.",
+  "owner": {
+    "name": "claude-router"
+  },
+  "plugins": [
+    {
+      "name": "router",
+      "source": "./router",
+      "description": "Routes each turn, subagent and outside-agent call (Codex, Antigravity) to the model family and effort its work needs, measured against always running Opus medium; always the newest model, never a pinned version."
+    }
+  ]
+}
