@@ -362,8 +362,10 @@ export function turnEffort(cls: string | null, cfg: Config, onModel?: string): s
   if (!cls) return undefined
   const t = cfg.classes[cls]
   if (!t?.effort || (onModel && rank(t.model) < rank(onModel))) return undefined
-  if (t.floor && effortRank(t.effort) < effortRank(cfg.main.effort)) return cfg.main.effort
-  return t.effort
+  const effort = t.floor && effortRank(t.effort) < effortRank(cfg.main.effort) ? cfg.main.effort : t.effort
+  // owner 2026-11-21: the class efforts were set for Opus; Fable does the same work one step lower (Opus high ->
+  // Fable medium, Opus xhigh -> Fable high). Medium and low stay.
+  return onModel && family(onModel) === 'fable' && effortRank(effort) >= effortRank('high') ? EFFORTS[effortRank(effort) - 1] : effort
 }
 
 // Classes whose own turn moves to the class model in the main chat, when the class is sure (the owner chose "safe classes" on 2026-11-18).
@@ -416,6 +418,13 @@ export function parseSessionCheck(reply: string): SessionVerdict | undefined {
 
 // Production-code investigation: owner rule, never below Opus high, never a candidate for a cheaper move.
 export const INVESTIGATION = ['debugging', 'code-review', 'security-review']
+
+// Added to the main model's system prompt (owner 2026-11-21): the main model is fixed for a turn, so a lookup step
+// inside a bigger task runs on it unless it hands the step to a subagent, which the router then routes by its brief.
+export const DELEGATE_ID = 'router:delegate'
+export const delegateSection = `Routing: when a step needs searching or reading across several files, pages or logs (find docs, collect where something is used, read logs, check what exists), hand it to a subagent with a short, self-contained brief that says what to find and what to report back. Each subagent runs on a model sized to its brief, often a much cheaper one. Do the judgment, design, code changes and final writing yourself. Do a single quick lookup yourself; a subagent starts cold.`
+// only where a subagent can be started and the router routes them
+export const wantsDelegate = (tools: readonly string[], routeModels: boolean) => routeModels && tools.some(t => t === 'Agent' || t === 'Task')
 
 // A class whose work must keep its strong model: a floor, or production-code investigation.
 export const isStrong = (cls: string | null | undefined, cfg: Config) => Boolean(cls && (cfg.classes[cls]?.floor || INVESTIGATION.includes(cls)))

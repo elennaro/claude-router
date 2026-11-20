@@ -104,6 +104,15 @@ test('floor classes never drop effort below the main default', async () => {
   expect(turnEffort('critique', CFG, 'claude-sonnet-5-5')).toBe('high')
 })
 
+test('on Fable a class effort of high or more runs one step lower', async () => {
+  expect(turnEffort('final-copy', BUILTIN, 'claude-opus-5-5')).toBe('high')
+  expect(turnEffort('final-copy', BUILTIN, 'claude-fable-5-2')).toBe('medium')
+  expect(turnEffort('rare-hard', BUILTIN, 'fable')).toBe('high')
+  expect(turnEffort('rare-hard', BUILTIN, 'claude-opus-5-5')).toBe('xhigh')
+  // medium is not lowered
+  expect(turnEffort('x', { ...BUILTIN, classes: { x: { model: 'fable', effort: 'medium' } } }, 'fable')).toBe('medium')
+})
+
 test('built-in classes that sit at the default carry no effort, so a repo that raises its default lifts them too', () => {
   const prod = merge(BUILTIN, { main: { model: 'opus', effort: 'high' } }) // a production repo's routing.json
   const atDefault = ['explore', 'mechanical', 'docs', 'learn-explain', 'data-analysis', 'long-read', 'math', 'test-writing']
@@ -337,6 +346,21 @@ async function step($: any, effort: string, agentId?: string) {
   const st = $.turn.step({ turnId: 't', index: 0, model: 'claude-opus-5-5', effort, messageCount: 1, ...(agentId ? { agentId } : {}) })
   for await (const _ of st) { /* drain */ }
 }
+
+test('the system prompt asks the main model to hand lookups to subagents, once, only where it can', async (engine, on) => {
+  const $ = engine as any
+  wire(on, { sent: [] })
+  on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'core', scope: 'shared' }] })) // the engine's own sections
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const ids = async (tools: string[]) => (await $.prompt.compose({ tools, model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', surfaces: ['desktop'], outputStyle: null, traits: [] })).sections.map((x: { id: string }) => x.id)
+  const withAgent = await ids(['Read', 'Agent'])
+  expect(withAgent.filter((id: string) => id === 'router:delegate').length).toBe(1)
+  expect(withAgent.at(-1)).toBe('router:delegate')
+  expect(await ids(['Read', 'Bash'])).not.toContain('router:delegate') // no way to start a subagent
+  const text = (await $.prompt.compose({ tools: ['Agent'], model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', surfaces: ['desktop'], outputStyle: null, traits: [] })).sections.find((x: { id: string }) => x.id === 'router:delegate')
+  expect(text.scope).toBe('session')
+  expect(text.text).toContain('subagent')
+})
 
 test('a class sets the turn effort, a new unclassed task resets it, a chosen effort is kept', async (engine, on) => {
   const $ = engine as any // the test engine fills origin, wait and the other session-set fields

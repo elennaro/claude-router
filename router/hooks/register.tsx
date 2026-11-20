@@ -10,7 +10,7 @@ import {
   env, outsideCall, runAgy, runCodex, updateTool, versions,
 } from './outside'
 import {
-  type Ask, AUTO, BUILTIN, CLASS_LABELS, type Config, type Usage, type SessionWindow, adviseSwitch, agentTier, autoModel, classifierPrompt, firstModel, parseSessionCheck, sessionCheckPrompt, sessionCheckSystem, classifierSystem, classifyByRules, costUsd, explicitAsk, family,
+  type Ask, AUTO, BUILTIN, DELEGATE_ID, delegateSection, wantsDelegate, CLASS_LABELS, type Config, type Usage, type SessionWindow, adviseSwitch, agentTier, autoModel, classifierPrompt, firstModel, parseSessionCheck, sessionCheckPrompt, sessionCheckSystem, classifierSystem, classifyByRules, costUsd, explicitAsk, family,
   classifyPlan, isCacheBreak, merge, settleAnswers, readLabel, prices, rank, setPrices, turnEffort, briefHash, isHarder, needsSecondSample, spawnPick, withoutRouter,
   type Mood, longRun, moodPrompt, moodSystem, parseMood, raiseEffort, raiseSteps, stepUp,
 } from './policy'
@@ -831,6 +831,12 @@ export const register: Register = on => {
     if (up) return { text: await runUpdate($, s, up[1] as Tool) }
     return { text: await status($, s) }
   })
+
+  on('prompt.compose', async ($, e, next) => shield($, e, next, async go => {
+    const r = await go(e)
+    if (s.cfg.mode === 'off' || s.headless || !wantsDelegate(e.tools, s.routeModels) || r.sections.some(x => x.id === DELEGATE_ID)) return r
+    return { sections: [...r.sections, { id: DELEGATE_ID, text: delegateSection, scope: 'session' }] }
+  }))
 
   on('prompt.submit', async ($, e, next) => shield($, e, next, async go => {
     await seat($, s) // in case the surface joined before this module (re)loaded
