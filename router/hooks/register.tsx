@@ -12,7 +12,7 @@ import {
 import {
   type Ask, AUTO, BUILTIN, CLASS_LABELS, type Config, type Usage, type SessionWindow, adviseSwitch, agentTier, autoModel, classifierPrompt, firstModel, parseSessionCheck, sessionCheckPrompt, sessionCheckSystem, classifierSystem, classifyByRules, costUsd, explicitAsk, family,
   classifyPlan, isCacheBreak, merge, settleAnswers, readLabel, prices, rank, setPrices, turnEffort, briefHash, isHarder, needsSecondSample, spawnPick, withoutRouter,
-  type Mood, moodPrompt, moodSystem, parseMood, raiseEffort, raiseSteps, stepUp,
+  type Mood, longRun, moodPrompt, moodSystem, parseMood, raiseEffort, raiseSteps, stepUp,
 } from './policy'
 import { type Cell, NAMES, TOOL_NAMES, barsSvg, boardHtml, cardLayout, hitPct, svgSize, isExtra, modelColor, money, shade, net, netPct, netWords, savedUsd, statsSvg, withMode } from './view'
 
@@ -902,7 +902,7 @@ export const register: Register = on => {
     const hash = run ? undefined : briefHash(e.prompt)
     const before = hash ? s.briefs.get(hash) : undefined
     const { model, tier } = spawnPick({
-      brief: inTable ? undefined : await briefClass($, s, e.prompt, e.parentModel),
+      brief: inTable ? undefined : await briefClass($, s, e.prompt, e.parentModel).then(b => ({ ...b, cls: longRun(b.cls, e.prompt, s.cfg) })),
       tableTier: inTable ? agentTier(e.subagentType, s.cfg) : undefined,
       rule: inTable ? classifyByRules(e.prompt, s.cfg) : undefined,
       parentModel: e.parentModel,

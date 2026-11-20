@@ -4,7 +4,7 @@
 // Usage: node subagents/run.mjs  -> results/subagents.jsonl
 import { join } from 'node:path'
 import {
-  CLASS_LABELS, agentTier, classifierPrompt, classifierSystem, classifyByRules, family, needsSecondSample, readLabel, spawnPick,
+  CLASS_LABELS, agentTier, classifierPrompt, classifierSystem, classifyByRules, family, longRun, needsSecondSample, readLabel, spawnPick,
 } from '../../router/hooks/policy.ts'
 import { CapReached, ROOT, claude, log, pool, cfgFor, readJsonl, writeJsonl } from '../lib.mjs'
 
@@ -36,7 +36,7 @@ async function briefClass(text, parentModel, tag, cfg) {
 async function spawn(c, run) {
   const cfg = cfgFor(c.project)
   const inTable = Boolean(cfg.agents[c.agentType])
-  const brief = inTable ? undefined : await briefClass(c.brief, c.parentModel, `sub-run:${c.id}:${run}`, cfg)
+  const brief = inTable ? undefined : await briefClass(c.brief, c.parentModel, `sub-run:${c.id}:${run}`, cfg).then(b => ({ ...b, cls: longRun(b.cls, c.brief, cfg) }))
   const { model, tier } = spawnPick({
     brief, tableTier: inTable ? agentTier(c.agentType, cfg) : undefined, rule: inTable ? classifyByRules(c.brief, cfg) : undefined,
     parentModel: c.parentModel, personChose: false, prior: c.priorModel, sibling: c.siblingModel,

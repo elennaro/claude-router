@@ -420,6 +420,15 @@ export const INVESTIGATION = ['debugging', 'code-review', 'security-review']
 // A class whose work must keep its strong model: a floor, or production-code investigation.
 export const isStrong = (cls: string | null | undefined, cfg: Config) => Boolean(cls && (cfg.classes[cls]?.floor || INVESTIGATION.includes(cls)))
 
+// A subagent sent to investigate and also reproduce the failure (a local repro, a load or stress test) runs a long tool
+// loop: it goes as rare-hard, Opus xhigh (eval 2026-11-20: Opus and Fable both labeled such briefs xhigh, Haiku read
+// them as plain debugging). Subagent briefs only, after the class is known: the same words sit in main-chat test
+// prompts that need less. shortcut: fitted on 2 briefs (2 of 2 right, no other brief hit); widen with more cases.
+const REPRO = /\b(reproduc\w*|repro|load[- ]tests?|stress[- ]tests?)\b/i
+export function longRun(cls: string | null | undefined, brief: string, cfg: Config): string | null | undefined {
+  return cls && INVESTIGATION.includes(cls) && cfg.classes['rare-hard'] && REPRO.test(brief) ? 'rare-hard' : cls
+}
+
 // Up: 2 of 3 samples above the chat's model at 0.6+ (a needless offer costs a click, a missed one costs quality: eval
 // 2026-11-18 missed 62% of upgrades at 0.7), never less than a strong class at hand needs. A strong class above the
 // chat's model offers its model by itself unless all samples see lighter work (Haiku tends to answer the model it is

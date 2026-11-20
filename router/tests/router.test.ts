@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import {
-  BUILTIN, CLASS_LABELS, adviseSwitch, effortRank, rank, agentTier, autoModel, needsSecondSample, briefHash, briefTier, stepUp, classifyByRules, costUsd, firstModel, isCacheBreak, isContinuation, merge, parseJev, parseSessionCheck, parseMood, raiseEffort, moodPrompt, readLabel, spawnPick, turnEffort, withoutRouter,
+  BUILTIN, CLASS_LABELS, adviseSwitch, effortRank, rank, agentTier, autoModel, needsSecondSample, briefHash, briefTier, stepUp, classifyByRules, costUsd, firstModel, isCacheBreak, isContinuation, merge, parseJev, parseSessionCheck, parseMood, raiseEffort, moodPrompt, longRun, readLabel, spawnPick, turnEffort, withoutRouter,
 } from '../hooks/policy'
 import { boardHtml, cacheStrength, cardLayout, hitPct, svgSize, netWords, savedUsd, shade, statsSvg, withMode } from '../hooks/view'
 import { RUNNER, type Step, labelOf } from '../hooks/db'
@@ -1129,6 +1129,17 @@ test('the offer button compacts, then the chat runs on the offered model', async
   await step($, 'medium')
   expect(models).toEqual(['sonnet'])
   await band.unmount()
+})
+
+test('a subagent sent to investigate production and reproduce the failure runs as a long run: Opus xhigh, never Fable', async () => {
+  const brief = 'Two customers end up booked into the same slot. Find out why and propose a fix. Reproduce it with a local concurrent script.'
+  expect(longRun('debugging', brief, BUILTIN)).toBe('rare-hard')
+  expect(longRun('code-review', 'review the PR and run a load test on the new limiter', BUILTIN)).toBe('rare-hard')
+  expect(longRun('debugging', 'find why the webhook signature check fails since the deploy', BUILTIN)).toBe('debugging') // no repro asked
+  expect(longRun('test-writing', 'write a test that reproduces the bug', BUILTIN)).toBe('test-writing') // only investigations
+  expect(longRun(null, brief, BUILTIN)).toBe(null)
+  const pick = spawnPick({ brief: { cls: longRun('debugging', brief, BUILTIN), sure: true }, parentModel: 'claude-opus-5-5', personChose: false }, BUILTIN)
+  expect([pick.model, pick.tier?.effort]).toEqual(['opus', 'xhigh'])
 })
 
 test('mood: Haiku reads the exchange; only a sure answer counts; effort rises one step per unhappy reply, two at most', async () => {
