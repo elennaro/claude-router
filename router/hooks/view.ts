@@ -1,6 +1,6 @@
 // Pure drawing helpers for the band, the widget and the board: no `$`, so tests call them directly.
 
-import type { Bucket, Tally, Tool, TurnLog, Versions } from '../types'
+import type { Bucket, Cache, Mix, Tally, Tool, TurnLog, Versions } from '../types'
 
 export const money = (n: number) => (n <= -0.005 ? `-$${(-n).toFixed(2)}` : `$${Math.max(0, n).toFixed(2)}`) // no "-$0.00" from rounding
 // Against running with no router: net above 0 saved money, below 0 spent more. Savings and extra spend are kept apart
@@ -18,37 +18,165 @@ const fit = (s: string, max: number) => (s.length > max ? `${s.slice(0, Math.max
 const FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif"
 // Claude's own greys and accent. The image cannot read the app's theme, so it follows the system's.
 // shortcut: an app theme that differs from the system theme gets the wrong text color; pass the theme in if that bites.
-// .g: the no-router cost, a pale ghost behind each bar; .a: spent; .x: spent above the no-router cost (and its value text).
-const STYLE = `.l,.s{fill:#87867f;font:12px ${FONT}}.v{fill:#1f1e1d;font:600 18px ${FONT}}.d{stroke:#1f1e1d;stroke-opacity:.12}.a{fill:#87867f}.g{fill:#87867f;fill-opacity:.22}.x{fill:#d97757}.v.x{fill:#c15f3c}@media (prefers-color-scheme:dark){.v{fill:#ecebe6}.d{stroke:#fff;stroke-opacity:.14}.a{fill:#a3a29b}.g{fill:#a3a29b;fill-opacity:.25}.v.x{fill:#e5906f}}`
+// .v.x: a value that is spend above the no-router cost; .c: a cache-hit square (its opacity is the hit);
+// .hit: an invisible column that takes the hover for its turn; .m-<model>-<effort step>: the model colors (shadeCss).
+const STYLE = `.l,.s{fill:#87867f;font:12px ${FONT}}.v{fill:#1f1e1d;font:600 18px ${FONT}}.d{stroke:#1f1e1d;stroke-opacity:.12}.v.x{fill:#c15f3c}.c{fill:#1f1e1d}.hit{fill:transparent}@media (prefers-color-scheme:dark){.v{fill:#ecebe6}.d{stroke:#fff;stroke-opacity:.14}.v.x{fill:#e5906f}.c{fill:#ecebe6}}`
+let shades: string | undefined // built on first use: the palette constants sit further down
+const css = () => STYLE + (shades ??= shadeCss((c, color) => `.${c}{fill:${color}}`, c => `.${c}{stroke:#ffffff73;stroke-width:1}`))
 
 // isExtra: the value reads as spend above running with no router, drawn in the accent.
-export type Cell = { label: string; value: string; sub: string; isExtra?: boolean }
+// swatch: a model and effort ("opus:high") whose color square goes before the value.
+export type Cell = { label: string; value: string; sub: string; isExtra?: boolean; swatch?: string }
 
 // Small turn costs need a third digit, or every bar's tip says $0.00.
 const cents = (n: number) => (n < 0.1 ? `$${n.toFixed(3)}` : money(n))
 
-// Cost per turn: a pale ghost for what the turn would have cost with no router, the solid bar for what it cost,
-// orange when that is more. Each bar's tip names the turn (the desktop draws <title> as a tooltip).
-function bars(turns: Array<TurnLog>, x0: number, y0: number, width: number, height: number): string {
-  const r = turns.slice(-Math.max(4, Math.floor(width / 9)))
+// ---- model colors ----
+// One hue per model, in price order. Checked with the dataviz palette validator (lightness band, chroma, color-blind
+// separation, contrast) on the light and the dark surface; names and tooltips carry identity too.
+// Opus is Claude's own clay, Fable a ruby, Sonnet a teal, Haiku a green.
+export const MODELS = ['haiku', 'sonnet', 'opus', 'fable'] as const
+const HEX: Record<'light' | 'dark', Record<string, string>> = {
+  light: { haiku: '#7A9A2E', sonnet: '#1A8FA8', opus: '#D97757', fable: '#B83A62', other: '#87867f' },
+  dark: { haiku: '#80A236', sonnet: '#2394AE', opus: '#D27946', fable: '#BF3F72', other: '#a3a29b' },
+}
+// Text glyphs (the band, Settings) can't read the theme: the dark set clears 3:1 on dark and is near it on light.
+export const modelColor = (model: string) => HEX.dark[family(model)] ?? HEX.dark.other!
+const family = (m: string) => MODELS.find(f => m.includes(f)) ?? 'other'
+
+// Effort as darkness, in both themes (owner, 2026-11-20): low is a light tint, medium the model's own color, high and
+// max darker. Steps checked with the dataviz ordinal check (monotone, gaps >= 0.06 L). On a dark page the dark steps
+// fall under 2:1 against it, so they get a light ring (ringCss) to keep their edges.
+export const effortStep = (e: string) => (e === 'low' ? 0 : e === 'high' ? 2 : e === 'xhigh' || e === 'max' ? 3 : 1)
+const TINT = { light: 0.3, dark: 0.45 } // low: toward white
+const DARKEN = { light: [0.3, 0.55], dark: [0.28, 0.5] } // high, max: toward black
+const mixHex = (a: string, b: string, t: number) => {
+  const p = (h: string) => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16))
+  const [x, y] = [p(a), p(b)]
+  return `#${x.map((v, i) => Math.round(v + (y[i]! - v) * t).toString(16).padStart(2, '0')).join('')}`
+}
+export function shade(model: string, effort: string, mode: 'light' | 'dark' = 'light'): string {
+  const hex = HEX[mode][family(model)] ?? HEX[mode].other!
+  const step = effortStep(effort)
+  if (step === 0) return mixHex(hex, '#ffffff', TINT[mode])
+  return step === 1 ? hex : mixHex(hex, '#000000', DARKEN[mode][step - 2]!)
+}
+// The CSS classes .m-<model>-<step> for both themes, so an SVG or the Board follows the system theme; ring draws the
+// light edge the dark steps need on a dark page.
+export function shadeCss(rule: (cls: string, color: string) => string, ring: (cls: string) => string): string {
+  const all = [...MODELS, 'other']
+  const rules = (mode: 'light' | 'dark') => all.flatMap(m => [0, 1, 2, 3].map(st => rule(`m-${m}-${st}`, shade(m, ['low', 'medium', 'high', 'max'][st]!, mode)))).join('')
+  return `${rules('light')}@media (prefers-color-scheme:dark){${rules('dark')}${all.flatMap(m => [2, 3].map(st => ring(`m-${m}-${st}`))).join('')}}`
+}
+const cls = (model: string, effort: string) => `m-${family(model)}-${effortStep(effort)}`
+
+// Cache hit: the share of prompt tokens read from the prompt cache. undefined: nothing recorded (rows before 0.7).
+// A warm main chat sits at 99.x%, so from 99 on it keeps one decimal, rounded down: "100%" only when nothing missed.
+export function hitPct(c: Cache | undefined): number | undefined {
+  const all = c ? c.input + c.read + c.write : 0
+  if (!c || all <= 0) return undefined
+  const p = (100 * c.read) / all
+  return p >= 99 ? Math.floor(p * 10) / 10 : Math.round(p)
+}
+
+// An SVG's own width and height, for the Svg element: without them a surface may fit the frame on its own and draw
+// the card at a fraction of its size (seen in the desktop app, 0.7.0).
+export const svgSize = (svg: string) => {
+  const m = svg.match(/^<svg[^>]* width="([\d.]+)" height="([\d.]+)"/)
+  return m ? { width: Number(m[1]), height: Number(m[2]) } : {}
+}
+
+// Cache hit as a bar strength 0..1, by the share that missed, in tenfold steps: hits sit at 95-100%, where a linear
+// scale shows nothing, and each missed token costs about 10x a read. 99.9% hit or more = 1, 99% = 2/3, 90% = 1/3, 0% = 0.
+const CACHE_H = 20
+export function cacheStrength(c: Cache | undefined): number | undefined {
+  const all = c ? c.input + c.read + c.write : 0
+  if (!c || all <= 0) return undefined
+  const miss = Math.max(0.1, (100 * (all - c.read)) / all)
+  return Math.min(1, Math.max(0, 1 - Math.log10(miss / 0.1) / 3))
+}
+
+// Cost per turn against no router: a bar up for a turn that cost more than with no router, down for one that cost
+// less, colored by its model and effort. stripY: where the "cache hit per turn" row goes, its own section, one bar
+// per turn in the same column, taller and more solid for a higher hit (cacheStrength; absent: no row).
+// Each column's tip names the turn (the desktop draws <title> as a tooltip); the hit area is the whole column.
+function divergingBars(turns: Array<TurnLog>, x0: number, y0: number, width: number, half: number, stripY?: number): string {
+  const gap = 2
+  const r = turns.slice(-Math.max(4, Math.floor(width / (6 + gap))))
   if (r.length === 0) return ''
-  const gap = 3
-  const bw = Math.min(24, (width - gap * (r.length - 1)) / r.length) // fills the card once there are enough turns; a few stay slim
-  const max = Math.max(...r.map(t => Math.max(t.baseUsd, t.usd)), 1e-9)
-  const rect = (cls: string, x: number, v: number) => {
-    const h = Math.max(1.5, (v / max) * height)
-    return `<rect class="${cls}" x="${x.toFixed(1)}" y="${(y0 + height - h).toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" rx="1.5"/>`
-  }
-  return r.map((t, i) => {
-    const x = x0 + i * (bw + gap)
-    const tip = `${t.who === 'main' ? t.cls : t.who}, ${nice(t.model)} ${t.effort}: ${cents(t.usd)} spent, ${cents(t.baseUsd)} with no router`
-    return `<g><title>${esc(tip)}</title>${rect('g', x, t.baseUsd)}${rect(t.usd > t.baseUsd + 1e-9 ? 'x' : 'a', x, t.usd)}</g>`
-  }).join('')
+  const bw = Math.min(20, (width - gap * (r.length - 1)) / r.length)
+  const max = Math.max(...r.map(t => Math.abs(t.usd - t.baseUsd)), 1e-9)
+  const mid = y0 + half
+  let out = `<line class="d" x1="${x0}" y1="${mid + 0.5}" x2="${x0 + width}" y2="${mid + 0.5}"/>`
+  r.forEach((t, i) => {
+    const x = (x0 + i * (bw + gap)).toFixed(1)
+    const d = t.usd - t.baseUsd
+    // square-root scale: a $0.004 turn stays visible next to a $0.40 one, and order is kept; a log scale would make
+    // them look alike and has no zero for "same". The tooltip has the exact numbers. A same-cost turn is a 2 px tick.
+    const h = Math.max(2, Math.sqrt(Math.abs(d) / max) * (half - 1))
+    const y = d >= 0 ? mid - h : mid + 1
+    const hit = hitPct(t.cache)
+    const tip = `${t.who === 'main' ? t.cls : t.who}: ${nice(t.model)} ${t.effort || ''}. ${cents(t.usd)} spent, ${cents(t.baseUsd)} with no router (${Math.abs(d) < 0.0005 ? 'same' : `${d > 0 ? '+' : '−'}${cents(Math.abs(d))}`})${hit === undefined ? '' : `. Cache hit ${hit}%`}`
+    out += `<g><title>${esc(tip)}</title><rect class="hit" x="${x}" y="${y0}" width="${bw.toFixed(1)}" height="${2 * half}"/>`
+    out += `<rect class="${cls(t.model, t.effort)}" x="${x}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" rx="1.5"/></g>`
+    const s = cacheStrength(t.cache)
+    if (stripY !== undefined && s !== undefined) {
+      const ch = 2 + s * (CACHE_H - 2)
+      out += `<g><title>Cache hit ${hit}%</title><rect class="c" x="${x}" y="${(stripY + CACHE_H - ch).toFixed(1)}" width="${bw.toFixed(1)}" height="${ch.toFixed(1)}" rx="1.5" fill-opacity="${(0.3 + 0.7 * s).toFixed(2)}"/></g>`
+    }
+  })
+  return out
 }
 
 // Just the bars, for the rail widget.
 export function barsSvg(turns: Array<TurnLog>, width: number, height: number): string {
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><style>${STYLE}</style>${bars(turns, 0, 0, width, height)}</svg>`
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><style>${css()}</style>${divergingBars(turns, 0, 0, width, height / 2)}</svg>`
+}
+
+const pct = (part: number, total: number) => { const p = (100 * part) / total; return p > 0 && p < 1 ? '<1%' : `${Math.round(p)}%` }
+
+// This chat's spend as one band, a segment per model and effort in price order, then the legend under it, wrapping
+// onto more lines in a narrow card. Returns the drawing and its height.
+function modelBand(mix: Mix, x0: number, y0: number, width: number): { svg: string; height: number } {
+  const rank = (k: string) => { const [m = '', e = ''] = k.split(':'); return MODELS.indexOf(family(m) as typeof MODELS[number]) * 10 + effortStep(e) }
+  const segs = Object.entries(mix).filter(([, v]) => v.usd > 0).sort((a, b) => rank(a[0]) - rank(b[0]))
+  const total = segs.reduce((a, [, v]) => a + v.usd, 0)
+  if (!total) return { svg: '', height: 0 }
+  const gap = 2
+  const room = width - gap * (segs.length - 1)
+  let x = x0
+  let out = ''
+  for (const [k, v] of segs) {
+    const [m = '', e = ''] = k.split(':')
+    const w = Math.max(2, (v.usd / total) * room)
+    const hit = hitPct(v.cache)
+    const tip = `${nice(family(m))} ${e || ''}: ${money(v.usd)}, ${pct(v.usd, total)} of spend, ${v.steps} ${v.steps === 1 ? 'step' : 'steps'}${hit === undefined ? '' : `, cache hit ${hit}%`}`
+    out += `<g><title>${esc(tip)}</title><rect class="hit" x="${x.toFixed(1)}" y="${y0 - 4}" width="${w.toFixed(1)}" height="20"/><rect class="${cls(m, e)}" x="${x.toFixed(1)}" y="${y0}" width="${w.toFixed(1)}" height="12" rx="3"/></g>`
+    x += w + gap
+  }
+  // legend: each model present with its share, then the effort ramp on the right
+  const share: Record<string, number> = {}
+  for (const [k, v] of segs) { const f = family(k.split(':')[0] ?? ''); share[f] = (share[f] ?? 0) + v.usd }
+  // items flow left to right and wrap; the effort ramp is the last item ("effort low" ▪▪▪▪ "max", 136 px)
+  const items: Array<{ w: number; draw: (x: number, y: number) => string }> = []
+  for (const f of [...MODELS, 'other']) {
+    if (!share[f]) continue
+    const text = `${nice(f)} ${pct(share[f]!, total)}`
+    items.push({ w: 14 + text.length * 6.6, draw: (x, y) => `<rect class="m-${f}-1" x="${x}" y="${y - 9}" width="10" height="10" rx="2"/><text class="s" x="${x + 14}" y="${y}">${esc(text)}</text>` })
+  }
+  items.push({
+    w: 136,
+    draw: (x, y) => `<g><title>Effort: a darker color means more effort</title><text class="s" x="${x}" y="${y}">effort low</text>${[0, 1, 2, 3].map(st => `<rect class="m-other-${st}" x="${x + 64 + st * 12}" y="${y - 9}" width="10" height="10" rx="2"/>`).join('')}<text class="s" x="${x + 114}" y="${y}">max</text></g>`,
+  })
+  let lx = x0
+  let ly = y0 + 32
+  items.forEach((it, i) => {
+    const isRamp = i === items.length - 1
+    if (lx > x0 && lx + it.w > x0 + width) { lx = x0; ly += 20 }
+    out += it.draw(isRamp && ly === y0 + 32 ? x0 + width - it.w : lx, ly) // on the first line the ramp sits at the right edge
+    lx += it.w + 16
+  })
+  return { svg: out, height: ly - y0 + 4 }
 }
 
 // The card's width and columns from the band's width in cells, so a narrow window gets two readable columns
@@ -58,37 +186,54 @@ export function cardLayout(bodyColumns: number): { width: number; perRow: number
   return { width, perRow: width >= 600 ? 4 : 2 }
 }
 
-// The Stats card: cells in rows of `perRow` with hairline dividers, then the cost-per-turn bars with a legend.
-// Spacing sits on an 8 px grid: label, value and note 16/42/60 px down a 72 px row.
-export function statsSvg(cells: Array<Cell>, turns: Array<TurnLog>, width: number, perRow: number): string {
+// The Stats card on an 8 px grid, three bands split by hairlines:
+// 1. cells in rows of `perRow` (label, value, note at 16/42/60 px down a 72 px row);
+// 2. "Models this chat": the spend band and its legend; `right` is the note at the header's end;
+// 3. "Cost per turn vs no router": bars up for more, down for less, and the cache-hit squares, with word labels in a
+//    left gutter so the chart reads without a legend hunt.
+export function statsSvg(cells: Array<Cell>, turns: Array<TurnLog>, width: number, perRow: number, mix: Mix = {}, right = ''): string {
   const rowH = 72
   const colW = width / perRow
-  const chars = (per: number) => Math.floor((colW - 24) / per) // what fits a column at a font's average width
+  const chars = (per: number, w = colW - 24) => Math.floor(w / per) // what fits at a font's average width
   let body = ''
   cells.forEach((c, i) => {
     const col = i % perRow
     const y = Math.floor(i / perRow) * rowH
     const x = col * colW + (col === 0 ? 0 : 16)
+    const vx = c.swatch ? x + 18 : x
     if (col > 0) body += `<line class="d" x1="${col * colW}" y1="${y + 8}" x2="${col * colW}" y2="${y + rowH - 8}"/>`
     body += `<text class="l" x="${x}" y="${y + 16}">${esc(fit(c.label, chars(6.4)))}</text>`
-    body += `<text class="v${c.isExtra ? ' x' : ''}" x="${x}" y="${y + 42}">${esc(fit(c.value, chars(10.4)))}</text>`
+    if (c.swatch) { const [m = '', e = ''] = c.swatch.split(':'); body += `<rect class="${cls(m, e)}" x="${x}" y="${y + 29}" width="12" height="12" rx="3"/>` }
+    body += `<text class="v${c.isExtra ? ' x' : ''}" x="${vx}" y="${y + 42}">${esc(fit(c.value, chars(10.4, colW - 24 - (vx - x))))}</text>`
     if (c.sub) body += `<text class="s" x="${x}" y="${y + 60}">${esc(fit(c.sub, chars(6.4)))}</text>`
   })
   let height = Math.ceil(cells.length / perRow) * rowH
-  if (turns.length > 1) { // one bar says nothing
-    body += `<line class="d" x1="0" y1="${height + 8.5}" x2="${width}" y2="${height + 8.5}"/>`
-    body += `<text class="l" x="0" y="${height + 32}">Cost per turn</text>`
-    const keys: Array<[string, string]> = [['a', 'spent'], ['x', 'over no router'], ['g', 'with no router']]
-    let lx = width
-    for (const [cls, text] of [...keys].reverse()) {
-      lx -= text.length * 5.9 + 13
-      body += `<rect class="${cls}" x="${lx.toFixed(1)}" y="${height + 23}" width="9" height="9" rx="1.5"/><text class="s" x="${(lx + 13).toFixed(1)}" y="${height + 32}">${text}</text>`
-      lx -= 16
-    }
-    body += bars(turns, 0, height + 44, width, 32)
-    height += 84
+  const section = (title: string, note = '') => {
+    body += `<line class="d" x1="0" y1="${height + 8.5}" x2="${width}" y2="${height + 8.5}"/><text class="l" x="0" y="${height + 32}">${esc(title)}</text>`
+    if (note) body += `<text class="s" x="${width}" y="${height + 32}" text-anchor="end">${esc(fit(note, chars(6.2, width - title.length * 6.6 - 24)))}</text>`
   }
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><style>${STYLE}</style>${body}</svg>`
+  const band = modelBand(mix, 0, height + 44, width)
+  if (band.svg) {
+    section('Models this chat', right)
+    body += band.svg
+    height += 44 + band.height + 16
+  }
+  if (turns.length > 1) { // one bar says nothing
+    section('Cost per turn vs no router', 'hover for numbers')
+    const G = 44 // gutter for the row words; the cache row below keeps the same columns
+    const top = height + 44
+    const half = 36
+    body += `<text class="s" x="0" y="${top + 12}">more</text><text class="s" x="0" y="${top + 2 * half - 2}">less</text>`
+    height += 44 + 2 * half + 8
+    // the cache row is its own section: it is not spending, it says why a turn cost what it did
+    const stripY = turns.some(t => hitPct(t.cache) !== undefined) ? height + 40 : undefined
+    body += divergingBars(turns, G, top, width - G, half, stripY)
+    if (stripY !== undefined) {
+      section('Cache hit per turn', 'taller = more from cache; full at 99.9%')
+      height += 40 + CACHE_H + 16
+    }
+  }
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><style>${css()}</style>${body}</svg>`
 }
 
 // A routing.json with its top-level "mode" set, the rest of the file kept as written.
@@ -152,10 +297,13 @@ table{width:100%;border-collapse:collapse}th{font-weight:500;color:var(--muted);
 .label{max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .now{font-size:12px;color:var(--accent);margin-left:8px}
 .bar{width:22%;min-width:110px}.meter{position:relative;height:8px}.meter span{position:absolute;left:0;top:0;height:8px;border-radius:4px}.ghost{background:var(--ghost)}.solid{background:var(--spent)}.solid.up{background:var(--accent)}
-.mix-row{display:grid;grid-template-columns:80px 1fr 110px;gap:12px;align-items:center;padding:8px 0}.track{height:8px;border-radius:4px;background:var(--line)}.track span{display:block;height:8px;border-radius:4px;background:var(--spent)}
+.mix-row{display:grid;grid-template-columns:96px 1fr 300px;gap:12px;align-items:center;padding:8px 0}.track{height:8px;border-radius:4px;background:var(--line)}.track span{display:block;height:8px;border-radius:4px}
+.band{display:flex;gap:2px;height:8px}.band span{border-radius:2px;min-width:2px}.band.big{height:12px;margin:16px 0 4px}.band.big span{border-radius:3px}.band.mini{width:96px}
+.sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:8px;vertical-align:-1px}
+${shadeCss((c, color) => `.${c}{background:${color}}`, c => `.${c}{box-shadow:inset 0 0 0 1px #ffffff73}`)}
 .empty{padding:16px 0;color:var(--muted)}.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 footer{margin-top:40px;color:var(--muted);font-size:13px;display:grid;gap:8px;max-width:80ch}.tools b{color:var(--accent);font-weight:600}
-@media (max-width:720px){main{padding:32px 16px 48px}h1{font-size:20px}.kpis{grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.kpi b{font-size:24px}.opt{display:none}.label{max-width:180px}.range{width:100%;flex-wrap:nowrap}.range button{flex:1;padding:0}}
+@media (max-width:720px){main{padding:32px 16px 48px}h1{font-size:20px}.kpis{grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.kpi b{font-size:24px}.opt{display:none}.label{max-width:180px}.mix-row{grid-template-columns:80px 1fr 110px}.range{width:100%;flex-wrap:nowrap}.range button{flex:1;padding:0}}
 @media (pointer:coarse){.range button{min-height:40px}}
 </style></head><body><main>
 <header><div><h1>Router spend</h1><p>What the router spent, next to the same work with the router off.</p></div>
@@ -164,16 +312,17 @@ footer{margin-top:40px;color:var(--muted);font-size:13px;display:grid;gap:8px;ma
 <div class="kpi"><span>Spent</span><b id="spent"></b></div>
 <div class="kpi"><span>Without router</span><b id="base"></b></div>
 <div class="kpi"><span>Difference</span><b id="diff"></b><small id="diff-pct"></small></div>
-<div class="kpi"><span>Sessions</span><b id="count"></b></div>
+<div class="kpi"><span>Cache hit</span><b id="hit"></b><small>of prompt tokens</small></div>
 </section>
 <p class="split" id="split"></p>
-<h2>Sessions</h2><div class="card"><table><thead><tr><th>Session</th><th class="opt">Project</th><th class="opt">Last active</th><th class="n opt">Turns</th><th class="n">Spent</th><th class="n opt">Without router</th><th class="n">Difference</th></tr></thead><tbody id="sessions"></tbody></table></div>
+<h2>Sessions <span class="muted" id="count"></span></h2><div class="card"><table><thead><tr><th>Session</th><th class="opt">Project</th><th class="opt">Last active</th><th class="opt">Models</th><th class="n opt">Turns</th><th class="n">Spent</th><th class="n opt">Without router</th><th class="n">Difference</th></tr></thead><tbody id="sessions"></tbody></table></div>
 <h2>By project</h2><div class="card"><table><thead><tr><th>Project</th><th class="n">Spent</th><th class="n opt">Without router</th><th class="n">Difference</th><th class="opt"><span class="sr">Spent against without router</span></th></tr></thead><tbody id="projects"></tbody></table></div>
-<h2>Requests by model</h2><div class="card" id="mix"></div>
+<h2>Spend by model</h2><div class="card" id="mix"></div>
 <h2>Subagents</h2><div class="card"><table><thead><tr><th>Type</th><th class="n">Runs</th><th class="n opt">Moved off the parent's model</th><th class="n opt">Sent again</th><th class="n">Spent</th><th class="n opt">Without router</th><th class="n">Difference</th></tr></thead><tbody id="agents"></tbody></table></div>
-<section id="chat" hidden><h2>This chat, turn by turn</h2><div class="card"><table><thead><tr><th>Task</th><th>Model</th><th class="opt">Effort</th><th class="n">Cost</th><th class="n opt">Without router</th><th class="n">Difference</th></tr></thead><tbody id="turns"></tbody></table></div></section>
+<section id="chat" hidden><h2>This chat, turn by turn</h2><div class="card"><table><thead><tr><th>Task</th><th>Model</th><th class="opt">Effort</th><th class="n opt">Cache hit</th><th class="n">Cost</th><th class="n opt">Without router</th><th class="n">Difference</th></tr></thead><tbody id="turns"></tbody></table></div></section>
 <footer><span>API list prices. On a Max plan this tracks how fast you use your limits, not money.</span>
-<span>Without router means each request on the model and effort it asked for (yours, or the parent chat's for a subagent), with the same tokens. A different effort is priced by its measured output length: high writes about 1.4 times as much as medium, low about 0.72 times. The router's own Haiku calls count as extra.</span>
+<span>Without router means each request on the model and effort it asked for (yours, or the parent chat's for a subagent), with the same tokens. A different effort is priced by its measured cost: a high-effort step costs about 1.4 times a medium one, a low one about 0.72 times. The router's own Haiku calls count as extra.</span>
+<span>Colors: Haiku green, Sonnet teal, Opus clay, Fable ruby; a darker shade is a higher effort. Cache hit is the share of prompt tokens read from the prompt cache, recorded from version 0.7 on.</span>
 <span>Spend recorded before version 0.5 was compared with ${M} at the same tokens, without a saved and extra split.</span>
 <span>Days are local; 1d is today. Counting since ${esc(since)}. Updated ${esc(when)}.</span>${toolsLine(tools, priceNote)}</footer>
 </main>
@@ -194,6 +343,20 @@ function diff(u, b, f) {
 const meter = (u, b, top) => '<div class="meter"><span class="ghost" style="width:' + (b / top * 100).toFixed(1) + '%"></span><span class="solid' + (u > b ? ' up' : '') + '" style="width:' + (u / top * 100).toFixed(1) + '%"></span></div>';
 const iso = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 const sum = b => Object.values(b.byModel).reduce((a, m) => ({ usd: a.usd + m.usd, base: a.base + m.base, extra: a.extra + (m.extra || 0), steps: a.steps + m.steps }), { usd: 0, base: 0, extra: 0, steps: 0 });
+const FAMS = ['haiku', 'sonnet', 'opus', 'fable'];
+const fam = f => FAMS.includes(f) ? f : 'other';
+const step = e => e === 'low' ? 0 : e === 'high' ? 2 : (e === 'xhigh' || e === 'max') ? 3 : 1;
+const addC = (a, c) => { if (c) { a.input += c.input; a.read += c.read; a.write += c.write } return a };
+const hit = c => { const all = c.input + c.read + c.write; return all > 0 ? Math.round(100 * c.read / all) : null };
+const pct = (p, t) => { const x = 100 * p / t; return x > 0 && x < 1 ? '<1%' : Math.round(x) + '%' };
+// spend per model as one band, cheapest model first; the title lists the shares
+function band(models, cls) {
+  const segs = Object.entries(models).filter(e => e[1] > 0).sort((a, b) => FAMS.indexOf(fam(a[0])) - FAMS.indexOf(fam(b[0])));
+  const total = segs.reduce((a, e) => a + e[1], 0);
+  if (!total) return '';
+  const tip = segs.map(e => (D.names[e[0]] || e[0]) + ' ' + pct(e[1], total)).join(', ');
+  return '<span class="band ' + cls + '" title="' + esc(tip) + '" role="img" aria-label="' + esc('Spend by model: ' + tip) + '">' + segs.map(e => '<span class="m-' + fam(e[0]) + '-1" style="flex:' + e[1].toFixed(6) + '"></span>').join('') + '</span>';
+}
 const empty = (cols, text) => '<tr><td colspan="' + cols + '" class="empty">' + text + '</td></tr>';
 let pick = '7d';
 try { pick = localStorage.getItem('router-range') || pick } catch (e) {}
@@ -202,30 +365,38 @@ function draw() {
   const from = days ? iso(new Date(Date.now() - (days - 1) * 864e5)) : '';
   const rows = D.buckets.filter(b => b.day >= from);
   const sessions = {}, projects = {}, models = {}, agents = {};
+  const cache = { input: 0, read: 0, write: 0 };
   let usd = 0, base = 0, extra = 0;
   for (const b of rows) {
     const t = sum(b); usd += t.usd; base += t.base; extra += t.extra;
-    const s = sessions[b.session] || (sessions[b.session] = { label: b.label, project: b.project, last: 0, turns: 0, usd: 0, base: 0 });
+    const s = sessions[b.session] || (sessions[b.session] = { label: b.label, project: b.project, last: 0, turns: 0, usd: 0, base: 0, models: {} });
     s.label = s.label || b.label; s.last = Math.max(s.last, b.last); s.turns += b.turns; s.usd += t.usd; s.base += t.base;
     const p = projects[b.project] || (projects[b.project] = { usd: 0, base: 0 });
     p.usd += t.usd; p.base += t.base;
-    for (const [f, m] of Object.entries(b.byModel)) models[f] = (models[f] || 0) + m.steps;
+    for (const [f, m] of Object.entries(b.byModel)) {
+      const x = models[f] || (models[f] = { usd: 0, steps: 0, cache: { input: 0, read: 0, write: 0 } });
+      x.usd += m.usd; x.steps += m.steps; addC(x.cache, m.cache); addC(cache, m.cache);
+      s.models[f] = (s.models[f] || 0) + m.usd;
+    }
     for (const [k, a] of Object.entries(b.agents || {})) { const g = agents[k] || (agents[k] = { runs: 0, routed: 0, respawned: 0, usd: 0, base: 0 }); for (const f in g) g[f] += a[f] || 0; }
   }
   $('spent').textContent = money(usd);
   $('base').textContent = money(base);
   $('diff').innerHTML = diff(usd, base);
   $('diff-pct').textContent = base > 0 && Math.abs(usd - base) >= 0.005 ? Math.round(Math.abs(usd - base) / base * 100) + '% ' + (usd > base ? 'more' : 'less') + ' than without router' : '';
-  $('count').textContent = Object.keys(sessions).length;
+  $('count').textContent = Object.keys(sessions).length || '';
+  const h = hit(cache);
+  $('hit').textContent = h === null ? '\\u2013' : h + '%';
   const saved = Math.max(0, base - usd + extra);
   $('split').textContent = rows.length ? 'Saved ' + money(saved) + ' on steps the router made cheaper. Spent ' + money(extra) + ' extra on stronger steps and on its own Haiku calls.' : '';
   const ss = Object.entries(sessions).sort((a, b) => b[1].last - a[1].last).slice(0, 60);
-  $('sessions').innerHTML = ss.length ? ss.map(([id, s]) => '<tr><td class="label" title="' + esc(s.label) + '">' + (esc(s.label) || '<span class="muted">untitled</span>') + (id === D.session ? '<span class="now">this chat</span>' : '') + '</td><td class="opt">' + esc(s.project) + '</td><td class="opt muted">' + new Date(s.last).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) + '</td><td class="n opt">' + s.turns + '</td><td class="n">' + money(s.usd) + '</td><td class="n muted opt">' + money(s.base) + '</td><td class="n">' + diff(s.usd, s.base) + '</td></tr>').join('') : empty(7, 'No sessions in this range. Pick a longer range above.');
+  $('sessions').innerHTML = ss.length ? ss.map(([id, s]) => '<tr><td class="label" title="' + esc(s.label) + '">' + (esc(s.label) || '<span class="muted">untitled</span>') + (id === D.session ? '<span class="now">this chat</span>' : '') + '</td><td class="opt">' + esc(s.project) + '</td><td class="opt muted">' + new Date(s.last).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) + '</td><td class="opt">' + band(s.models, 'mini') + '</td><td class="n opt">' + s.turns +'</td><td class="n">' + money(s.usd) + '</td><td class="n muted opt">' + money(s.base) + '</td><td class="n">' + diff(s.usd, s.base) + '</td></tr>').join('') : empty(8, 'No sessions in this range. Pick a longer range above.');
   const ps = Object.entries(projects).sort((a, b) => b[1].usd - a[1].usd);
   const top = Math.max(...ps.map(p => Math.max(p[1].base, p[1].usd)), 1e-9);
   $('projects').innerHTML = ps.length ? ps.map(([name, p]) => '<tr><td>' + esc(name) + '</td><td class="n">' + money(p.usd) + '</td><td class="n muted opt">' + money(p.base) + '</td><td class="n">' + diff(p.usd, p.base) + '</td><td class="bar opt">' + meter(p.usd, p.base, top) + '</td></tr>').join('') : empty(5, 'No spend in this range.');
-  const all = Object.values(models).reduce((a, b) => a + b, 0);
-  $('mix').innerHTML = all ? Object.entries(models).sort((a, b) => b[1] - a[1]).map(([f, n]) => '<div class="mix-row"><span>' + esc(D.names[f] || f) + '</span><span class="track"><span style="width:' + (n / all * 100).toFixed(1) + '%"></span></span><span class="n">' + n + ' (' + Math.round(n / all * 100) + '%)</span></div>').join('') : '<div class="empty">No requests in this range.</div>';
+  const all = Object.values(models).reduce((a, m) => a + m.usd, 0);
+  const ms = Object.entries(models).filter(e => e[1].usd > 0 || e[1].steps > 0).sort((a, b) => FAMS.indexOf(fam(a[0])) - FAMS.indexOf(fam(b[0])));
+  $('mix').innerHTML = all ? band(Object.fromEntries(ms.map(e => [e[0], e[1].usd])), 'big') + ms.map(([f, m]) => { const c = hit(m.cache); return '<div class="mix-row"><span><span class="sw m-' + fam(f) + '-1"></span>' + esc(D.names[f] || f) + '</span><span class="track"><span class="m-' + fam(f) + '-1" style="width:' + (m.usd / all * 100).toFixed(1) + '%"></span></span><span class="n">' + money(m.usd) + ' \\u00b7 ' + pct(m.usd, all) + '<span class="opt muted"> \\u00b7 ' + m.steps + ' requests' + (c === null ? '' : ' \\u00b7 cache hit ' + c + '%') + '</span></span></div>' }).join('') : '<div class="empty">No spend in this range.</div>';
   const as = Object.entries(agents).sort((a, b) => b[1].runs - a[1].runs);
   $('agents').innerHTML = as.length ? as.map(([k, a]) => '<tr><td>' + esc(k) + '</td><td class="n">' + a.runs + '</td><td class="n opt">' + a.routed + '</td><td class="n opt">' + a.respawned + '</td><td class="n">' + money(a.usd) + '</td><td class="n muted opt">' + money(a.base) + '</td><td class="n">' + diff(a.usd, a.base) + '</td></tr>').join('') : empty(7, 'No subagents in this range.');
   $('range').innerHTML = RANGES.map(r => '<button type="button" data-r="' + r[0] + '" aria-pressed="' + (r[0] === pick) + '">' + r[0] + '</button>').join('');
@@ -233,7 +404,7 @@ function draw() {
 // This chat's turns, newest first: they come from the session, not the ledger, so the range does not filter them.
 if (D.turns.length) {
   $('chat').hidden = false;
-  $('turns').innerHTML = D.turns.slice().reverse().map(t => '<tr><td>' + esc(t.who === 'main' ? t.cls : t.who) + '</td><td>' + esc(D.names[t.model] || t.model) + '</td><td class="opt">' + esc(t.effort || '\\u2013') + (t.picker && t.picker !== t.effort && t.who === 'main' ? ' <span class="muted">(you picked ' + esc(t.picker) + ')</span>' : '') + '</td><td class="n">' + cents(t.usd) + '</td><td class="n muted opt">' + cents(t.baseUsd) + '</td><td class="n">' + diff(t.usd, t.baseUsd, cents) + '</td></tr>').join('');
+  $('turns').innerHTML = D.turns.slice().reverse().map(t => '<tr><td>' + esc(t.who === 'main' ? t.cls : t.who) + '</td><td><span class="sw m-' + fam(t.model) + '-' + step(t.effort) + '"></span>' + esc(D.names[t.model] || t.model) + '</td><td class="opt">' + esc(t.effort || '\\u2013') + (t.picker && t.picker !== t.effort && t.who === 'main' ? ' <span class="muted">(you picked ' + esc(t.picker) + ')</span>' : '') + '</td><td class="n opt">' + (t.cache && hit(t.cache) !== null ? hit(t.cache) + '%' : '<span class="muted">&ndash;</span>') + '</td><td class="n">' + cents(t.usd) + '</td><td class="n muted opt">' + cents(t.baseUsd) + '</td><td class="n">' + diff(t.usd, t.baseUsd, cents) + '</td></tr>').join('');
 }
 $('range').addEventListener('click', e => { const r = e.target.closest('button'); if (!r) return; pick = r.dataset.r; try { localStorage.setItem('router-range', pick) } catch (x) {} draw() });
 draw();

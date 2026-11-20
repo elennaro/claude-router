@@ -59,15 +59,32 @@ Newest at the bottom. Each entry: what we did, what happened, what we learned. N
     read cheaply. Netting everything into one "saved" number also hid the extra spend behind cheap subagents. Lesson:
     compare against what would have run with the router off (the asked model and effort), and keep saved and extra
     spend apart.
-17. **Keywords in the owner's languages.** The rules carried Russian words next to the English ones, because the
-    first eval cases were written in both. A user in any third language got worse routing than a Russian speaker, and the eval looked
-    better than the product was. Removing them moved 3 Russian production prompts (of 279) from Opus high to the
+17. **Keywords in two languages.** The rules carried Russian words next to the English ones, because the first eval
+    cases were written in both. A user in any third language got worse routing than a Russian speaker, and the eval
+    looked better than the product was. Removing them moved 3 Russian production prompts (of 279) from Opus high to the
     default, which no change to the classifier's wording fixed. Lesson: keep hand rules in one language and let the
     classifier read the rest; measure the gap and document the fix (here, a production project sets its default to
     Opus high) instead of hiding it.
 18. **Spending a capped eval on the baseline first.** The acceptance eval graded every tier on all 288 cases, tier by
     tier, so the Opus medium baseline took $35 of the $43 cap and the tier being decided got 20 cases. Lesson: under a
     cap, choose the cases the decision needs first and run the tiers in pairs on them.
+19. **Pricing from a table instead of from the bill.** The spend code used one cache-write price (5-minute, 1.25x),
+    but Claude Code's main thread writes 1-hour entries (2x). Every session's spend read 4-14% low, and nobody noticed
+    because nothing compared the ledger with an outside record. Lesson: check money code against an independent count
+    (here, the app's own transcripts) before quoting any total.
+20. **Claims rounded up in the notes.** "Sonnet was accepted on every case Opus was" was written in a comment and in
+    these notes; the counts per class were equal, the cases were not (one explore case each way). Lesson: write the
+    number you measured, not the sentence it suggests.
+21. **Chasing a boundary with wording.** The unhappy check went through four wordings in an hour ($0.16): complaints
+    caught 100/83/93/94%, false alarms 15/6/17/14%. Each wording traded one error for the other, and the second one
+    quoted two eval cases word for word as its examples, which would have flattered the score. The errors sat on one
+    real boundary (is "I meant X" a fix of my words or of the assistant's guess?), and Haiku's answer there flips
+    between runs. Lesson: once two wordings swing the same cases back and forth, stop tuning and hand the trade-off to
+    the owner; never use an eval case as a prompt example.
+22. **Fixing the owner's rule instead of following it.** "Darker means more effort" failed the dark-theme check, so
+    effort quietly became "color strength" (lighter on a dark page). The owner meant darker, full stop, and had to say
+    it twice. The rule could have been kept, with a light edge on the dark steps for contrast. Lesson: when a stated
+    rule fails a check, keep the rule and fix what fails, or ask; don't swap in a different rule.
 
 ## Right moves
 
@@ -121,10 +138,25 @@ Newest at the bottom. Each entry: what we did, what happened, what we learned. N
 16. **Grading each answer alone against the person's checklist.** The side-by-side judge picked a side even between
     two Opus medium answers, so every cheaper tier looked worse. A checklist written from the request only, and a
     grader that sees one answer and no model name, asks the question that matters: would the person accept this as
-    done? Sonnet medium was accepted on every case Opus medium was in messages, mechanical edits, lookups, long reads,
-    data and tests (75 cases, about $5), so those chats now start on Sonnet. Lesson: measure "good enough", not "as
+    done? In messages, mechanical edits, lookups, long reads, data and tests, Sonnet medium was accepted as often as
+    Opus medium (same count per class; 75 cases in all, about $5), so those chats now start on Sonnet. Lesson: measure "good enough", not "as
     good as".
 17. **Owner cases expose class edges.** "Write a simple email" was read as final copy and offered Fable, because
     every final-copy case in the eval was public copy and none was a note to one person. A new `message` class with no
     keywords, and four cases like it, fixed it in every language. Lesson: when the owner says a pick is wrong, add the
     case first, then look for the missing neighbour class.
+18. **Two independent checks of the savings.** A script re-counted every session's spend from Claude Code's own
+    transcripts with separate price code; a second model reviewed the accounting code without seeing our conclusions.
+    The script found the cache price and a day of double counting (two router copies loaded); the review found four
+    logic bugs (warm-cache credit, effort scaling, nested agents, re-spawns) and a routing bug. Neither would have
+    found the other's. Lesson: verify money twice, once against data and once against the code.
+19. **Checking colors with a script, in both themes.** The model palette went through a validator (lightness band,
+    chroma, color-blind separation, contrast) before any chart used it. It failed the first teal (it read grey) and
+    its distance to the green. The effort ramps then failed in dark mode: "darker means more effort" made low and high
+    both dark on a dark page. Effort became color strength (fade for low, away from the page for high), checked per
+    ramp. Lesson: a rule stated for one theme needs its own check in the other. (Then undone: see wrong move 22.)
+20. **Making one error cheap instead of rare.** The unhappy check misread about one calm reply in ten, and no wording
+    fixed it. The owner changed what a reading does: the first unhappy reply in a task acts on nothing, the second
+    raises effort. A false raise now needs two misreads in one task (about 1%), while a real struggle still gets help
+    by its second complaint (89%). Lesson: when a classifier's error rate won't move, change the action so a single
+    error costs nothing.

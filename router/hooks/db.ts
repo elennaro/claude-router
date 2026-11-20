@@ -1,7 +1,7 @@
 // The ledger in one SQLite file, ~/.claude/router/router.db. A mod has no Node, so a fixed runner (node's built-in
 // node:sqlite) takes a batch of statements on stdin and runs them in one transaction; every statement lives here.
 import type { EngineInterface } from 'claude-code'
-import type { AgentTally, Bucket, Tally } from '../types'
+import type { AgentTally, Bucket, Cache, Tally } from '../types'
 
 export const RUNNER = `// written by the router plugin: runs one batch of SQL statements from stdin in one transaction
 import { DatabaseSync } from 'node:sqlite'
@@ -35,13 +35,19 @@ process.stdout.write(JSON.stringify(out))
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, project TEXT NOT NULL, label TEXT NOT NULL) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS days (day TEXT, session TEXT, turns INTEGER NOT NULL, first INTEGER NOT NULL, last INTEGER NOT NULL, PRIMARY KEY (day, session)) WITHOUT ROWID;
-CREATE TABLE IF NOT EXISTS usage (day TEXT, session TEXT, who TEXT, model TEXT, steps INTEGER NOT NULL, usd REAL NOT NULL, base REAL NOT NULL, extra REAL NOT NULL DEFAULT 0, PRIMARY KEY (day, session, who, model)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS usage (day TEXT, session TEXT, who TEXT, model TEXT, steps INTEGER NOT NULL, usd REAL NOT NULL, base REAL NOT NULL, extra REAL NOT NULL DEFAULT 0, tin INTEGER NOT NULL DEFAULT 0, tread INTEGER NOT NULL DEFAULT 0, twrite INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (day, session, who, model)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS spawns (day TEXT, session TEXT, type TEXT, runs INTEGER NOT NULL, routed INTEGER NOT NULL, respawned INTEGER NOT NULL, PRIMARY KEY (day, session, type)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY) WITHOUT ROWID;
 `
 
 // 0.4's ledger had no `extra`: older rows get 0 (their extra spend was never split out).
-export const MIGRATE = ['ALTER TABLE usage ADD COLUMN extra REAL NOT NULL DEFAULT 0']
+// Before 0.7 no prompt tokens were kept (tin uncached input, tread cache reads, twrite cache writes): 0, no cache hit known.
+export const MIGRATE = [
+  'ALTER TABLE usage ADD COLUMN extra REAL NOT NULL DEFAULT 0',
+  'ALTER TABLE usage ADD COLUMN tin INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE usage ADD COLUMN tread INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE usage ADD COLUMN twrite INTEGER NOT NULL DEFAULT 0',
+]
 
 export type Step = { sql: string; params?: Array<string | number | null>; all?: true }
 
@@ -94,10 +100,13 @@ export const dayRow = (day: string, session: string, turns: number, first: numbe
   params: [day, session, turns, first, last],
 })
 
-export const usageRow = (day: string, session: string, who: string, model: string, usd: number, base: number, extra: number, steps = 1): Step => ({
-  sql: `INSERT INTO usage (day, session, who, model, steps, usd, base, extra) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (day, session, who, model) DO UPDATE SET steps = steps + excluded.steps, usd = usd + excluded.usd, base = base + excluded.base, extra = extra + excluded.extra`,
-  params: [day, session, who, model, steps, usd, base, extra],
+export const usageRow = (day: string, session: string, who: string, model: string, usd: number, base: number, extra: number, steps = 1, c: Cache = NO_CACHE): Step => ({
+  sql: `INSERT INTO usage (day, session, who, model, steps, usd, base, extra, tin, tread, twrite) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (day, session, who, model) DO UPDATE SET steps = steps + excluded.steps, usd = usd + excluded.usd, base = base + excluded.base, extra = extra + excluded.extra, tin = tin + excluded.tin, tread = tread + excluded.tread, twrite = twrite + excluded.twrite`,
+  params: [day, session, who, model, steps, usd, base, extra, c.input, c.read, c.write],
 })
+
+export const NO_CACHE: Cache = { input: 0, read: 0, write: 0 }
+export const addCache = (a: Cache | undefined, b: Cache): Cache => ({ input: (a?.input ?? 0) + b.input, read: (a?.read ?? 0) + b.read, write: (a?.write ?? 0) + b.write })
 
 export const spawnRow = (day: string, session: string, type: string, routed: number, respawned: number, runs = 1): Step => ({
   sql: `INSERT INTO spawns VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (day, session, type) DO UPDATE SET runs = runs + excluded.runs, routed = routed + excluded.routed, respawned = respawned + excluded.respawned`,
@@ -135,7 +144,7 @@ export function totalsOf(rows: Array<Array<Record<string, unknown>> | null>): To
 
 export const BOARD: Array<Step> = [
   { sql: 'SELECT d.day, d.session, s.project, s.label, d.turns, d.first, d.last FROM days d JOIN sessions s ON s.id = d.session', all: true },
-  { sql: 'SELECT day, session, who, model, steps, usd, base, extra FROM usage', all: true },
+  { sql: 'SELECT day, session, who, model, steps, usd, base, extra, tin, tread, twrite FROM usage', all: true },
   { sql: 'SELECT day, session, type, runs, routed, respawned FROM spawns', all: true },
 ]
 
@@ -150,7 +159,8 @@ export function bucketsOf(rows: Array<Array<Record<string, any>> | null>): Array
     const b = out.get(`${u.day}|${u.session}`)
     if (!b) continue
     const m = b.byModel[u.model] ?? { usd: 0, base: 0, extra: 0, steps: 0 }
-    b.byModel[u.model] = { usd: m.usd + u.usd, base: m.base + u.base, extra: m.extra + (u.extra ?? 0), steps: m.steps + u.steps }
+    const cache = addCache(m.cache, { input: u.tin ?? 0, read: u.tread ?? 0, write: u.twrite ?? 0 })
+    b.byModel[u.model] = { usd: m.usd + u.usd, base: m.base + u.base, extra: m.extra + (u.extra ?? 0), steps: m.steps + u.steps, cache }
     if (u.who !== 'main' && u.who !== 'router') {
       const a = b.agents?.[u.who] ?? NO_AGENT
       b.agents = { ...b.agents, [u.who]: { ...a, usd: a.usd + u.usd, base: a.base + u.base, extra: a.extra + (u.extra ?? 0) } }

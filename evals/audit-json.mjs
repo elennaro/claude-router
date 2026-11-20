@@ -7,7 +7,7 @@ import { WORK, claude, log, pool, readJson, readJsonl, writeJsonl } from './lib.
 
 const identity = readFileSync(join(WORK, 'identity.txt'), 'utf8')
 const TERMS = identity.split(/\r?\n/).filter(l => l && !l.startsWith('#')).map(l => new RegExp(l, 'i'))
-const TEXT = ['window', 'rationale', 'story', 'checkpoints', 'brief']
+const TEXT = ['window', 'rationale', 'story', 'checkpoints', 'brief', 'asked', 'answer', 'next']
 const textOf = c => Object.fromEntries(TEXT.filter(k => c[k] !== undefined).map(k => [k, c[k]]))
 const scan = c => TERMS.filter(re => re.test(JSON.stringify(textOf(c)))).map(re => re.source)
 const show = cs => cs.map(c => `### ${c.id}\n${JSON.stringify(textOf(c), null, 1)}`).join('\n\n')

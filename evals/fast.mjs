@@ -11,6 +11,7 @@ const steps = [
   ['run-classifier.mjs'], ['report.mjs'],
   ['subagents/run.mjs'], ['subagents/report.mjs'],
   ['session/run.mjs'], ['session/report.mjs'],
+  ['mood/run.mjs'], ['mood/report.mjs'],
   ['toolloop/report.mjs'],
 ]
 const before = spent(), t0 = Date.now()

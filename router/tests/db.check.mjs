@@ -28,7 +28,7 @@ try {
   await run($, home, [
     sessionRow('s1', 'proj', ''), sessionRow('s1', 'proj', 'first prompt'), sessionRow('s1', 'proj', 'later prompt'),
     dayRow(day, 's1', 1, 100), dayRow(day, 's1', 0, 300), dayRow(day, 's1', 1, 200), dayRow(day, 's1', 0, 90, 90),
-    usageRow(day, 's1', 'main', 'opus', 1, 2, 0), usageRow(day, 's1', 'main', 'opus', 0.5, 1, 0),
+    usageRow(day, 's1', 'main', 'opus', 1, 2, 0, 1, { input: 10, read: 800, write: 100 }), usageRow(day, 's1', 'main', 'opus', 0.5, 1, 0, 1, { input: 5, read: 900, write: 0 }),
     usageRow(day, 's1', 'router', 'haiku', 0.01, 0, 0.01), usageRow(day, 's1', 'Explore', 'haiku', 0.1, 0.4, 0),
     spawnRow(day, 's1', 'Explore', 1, 1), spawnRow(day, 's1', 'Explore', 0, 1),
     sessionRow('s2', 'other', 'x'), dayRow('2026-11-17', 's2', 1, 50), usageRow('2026-11-17', 's2', 'main', 'opus', 9, 9, 0),
@@ -40,7 +40,10 @@ try {
   const b = bucketsOf(await run($, home, BOARD)).find(x => x.session === 's1')
   assert.deepEqual(b, {
     day, project: 'proj', session: 's1', label: 'first prompt', first: 90, last: 300, turns: 2,
-    byModel: { opus: { usd: 1.5, base: 3, extra: 0, steps: 2 }, haiku: { usd: 0.11, base: 0.4, extra: 0.01, steps: 2 } },
+    byModel: {
+      opus: { usd: 1.5, base: 3, extra: 0, steps: 2, cache: { input: 15, read: 1700, write: 100 } },
+      haiku: { usd: 0.11, base: 0.4, extra: 0.01, steps: 2, cache: { input: 0, read: 0, write: 0 } },
+    },
     agents: { Explore: { runs: 2, routed: 1, respawned: 2, usd: 0.1, base: 0.4, extra: 0 } },
   })
 
@@ -78,6 +81,9 @@ try {
   await run($, old, [sessionRow('o1', 'proj', 'x'), usageRow(day, 'o1', 'main', 'opus', 1, 0.5, 0.5)])
   await run($, old, [])
   assert.deepEqual(totalsOf(await run($, old, totalsQuery('proj'))).proj, { actualUsd: 3, baselineUsd: 3.5, extraUsd: 0.5 })
+  // the 0.7 token columns were added too; the old row reads 0
+  const tok = await run($, old, [{ sql: "SELECT tin, tread, twrite FROM usage WHERE session = 'o1'", all: true }])
+  assert.deepEqual({ ...tok[0][0] }, { tin: 0, tread: 0, twrite: 0 })
   console.log('db check: ok')
 } finally {
   rmSync(home, { recursive: true, force: true })

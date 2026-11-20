@@ -8,7 +8,7 @@
     {
       "name": "router",
       "source": "./router",
-      "description": "Routes each turn, subagent and outside-agent call (Codex, Antigravity) to the model family and effort its work needs, measured against always running Opus medium; always the newest model, never a pinned version."
+      "description": "Routes each turn, subagent and outside-agent call (Codex, Antigravity) to the model family and effort its work needs, with spend measured against running with no router; always the newest model, never a pinned version."
     }
   ]
 }

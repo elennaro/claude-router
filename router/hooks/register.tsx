@@ -1,8 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionMessage } from 'claude-code'
 
-import type { Advice, Bucket, ChatModel, Hint, Tally, RouterView, TurnLog } from '../types'
-import { BOARD, type Step, type Totals, IMPORTED, bucketsOf, dayRow, isAlreadyImported, labelOf, legacySteps, run, sessionRow, spawnRow, totalsOf, totalsQuery, usageRow } from './db'
+import type { Advice, Bucket, Cache, ChatModel, Hint, Mix, Tally, RouterView, TurnLog } from '../types'
+import { BOARD, type Step, type Totals, IMPORTED, addCache, bucketsOf, dayRow, isAlreadyImported, labelOf, legacySteps, run, sessionRow, spawnRow, totalsOf, totalsQuery, usageRow } from './db'
 import { shield } from './guard'
 import { claudeFamily } from './latest'
 import {
@@ -12,8 +12,9 @@ import {
 import {
   type Ask, AUTO, BUILTIN, CLASS_LABELS, type Config, type Usage, type SessionWindow, adviseSwitch, agentTier, autoModel, classifierPrompt, firstModel, parseSessionCheck, sessionCheckPrompt, sessionCheckSystem, classifierSystem, classifyByRules, costUsd, explicitAsk, family,
   classifyPlan, isCacheBreak, merge, settleAnswers, readLabel, prices, rank, setPrices, turnEffort, briefHash, isHarder, needsSecondSample, spawnPick, withoutRouter,
+  type Mood, moodPrompt, moodSystem, parseMood, raiseEffort, raiseSteps, stepUp,
 } from './policy'
-import { type Cell, NAMES, TOOL_NAMES, barsSvg, boardHtml, cardLayout, isExtra, money, net, netPct, netWords, savedUsd, statsSvg, withMode } from './view'
+import { type Cell, NAMES, TOOL_NAMES, barsSvg, boardHtml, cardLayout, hitPct, svgSize, isExtra, modelColor, money, shade, net, netPct, netWords, savedUsd, statsSvg, withMode } from './view'
 
 const PANE = 'router'
 const hint = atom({ plugin: 'router', key: 'hint' } as const, null)
@@ -23,6 +24,8 @@ const tally = atom({ plugin: 'router', key: 'tally' } as const, EMPTY_TALLY, { s
 const EMPTY_VIEW: RouterView = { isOn: true, autoEffort: true, routeModels: true, perMessage: 'unknown', lastClass: null, lastEffort: null, pickerEffort: null, rerouted: 0, routedAgents: 0 }
 const view = atom({ plugin: 'router', key: 'view' } as const, EMPTY_VIEW, { shape: 'view-3' })
 const log = atom({ plugin: 'router', key: 'log' } as const, [] as Array<TurnLog>, { shape: 'log-2' })
+const mix = atom({ plugin: 'router', key: 'mix' } as const, {} as Mix)
+const cacheOf = (u: Usage): Cache => ({ input: u.input_tokens, read: u.cache_read_input_tokens, write: u.cache_creation_input_tokens })
 const panel = atom({ plugin: 'router', key: 'panel' } as const, 'none' as 'none' | 'stats' | 'settings')
 const isWidgetOpen = atom({ plugin: 'router', key: 'isWidgetOpen' } as const, false)
 const modes = atom({ plugin: 'router', key: 'modes' } as const, { global: null as string | null, project: null as string | null, isProject: false })
@@ -60,7 +63,10 @@ type State = {
   rerouted: number // main-loop turns sent at another effort than the picker's
   lastRerouted: string // turnId last counted in rerouted
   agentType: Map<string, string> // agentId -> subagent type, for the dashboard log
-  agentAsked: Map<string, string> // agentId -> the model it would have run on with no router (the parent's), when the router moved it
+  agentAsked: Map<string, string> // agentId -> the model it would have run on with no router (the parent's, before any move of the parent), when that differs from what it runs on
+  agentSpend: Map<string, { usd: number; base: number; extra: number; model: string }> // agentId -> the run's recorded totals
+  briefRun: Map<string, string> // brief hash -> the agentId of its latest run
+  wastedRuns: Set<string> // runs a re-spawn replaced: no saving counts for them
   paneOpened: boolean
   session: string // session id, the ledger's key
   label: string // the first prompt, shortened: how the Board names the session
@@ -81,7 +87,81 @@ type State = {
   queue: Promise<unknown> // serial(): router.db batches, one at a time
   briefs: Map<string, string> // brief hash -> the model its subagent ran on: a repeat goes one tier up
   siblings: Map<string, string> // workflow run -> the highest model its routed agents got: siblings share it (and its cache)
+  savedAgents: string // the subagent memory last written to the store (keepAgents)
+  unhappy: number // replies in this task Haiku read as unhappy with the answer: each raises the turn's effort a step
   v: Env | undefined
+}
+
+// The subagent memory (which runs were moved, their type, effort and spend, repeats, siblings) lives in this process.
+// It goes to the plugin store per session, so a restart or a reload that resumes the chat still knows what it moved.
+// The chat's Stats (tally, turn rows, model mix) go with it: $.state survives a hot reload, not a restart.
+const AGENTS_KEPT = 30 // sessions; older ones are dropped
+const AGENTS_MAX = 400 // entries per map; shortcut: a longer session forgets its oldest runs, raise if that ever shows
+type AgentMemory = Record<'asked' | 'type' | 'effort' | 'briefRun' | 'briefs' | 'siblings', Array<[string, string]>> & {
+  spend: Array<[string, { usd: number; base: number; extra: number; model: string }]>
+  wasted: Array<string>
+  stats: { tally: Tally; log: Array<TurnLog>; mix: Mix }
+}
+async function agentMemory($: EngineInterface, s: State): Promise<AgentMemory> {
+  const last = <T,>(it: Iterable<T>) => [...it].slice(-AGENTS_MAX)
+  return {
+    asked: last(s.agentAsked), type: last(s.agentType), effort: last(s.agentEffort), briefRun: last(s.briefRun),
+    briefs: last(s.briefs), siblings: last(s.siblings), spend: last(s.agentSpend), wasted: last(s.wastedRuns),
+    stats: { tally: await read($, tally), log: await read($, log), mix: await read($, mix) },
+  }
+}
+const NO_AGENTS = ''
+
+// Called from flush (inside serial): writes only when the memory changed. Never throws: routing must not wait on it.
+async function keepAgents($: EngineInterface, s: State) {
+  try {
+    const m = await agentMemory($, s)
+    const json = JSON.stringify(m)
+    if (json === s.savedAgents || !s.session || s.session === 'session' || (!m.stats.log.length && !m.type.length)) return
+    s.savedAgents = json
+    const at = await $.clock.now()
+    await $.store.set(`agents:${s.session}`, { at, ...JSON.parse(json) })
+    const index = (((await $.store.get('agents')) as Array<[string, number]> | undefined) ?? []).filter(([id]) => id !== s.session)
+    index.push([s.session, at])
+    for (const [id] of index.splice(0, Math.max(0, index.length - AGENTS_KEPT))) await $.store.delete(`agents:${id}`)
+    await $.store.set('agents', index)
+  } catch { /* a full or broken store only costs the memory after a restart */ }
+}
+
+// A chat that ran before the mix existed (an update loaded mid-chat) starts its model band from the turn log.
+// shortcut: the log keeps the last 30 turns and runs, so an older chat's band covers only those until new steps add up
+async function seedMix($: EngineInterface) {
+  if (Object.keys(await read($, mix)).length) return
+  const rows = await read($, log)
+  if (!rows.length) return
+  await update($, mix, (): Mix => {
+    const m: Mix = {}
+    for (const r of rows) {
+      const k = `${r.model}:${r.effort}`
+      m[k] = { usd: (m[k]?.usd ?? 0) + r.usd, steps: (m[k]?.steps ?? 0) + r.steps, cache: r.cache ? addCache(m[k]?.cache, r.cache) : (m[k]?.cache ?? { input: 0, read: 0, write: 0 }) }
+    }
+    return m
+  })
+}
+
+async function restoreAgents($: EngineInterface, s: State) {
+  try {
+    const id = await $.session.id()
+    const m = (await $.store.get(`agents:${id}`)) as Partial<AgentMemory> | undefined
+    if (!m) return
+    const fill = <V,>(map: Map<string, V>, rows?: Array<[string, V]>) => { for (const [k, v] of rows ?? []) if (!map.has(k)) map.set(k, v) }
+    fill(s.agentAsked, m.asked); fill(s.agentType, m.type); fill(s.agentEffort, m.effort); fill(s.briefRun, m.briefRun)
+    fill(s.briefs, m.briefs); fill(s.siblings, m.siblings); fill(s.agentSpend, m.spend)
+    for (const w of m.wasted ?? []) s.wastedRuns.add(w)
+    // a fresh process starts from zero; after a hot reload the atoms already hold this chat
+    const st = m.stats
+    if (st && (await read($, tally)).actualUsd === 0 && (await read($, log)).length === 0 && Array.isArray(st.log)) {
+      await update($, tally, (): Tally => ({ ...EMPTY_TALLY, ...st.tally }))
+      await update($, log, (): Array<TurnLog> => st.log)
+      await update($, mix, (): Mix => st.mix ?? {})
+    }
+    s.savedAgents = JSON.stringify(await agentMemory($, s))
+  } catch { /* nothing kept: runs from before the restart are booked as asked, as before */ }
 }
 
 async function readJson($: EngineInterface, path: string): Promise<any> {
@@ -177,6 +257,7 @@ function flush($: EngineInterface, s: State) {
       if (!s.warned) $.ui.toast(`router: savings stats need Node.js 22.13 or newer on PATH; routing works without it. (${String(err).slice(0, 100)})`)
       s.warned = true
     }
+    await keepAgents($, s)
   })
 }
 
@@ -217,8 +298,9 @@ function serial<T>(s: State, fn: () => Promise<T>): Promise<T> {
 
 // One step's spend. who: 'main', a subagent type, or 'router' (the classifier and session check: spend with no
 // baseline, since without the router they would not run). baseline: what the step would have cost with no router.
-async function record($: EngineInterface, s: State, model: string, u: Usage, who: string, baseline: number, turnId?: string) {
-  const actual = costUsd(model, u)
+// longCache: a main-thread step, whose cache writes are 1-hour entries (costUsd).
+async function record($: EngineInterface, s: State, model: string, u: Usage, who: string, baseline: number, turnId?: string, longCache = false) {
+  const actual = costUsd(model, u, longCache)
   const extra = Math.max(0, actual - baseline)
   await update($, tally, (t): Tally => ({ actualUsd: t.actualUsd + actual, baselineUsd: t.baselineUsd + baseline, extraUsd: t.extraUsd + extra }))
   const { day, now } = await stamp($, s)
@@ -227,8 +309,20 @@ async function record($: EngineInterface, s: State, model: string, u: Usage, who
   later($, s, [
     sessionRow(s.session, s.project, s.label),
     dayRow(day, s.session, Number(isNewTurn), now),
-    usageRow(day, s.session, who, family(model), actual, baseline, extra),
+    usageRow(day, s.session, who, family(model), actual, baseline, extra, 1, cacheOf(u)),
   ])
+}
+
+// A run a re-spawn replaced: its booked baseline goes, and all it spent counts as extra.
+async function takeBack($: EngineInterface, s: State, who: string, id: string) {
+  s.wastedRuns.add(id)
+  const a = s.agentSpend.get(id)
+  if (!a) return
+  s.agentSpend.delete(id)
+  const extra = a.usd - a.extra
+  await update($, tally, (t): Tally => ({ ...t, baselineUsd: t.baselineUsd - a.base, extraUsd: t.extraUsd + extra }))
+  const { day } = await stamp($, s)
+  later($, s, [usageRow(day, s.session, who, a.model, 0, -a.base, extra, 0)])
 }
 
 async function probeLog($: EngineInterface, path: string, line: object) {
@@ -262,6 +356,26 @@ async function haiku($: EngineInterface, s: State, text: string): Promise<{ cls:
     return readLabel(r.text, labels, s.cfg)
   } catch {
     return { cls: undefined, sure: false } // classifier failed: keep the current class
+  }
+}
+
+// Is the person unhappy with the last answer? One Haiku sample reads the last request, the end of the answer and the
+// new prompt; undefined when there is no answer yet, Haiku is unsure, late or failed (nothing changes then).
+async function mood($: EngineInterface, s: State, next: string): Promise<Mood | undefined> {
+  const msgs = ((await $.session.messages().catch(() => [])) as Array<SessionMessage>) ?? []
+  const typed = (m: SessionMessage) => m.role === 'user' && m.text.trim() && !m.toolResults?.length
+  const a = msgs.findLastIndex(m => m.role === 'assistant' && m.text.trim())
+  const asked = a < 0 ? undefined : msgs.slice(0, a).findLast(typed)
+  if (!asked) return undefined
+  try {
+    const r = await $.model.complete({
+      model: s.cfg.classifier.model, effort: 'low', maxTokens: 40, timeoutMs: 4000,
+      system: moodSystem, prompt: moodPrompt({ asked: asked.text, answer: msgs[a]!.text, next }),
+    })
+    if (r.isAnswered && r.usage) await record($, s, s.cfg.classifier.model, r.usage, 'router', 0)
+    return r.isAnswered ? parseMood(r.text) : undefined
+  } catch {
+    return undefined
   }
 }
 
@@ -352,15 +466,17 @@ async function switchChat($: EngineInterface, s: State, model: string, kind: 'co
 async function clearChat($: EngineInterface, s: State) {
   Object.assign(s, {
     session: '', label: '', lastLedgerTurn: '', stickyAsk: undefined, ask: undefined, seenPrompt: false, hasClassified: false,
-    hadClass: false, lastClass: null, lastHintModel: null, switchTurn: false, sure: false, samples: [], turnCount: 0, quietUntil: 0, declined: null,
+    hadClass: false, lastClass: null, lastHintModel: null, switchTurn: false, sure: false, samples: [], turnCount: 0, quietUntil: 0, declined: null, unhappy: 0,
     prev: NO_PREV, lastContext: 0, rerouted: 0, lastRerouted: '',
   })
-  for (const m of [s.briefs, s.siblings, s.agentEffort, s.agentType, s.agentAsked]) m.clear()
+  for (const m of [s.briefs, s.siblings, s.agentEffort, s.agentType, s.agentAsked, s.agentSpend, s.briefRun, s.wastedRuns]) m.clear()
+  s.savedAgents = NO_AGENTS // the old chat's memory stays in the store, for a resume of it
   if (!s.switching) await update($, chat, (c): ChatModel => ({ ...c, model: null, by: null, effort: null }))
   await update($, advice, () => null)
   await update($, hint, () => null)
   await update($, tally, () => EMPTY_TALLY)
   await update($, log, (): Array<TurnLog> => [])
+  await update($, mix, (): Mix => ({}))
   await update($, view, (v): RouterView => ({ ...v, lastClass: null, rerouted: 0, routedAgents: 0 }))
 }
 
@@ -399,6 +515,16 @@ async function suggest($: EngineInterface, s: State, cls: string) {
     await update($, hint, () => h)
     await update($, isHidden, () => false)
   }
+}
+
+// Unhappy four times in one task: the tip offers the next model up. Opus and Fable stay, so Fable is never offered on its own.
+async function unhappyTip($: EngineInterface, s: State) {
+  const current = (await read($, chat)).model ?? (await $.session.model())
+  const up = stepUp(current)
+  if (family(up) === family(current)) return
+  s.lastHintModel = up
+  await update($, hint, (): Hint => ({ cls: 'this task', model: up, why: 'four answers missed', current: family(current) }))
+  await update($, isHidden, () => false)
 }
 
 async function status($: EngineInterface, s: State): Promise<string> {
@@ -475,18 +601,24 @@ async function facts($: EngineInterface, s: State) {
   const since = new Date(s.totals.since ?? (await $.clock.now())).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
   const chatMode: 'off' | 'effort' | 'models' | 'both' = !v.isOn ? 'off' : !v.autoEffort ? 'models' : v.routeModels ? 'both' : 'effort'
   const cost = (await $.session.usage().catch(() => undefined))?.cost?.usd // the app's own total, /cost's, every request included
-  return { v, turns, chat, proj, m, main, where, now, since, chatMode, cost }
+  const spend = await read($, mix)
+  const hit = hitPct(Object.values(spend).reduce((a: Cache | undefined, x) => addCache(a, x.cache), undefined)) // this chat, main and subagents
+  return { v, turns, chat, proj, m, main, where, now, since, chatMode, cost, spend, hit }
 }
 
 function cells(s: State, f: Awaited<ReturnType<typeof facts>>): Array<Cell> {
   const picked = f.main?.picker && f.main.picker !== f.main.effort ? `you picked ${f.main.picker}` : `task: ${f.main?.cls ?? 'none yet'}`
+  const swatch = f.v.isOn ? (f.main ? `${f.main.model}:${f.main.effort}` : `${s.cfg.main.model}:${s.cfg.main.effort}`) : undefined
   return [
-    { label: 'This chat vs no router', value: netWords(f.chat), isExtra: isExtra(f.chat), sub: `${money(savedUsd(f.chat))} saved, ${money(f.chat.extraUsd)} extra` },
-    { label: `${s.project}, all chats`, value: netWords(f.proj), isExtra: isExtra(f.proj), sub: `${netPct(f.proj)}% ${isExtra(f.proj) ? 'more' : 'less'}, since ${f.since}` },
-    { label: 'Now', value: f.v.isOn ? f.now : 'Off', sub: !f.v.isOn ? `off ${f.where}` : f.chatMode === 'effort' ? 'effort only' : f.chatMode === 'models' ? 'models only' : picked },
-    { label: 'Spent this chat', value: money(f.cost ?? f.chat.actualUsd), sub: `re-routed ${f.v.rerouted} ${f.v.rerouted === 1 ? 'turn' : 'turns'}, ${f.v.routedAgents} ${f.v.routedAgents === 1 ? 'agent' : 'agents'}` },
+    { label: 'This chat', value: netWords(f.chat), isExtra: isExtra(f.chat), sub: `${money(savedUsd(f.chat))} saved, ${money(f.chat.extraUsd)} extra` },
+    { label: 'This project', value: netWords(f.proj), isExtra: isExtra(f.proj), sub: `${netPct(f.proj)}% ${isExtra(f.proj) ? 'more' : 'less'} since ${f.since}` },
+    { label: 'Now', value: f.v.isOn ? f.now : 'Off', swatch, sub: !f.v.isOn ? `off ${f.where}` : f.chatMode === 'effort' ? 'effort only' : f.chatMode === 'models' ? 'models only' : picked },
+    { label: 'Spent this chat', value: money(f.cost ?? f.chat.actualUsd), sub: f.hit === undefined ? 'cache hit not known yet' : `cache hit ${f.hit}%` },
   ]
 }
+
+// The note at the end of the Stats card's model band header.
+const reroutedNote = (v: RouterView) => `${v.rerouted} ${v.rerouted === 1 ? 'turn' : 'turns'}, ${v.routedAgents} ${v.routedAgents === 1 ? 'agent' : 'agents'} re-routed`
 
 // Shared by /route and the dashboard's buttons.
 async function setMode($: EngineInterface, s: State, isOn: boolean) {
@@ -569,15 +701,17 @@ export const register: Register = on => {
   const s: State = {
     cfg: BUILTIN, home: '', root: '', project: 'unknown', sources: 'built-in only', lastClass: null, lastHintModel: null,
     hasClassified: false, hadClass: false, skipEffortThisTurn: false, headless: false, agentEffort: new Map(), defs: new Map(),
-    prev: NO_PREV, lastContext: 0, cleanChanges: 0, baseEffort: '', rerouted: 0, lastRerouted: '', agentType: new Map(), agentAsked: new Map(), paneOpened: false,
+    prev: NO_PREV, lastContext: 0, cleanChanges: 0, baseEffort: '', rerouted: 0, lastRerouted: '', agentType: new Map(), agentAsked: new Map(), agentSpend: new Map(), briefRun: new Map(), wastedRuns: new Set(), paneOpened: false,
     session: 'session', label: '', lastLedgerTurn: '', pending: [], scheduled: false, warned: false, totals: { proj: EMPTY_TALLY, since: undefined }, routeModels: true, sure: false, switchTurn: false,
     ask: undefined, stickyAsk: undefined, v: undefined, seenPrompt: false, samples: [], turnCount: 0, quietUntil: 0, declined: null, switching: false,
-    briefs: new Map(), siblings: new Map(), queue: Promise.resolve(),
+    briefs: new Map(), siblings: new Map(), queue: Promise.resolve(), savedAgents: NO_AGENTS, unhappy: 0,
   }
 
   on('session.start', async ($, e, next) => {
     s.headless = !e.isInteractive // until a surface attaches: claude -p never gets one
     await load($, s)
+    await restoreAgents($, s)
+    await seedMix($).catch(() => undefined)
     await $.command.register({
       name: 'route',
       description: 'Router mode: on | off | status | board | widget | effort on|off|retest | models on|off|refresh | update claude|codex|antigravity | reload',
@@ -719,7 +853,16 @@ export const register: Register = on => {
     if (s.turnCount % 20 === 0) $.clock.after(500, async () => { await sessionCheck($, s, 'periodic') })
     const chosen = await read($, chat)
     const strict = chosen.by === 'auto' && Boolean(chosen.model) // the router's own cheap pick: re-check, and doubt means back to the default
-    const cls = await classify($, s, e.text, isFirst && !asked?.model && s.routeModels, strict)
+    const [found, felt] = await Promise.all([
+      classify($, s, e.text, isFirst && !asked?.model && s.routeModels, strict),
+      isFirst || midTurn || !(s.cfg.autoEffort || s.routeModels) ? undefined : mood($, s, e.text),
+    ])
+    // an unhappy reply goes on with the same task: it keeps the task's class unless the classifier found a harder one;
+    // a content follow-up the classifier could not place (it is told to say default for those) keeps it too
+    const keep = felt === 'unhappy' ? !(found && isHarder(found, s.lastClass, s.cfg)) : felt === 'same' && found === null
+    const cls = keep ? undefined : found
+    if (felt === 'unhappy') s.unhappy++
+    else if (felt === 'new' || (felt === undefined && found !== undefined && found !== s.lastClass)) s.unhappy = 0 // a new task starts calm
     if (midTurn && !(cls === null && strict) && !(cls && isHarder(cls, s.lastClass, s.cfg))) return go(e) // nothing harder: the turn keeps its routing
     s.switchTurn = !midTurn && Boolean(cls) && s.sure // every prompt starts on the picked model; only a sure quick task moves its own turn
     if (isFirst && !asked?.model && s.routeModels && !chosen.by) {
@@ -732,6 +875,7 @@ export const register: Register = on => {
     if (cls && s.routeModels) await suggest($, s, cls)
     else if (cls) s.lastClass = cls // effort-only: the class still sets the effort, with no model tip
     else if (cls === null) s.lastClass = null // a new task with no class: back to the default effort
+    if (felt === 'unhappy' && s.unhappy === 4 && s.routeModels) await unhappyTip($, s) // once per task, even after an earlier tip or Not now: a new reason
     await update($, view, (v): RouterView => ({ ...v, lastClass: s.lastClass }))
     return go(e)
   }))
@@ -772,7 +916,15 @@ export const register: Register = on => {
     if (run) s.siblings.set(run, model)
     if (hash) s.briefs.set(hash, model)
     if (started.agentId && tier?.effort && !def.effort) s.agentEffort.set(started.agentId, tier.effort)
-    if (started.agentId && moved) s.agentAsked.set(started.agentId, family(e.parentModel))
+    // with no router a nested agent's parent would itself be on its own no-router model (audit 2026-11-19)
+    const parentNoRouter = (e.parentAgentId && s.agentAsked.get(e.parentAgentId)) || family(e.parentModel)
+    if (started.agentId && (moved ? model : family(e.parentModel)) !== parentNoRouter) s.agentAsked.set(started.agentId, parentNoRouter)
+    if (started.agentId && hash) {
+      // the same brief again: with no router one run would have done, so the replaced run saved nothing
+      const prev = s.briefRun.get(hash)
+      if (before && prev) await takeBack($, s, e.subagentType, prev)
+      s.briefRun.set(hash, started.agentId)
+    }
     if (moved || tier?.effort) await update($, view, (v): RouterView => ({ ...v, routedAgents: v.routedAgents + 1 }))
     return started
   }))
@@ -788,7 +940,8 @@ export const register: Register = on => {
     const asked = ask?.model && family(ask.model) !== family(e.model) ? ask.model : undefined
     // then the chat's model, and under it a sure quick task's one-turn move, unless the person chose the model
     const base = picked?.model && family(picked.model) !== family(e.model) ? picked.model : undefined
-    const model = asked ?? (e.agentId === undefined && !probe && picked?.by !== 'you' ? stepModel(s, base ?? e.model) ?? base : base)
+    // a named model always wins, also when it is the chat's own: "use opus" on an Opus chat keeps the turn on Opus (audit 2026-11-19)
+    const model = ask?.model ? asked : (e.agentId === undefined && !probe && picked?.by !== 'you' ? stepModel(s, base ?? e.model) ?? base : base)
     if (e.agentId === undefined && e.effort !== undefined) {
       if (probe) {
         effort = probe as typeof effort // measurement mode (evals): force one effort on the main loop
@@ -798,7 +951,8 @@ export const register: Register = on => {
           s.baseEffort = String(e.effort)
           await update($, view, (x): RouterView => ({ ...x, pickerEffort: s.baseEffort }))
         }
-        const target = turnEffort(s.lastClass, s.cfg, model ?? e.model) ?? s.cfg.main.effort
+        // every second unhappy reply in this task raises it a step (effort keeps the prompt cache; a model switch would not)
+        const target = raiseEffort(turnEffort(s.lastClass, s.cfg, model ?? e.model) ?? s.cfg.main.effort, raiseSteps(s.unhappy))
         // the starting effort is the app picker's default and gets routed; one the person changes to later (/effort, ultrathink) is theirs
         const isDefault = String(e.effort) === s.baseEffort
         if (s.cfg.mode !== 'off' && !s.headless && s.cfg.autoEffort && isDefault && v.perMessage !== 'unsupported' && !s.skipEffortThisTurn && target) effort = target as typeof effort
@@ -819,20 +973,29 @@ export const register: Register = on => {
       model: e.agentId ? (s.agentAsked.get(e.agentId) ?? u.model) : (asked ?? (picked?.by === 'you' ? base : undefined) ?? e.model),
       effort: (ask?.effort ?? picked?.effort ?? e.effort) as string | undefined,
     }
-    const baseUsd = withoutRouter(noRouter, { model: u.model, effort: effort as string | undefined }, u, e.agentId ? 0 : s.lastContext)
-    await record($, s, u.model, u, who, baseUsd, e.agentId === undefined ? e.turnId : undefined)
+    const longCache = e.agentId === undefined
+    const baseUsd = s.wastedRuns.has(e.agentId ?? "") ? 0 : withoutRouter(noRouter, { model: u.model, effort: effort as string | undefined }, u, e.agentId ? 0 : s.lastContext, longCache)
+    await record($, s, u.model, u, who, baseUsd, e.agentId === undefined ? e.turnId : undefined, longCache)
+    if (e.agentId) { // a run's totals, so a re-spawn of the same brief can take back the first run's saving
+      const a = s.agentSpend.get(e.agentId) ?? { usd: 0, base: 0, extra: 0, model: family(u.model) }
+      const usd = costUsd(u.model, u)
+      s.agentSpend.set(e.agentId, { usd: a.usd + usd, base: a.base + baseUsd, extra: a.extra + Math.max(0, usd - baseUsd), model: family(u.model) })
+    }
     const sent = String(effort ?? '')
     // one log row per main-loop turn or subagent run, its steps summed
     const id = e.agentId ?? e.turnId
-    const usd = costUsd(u.model, u)
+    const usd = costUsd(u.model, u, longCache)
+    const c = cacheOf(u)
     await update($, log, (rows): Array<TurnLog> => {
       const i = rows.findIndex(r => r.id === id) // subagent steps interleave with the main loop's
       const auto = Boolean(model) && !asked
       const isAsked = Boolean(asked || ask?.effort)
-      if (i >= 0) return rows.map((r, k) => (k === i ? { ...r, usd: r.usd + usd, baseUsd: r.baseUsd + baseUsd, steps: r.steps + 1, effort: sent, model: family(u.model), auto, asked: isAsked } : r))
-      const row: TurnLog = { id, who, cls: e.agentId ? '-' : (s.lastClass ?? 'default'), model: family(u.model), effort: sent, picker: String(e.effort ?? ''), usd, baseUsd, steps: 1, auto, asked: isAsked }
+      if (i >= 0) return rows.map((r, k) => (k === i ? { ...r, usd: r.usd + usd, baseUsd: r.baseUsd + baseUsd, steps: r.steps + 1, effort: sent, model: family(u.model), auto, asked: isAsked, cache: addCache(r.cache, c) } : r))
+      const row: TurnLog = { id, who, cls: e.agentId ? '-' : (s.lastClass ?? 'default'), model: family(u.model), effort: sent, picker: String(e.effort ?? ''), usd, baseUsd, steps: 1, auto, asked: isAsked, cache: c }
       return [...rows, row].slice(-30)
     })
+    const key = `${family(u.model)}:${sent}`
+    await update($, mix, (m): Mix => ({ ...m, [key]: { usd: (m[key]?.usd ?? 0) + usd, steps: (m[key]?.steps ?? 0) + 1, cache: addCache(m[key]?.cache, c) } }))
     if (e.agentId === undefined) {
       const now = await $.clock.now()
       s.lastContext = u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens
@@ -883,9 +1046,10 @@ export const register: Register = on => {
     const row = (
       <Box key="router-row" flexDirection="row" alignItems="center" gap={2} width={e.props.bodyColumns}>
         <Text><Text color={f.v.isOn ? 'success' : 'inactive'}>●</Text> Router</Text>
-        {f.v.isOn && <Text wrap="truncate-end">{f.now}</Text>}
+        {f.v.isOn && <Text wrap="truncate-end"><Text color={modelColor(f.main?.model ?? s.cfg.main.model)}>■</Text> {f.now}</Text>}
         {f.v.isOn && picked.by === 'auto' && picked.model && <Button key="router-chat-undo" plain dimColor label={`Picked ${pretty(picked.model)} for this chat · Undo`} onPress={undo} />}
         {f.v.isOn && <Text dimColor={!isExtra(f.chat)} color={isExtra(f.chat) ? 'warning' : undefined} wrap="truncate-end">{netWords(f.chat)}</Text>}
+        {f.v.isOn && f.hit !== undefined && <Text dimColor wrap="truncate-end">cache hit {f.hit}%</Text>}
         {!f.v.isOn && <Text dimColor wrap="truncate-end">off {f.where}</Text>}
         {open !== 'settings' && Object.values((await read($, tools))?.tools ?? {}).some(x => x.isBehind) && <Button key="router-update-tip" plain label="Update available" onPress={flip('settings')} />}
         <Box flexGrow={1} />
@@ -921,8 +1085,9 @@ export const register: Register = on => {
     if (open === 'stats') {
       const c = cells(s, f)
       const fit = cardLayout(e.props.bodyColumns)
+      const src = statsSvg(c, f.turns, fit.width, fit.perRow, f.spend, reroutedNote(f.v))
       const card = Svg
-        ? <Svg key="router-card" isInteractive source={statsSvg(c, f.turns, fit.width, fit.perRow)} alt={c.map(x => `${x.label} ${x.value}, ${x.sub}`).join('; ')} />
+        ? <Svg key="router-card" isInteractive source={src} {...svgSize(src)} alt={c.map(x => `${x.label} ${x.value}, ${x.sub}`).join('; ')} />
         : (
             <Box key="router-card" flexDirection="row" gap={2}>
               {c.map(x => (
@@ -940,18 +1105,25 @@ export const register: Register = on => {
     // Settings: a label column so every control starts at the same place, each group's note right under it, and a
     // little more space between groups than inside them. In each choice the picked side is the filled button.
     const LABEL = 11 // cells: the longest label, "This chat", plus room
-    const choices = <V extends string>(key: string, options: Array<[V, string]>, value: V, set: (v: V) => unknown) =>
-      options.map(([v, text]) => (
-        <Button key={`${key}-${v}`} label={text} {...(v === value ? { variant: 'primary' as const } : { plain: true as const, dimColor: true })} onPress={() => set(v)} />
-      ))
-    const field = (key: string, label: string, kids: Array<ReturnType<typeof h>> | ReturnType<typeof h>) => (
-      <Box key={key} flexDirection="row" alignItems="center" gap={1}>
+    // dot: a model choice carries its color, so the row doubles as the legend for Stats and the Board
+    const choices = <V extends string>(key: string, options: Array<[V, string]>, value: V, set: (v: V) => unknown, dot?: (v: V) => string | undefined) =>
+      options.map(([v, text]) => {
+        const look = v === value ? { variant: 'primary' as const } : { plain: true as const, dimColor: true }
+        const color = dot?.(v)
+        // no label with a dot: the desktop draws a label in place of the children
+        return color
+          ? <Button key={`${key}-${v}`} {...look} onPress={() => set(v)}><Text color={color}>●</Text> {text}</Button>
+          : <Button key={`${key}-${v}`} label={text} {...look} onPress={() => set(v)} />
+      })
+    // top: a row that may wrap to two lines keeps its label on the first one
+    const field = (key: string, label: string, kids: Array<ReturnType<typeof h>> | ReturnType<typeof h>, top = false) => (
+      <Box key={key} flexDirection="row" alignItems={top ? 'flex-start' : 'center'} gap={1}>
         <Box key={`${key}-label`} width={LABEL} flexShrink={0}><Text dimColor>{label}</Text></Box>
         <Box key={`${key}-kids`} flexDirection="row" alignItems="center" columnGap={1} flexWrap="wrap" flexShrink={1}>{kids}</Box>
       </Box>
     )
     const note = (key: string, text: string) => <Box key={key} marginLeft={LABEL + 1}><Text dimColor wrap="wrap">{text}</Text></Box>
-    const group = (key: string, ...rows: Array<ReturnType<typeof h> | false>) => <Box key={key} flexDirection="column">{rows.filter(Boolean)}</Box>
+    const group = (key: string, ...rows: Array<ReturnType<typeof h> | false>) => <Box key={key} flexDirection="column" rowGap="sm">{rows.filter(Boolean)}</Box>
     const ONOFF: Array<['on' | 'off', string]> = [['on', 'On'], ['off', 'Off']]
     const globalOn = f.m.global !== 'off'
     const projectOn = f.m.project === null ? globalOn : f.m.project !== 'off'
@@ -975,7 +1147,7 @@ export const register: Register = on => {
       )
     }
     const settings = (
-      <Box key="router-settings-box" flexDirection="column" gap={1}>
+      <Box key="router-settings-box" flexDirection="column" rowGap="md">
         {group('router-g-scope',
           field('router-scope', 'Routing', [
             <Text key="router-global-l">Everywhere</Text>,
@@ -987,11 +1159,11 @@ export const register: Register = on => {
           field('router-chat', 'This chat', choices('router-chat', [['off', 'Off'], ['effort', 'Effort'], ['models', 'Models'], ['both', 'Both']], f.chatMode, v => setChat($, s, v))),
           note('router-chat-note', 'Effort follows each task. Models picks subagent models and suggests a chat switch. Lasts until the session ends.'))}
         {group('router-g-pick',
-          field('router-model', 'Model', choices('router-model', [['auto', 'Auto'], ['haiku', 'Haiku'], ['sonnet', 'Sonnet'], ['opus', 'Opus'], ['fable', 'Fable']], picked.by === 'you' ? family(picked.model ?? s.cfg.main.model) : 'auto', v => pickModel($, v))),
-          field('router-effort', 'Effort', choices('router-effort', [['auto', 'Auto'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra high'], ['max', 'Max']], picked.effort ?? 'auto', v => update($, chat, (c): ChatModel => ({ ...c, effort: v === 'auto' ? null : v })))),
+          field('router-model', 'Model', choices('router-model', [['auto', 'Auto'], ['haiku', 'Haiku'], ['sonnet', 'Sonnet'], ['opus', 'Opus'], ['fable', 'Fable']], picked.by === 'you' ? family(picked.model ?? s.cfg.main.model) : 'auto', v => pickModel($, v), v => (v === 'auto' ? undefined : modelColor(v)))),
+          field('router-effort', 'Effort', choices('router-effort', [['auto', 'Auto'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra high'], ['max', 'Max']], picked.effort ?? 'auto', v => update($, chat, (c): ChatModel => ({ ...c, effort: v === 'auto' ? null : v })), v => (v === 'auto' ? undefined : shade(f.main?.model ?? s.cfg.main.model, v, 'dark')))),
           note('router-pick-note', 'A pick here wins for this chat. Auto gives it back to the router.'))}
         {group('router-g-tools',
-          field('router-clis', 'Tools', [cli('claude'), cli('codex'), cli('antigravity'), <Button key="router-recheck" plain dimColor label="Re-check" onPress={recheck} />]),
+          field('router-clis', 'Tools', [cli('claude'), cli('codex'), cli('antigravity'), <Button key="router-recheck" plain dimColor label="Re-check" onPress={recheck} />], true),
           note('router-tools-note', 'The newest models need current tools.'))}
         <Box key="router-more" flexDirection="row" alignItems="center" gap={2} marginLeft={LABEL + 1}>
           <Button key="router-widget" plain label={widgetOpen ? 'Hide widget' : 'Show widget'} onPress={() => showWidget($, !widgetOpen)} />
@@ -1019,7 +1191,7 @@ export const register: Register = on => {
         <Box flexDirection="column" gap={1}>
           {line('w-now', 'Routing', f.v.isOn ? f.now : `off ${f.where}`)}
           {line('w-saved', isExtra(f.chat) ? 'Extra this chat' : 'Saved this chat', `${money(Math.abs(net(f.chat)))} · ${netPct(f.chat)}%`)}
-          {Svg && f.turns.length > 1 && <Svg key="w-bars" isInteractive source={barsSvg(f.turns, 220, 24)} alt={`Cost of the last ${f.turns.length} turns against no router`} />}
+          {Svg && f.turns.length > 1 && <Svg key="w-bars" isInteractive source={barsSvg(f.turns, 220, 24)} width={220} height={24} alt={`Cost of the last ${f.turns.length} turns against no router`} />}
         </Box>
       )
     }
@@ -1027,7 +1199,7 @@ export const register: Register = on => {
     return (
       <Box flexDirection="column" gap={1}>
         {Svg
-          ? <Svg key="p-card" isInteractive source={statsSvg(c, f.turns, 360, 2)} alt={c.map(x => `${x.label} ${x.value}, ${x.sub}`).join('; ')} />
+          ? <Svg key="p-card" isInteractive source={statsSvg(c, f.turns, 360, 2, f.spend, reroutedNote(f.v))} width={360} alt={c.map(x => `${x.label} ${x.value}, ${x.sub}`).join('; ')} />
           : c.map(x => line(`p-${x.label}`, x.label, `${x.value} · ${x.sub}`))}
         <Box flexDirection="row" gap={2}>
           <Button key="p-board" plain label="Open board" onPress={() => openBoard($, s).catch(() => $.ui.toast('router: could not open the board'))} />

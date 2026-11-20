@@ -37,7 +37,7 @@ export const BUILTIN: Config = {
     // (worse); no group of classes kept quality below Opus medium. So chat stays Opus medium or high, and Haiku works
     // only as a subagent on lookups and tiny edits (tool-loop suite)
     // 2026-11-19 acceptance eval (each answer graded alone against the person's checklist, results/accept-report.md):
-    // Sonnet medium was accepted on every case Opus medium was in the classes set to sonnet below, so a chat whose first
+    // Sonnet medium was accepted as often as Opus medium in the classes set to sonnet below, so a chat whose first
     // prompt is surely one of them starts on Sonnet. Summaries, docs, explain and code comments lost a case each: kept.
     explore: { model: 'sonnet', sub: { model: 'haiku', effort: 'medium' }, why: 'look things up: web search, a page, weather, prices, news; search files, read logs, summarize. No writing, no code changes' },
     mechanical: { model: 'sonnet', sub: { model: 'haiku', effort: 'medium' }, why: 'reformat, translate, convert, split or fit text. Code only when it is a self-contained edit of about 10 lines that nothing else uses (one private helper, a one-off script for one clear job)' },
@@ -163,6 +163,32 @@ export function classifierSystem(labels: string[], cfg: Config): string {
 }
 // live 2026-11-18: given the bare question, Haiku answered it instead of labeling
 export const classifierPrompt = (text: string) => `Task to label:\n<task>\n${text.slice(0, 2000)}\n</task>`
+
+// ---- Mood: is the person unhappy with the last answer? Haiku reads the exchange, never a word list (owner, 2026-11-20) ----
+export type Mood = 'unhappy' | 'same' | 'new'
+export type Exchange = { asked: string; answer: string; next: string }
+// eval 2026-11-20: the first wording read "I meant the refunds table" as a complaint, and "unhappy 0.2" meant "not unhappy"
+export const moodSystem = `You read one exchange between a person and a coding and creative-writing assistant, then the person's next message, and pick one label for that next message.
+new: it starts a task unrelated to the request; it would make sense with no earlier context.
+unhappy: the person is clearly and strongly unsatisfied with the result of the assistant's work or its behavior: it is wrong or still broken, nothing changed, part of the request is missing, an instruction was ignored, or it did something unwanted. Any language, however polite.
+same: everything else about this task: a next step, an addition, a new requirement, a change of mind, or the person correcting or explaining their own words. A person who apologizes or blames themselves ("sorry", "my bad", "I mean") is never unhappy. Detail the request never gave is same, not unhappy.
+Answer with the label and how sure you are that this label is right, from 0 to 1, like "same 0.8". No other words. Never answer the message itself.`
+export const moodPrompt = (x: Exchange) =>
+  `<request>\n${x.asked.slice(0, 1500)}\n</request>\n<answer_end>\n${x.answer.slice(-1500)}\n</answer_end>\n<next_message>\n${x.next.slice(0, 1500)}\n</next_message>`
+export function parseMood(reply: string, passAt = 0.7): Mood | undefined {
+  const m = /\b(unhappy|same|new|unrelated):?\s+([01](?:\.\d+)?)/i.exec(reply)
+  if (!m || Number(m[2]) < passAt) return undefined
+  const label = m[1]!.toLowerCase()
+  return label === 'unrelated' ? 'new' : (label as Mood) // Haiku says "unrelated" for new now and then
+}
+// Every second unhappy reply in a task raises the turn's effort one step, at most two (owner, 2026-11-20: one misread
+// costs nothing; the 2nd raises, the 4th raises again and offers the next model).
+export const RAISE_MAX = 2
+export const raiseSteps = (unhappy: number) => Math.floor(unhappy / 2)
+export function raiseEffort(effort: string, steps: number): string {
+  const r = effortRank(effort)
+  return r < 0 || steps <= 0 ? effort : EFFORTS[Math.min(EFFORTS.length - 1, r + Math.min(steps, RAISE_MAX))]!
+}
 
 // "explore 0.82" → explore when p reaches the pass cut; anything else → undefined.
 export function parseJev(reply: string, labels: string[], passAt: number): string | undefined {
@@ -319,7 +345,7 @@ export function isHarder(a: string, b: string | null, cfg: Config): boolean {
   return dm > 0 || (dm === 0 && effortRank(ta.effort ?? cfg.main.effort) > effortRank(tb.effort ?? cfg.main.effort))
 }
 
-// One tier up, for a brief the parent spawns again (the first run fell short). Opus and Fable stay.
+// One tier up, for a brief the parent spawns again (the first run fell short), or a chat unhappy twice. Opus and Fable stay.
 const UP: Record<string, string> = { haiku: 'sonnet', sonnet: 'opus' }
 export const stepUp = (model: string) => UP[family(model)] ?? family(model)
 
@@ -436,37 +462,39 @@ export const prices = () => PRICE
 
 export type Usage = { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number }
 
-// Haiku's input side costs 5x once a prompt passes 100K tokens (pricing page, 2026-11): explore subagents get there.
-// shortcut: the 5x is applied to cache reads and writes too; check the pricing page if Haiku long prompts matter.
+// Haiku costs 5x on every side once a prompt passes 100K tokens (pricing page, 2026-11-19): explore subagents get there.
 const HAIKU_LONG = 100_000
 
-export function costUsd(model: string, u: Usage): number {
+// longCache: the write is a 1-hour cache entry (2x input) instead of a 5-minute one (1.25x). Claude Code's main thread
+// writes 1-hour entries and subagents 5-minute ones (every transcript of 2026-11-18/19: 143M vs 69M tokens, no mix).
+export function costUsd(model: string, u: Usage, longCache = false): number {
   const f = family(model)
-  const [i0, o, r0] = PRICE[f] ?? [4, 20, 0.2]
+  const [i0, o0, r0] = PRICE[f] ?? [4, 20, 0.2]
   const prompt = u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens
   const k = f === 'haiku' && prompt > HAIKU_LONG ? 5 : 1
-  const i = i0 * k, r = r0 * k
-  return (u.input_tokens * i + u.output_tokens * o + u.cache_read_input_tokens * r + u.cache_creation_input_tokens * i * 1.25) / 1e6
+  const i = i0 * k, o = o0 * k, r = r0 * k
+  return (u.input_tokens * i + u.output_tokens * o + u.cache_read_input_tokens * r + u.cache_creation_input_tokens * i * (longCache ? 2 : 1.25)) / 1e6
 }
 
-// What one step costs at each effort, relative to medium on the same model: measured 2026-11-19 on 144-158 eval cases,
-// Opus, same prompts (evals/effort-cost.mjs). It is mostly thinking, so it scales the output side.
+// What a step costs at each effort, relative to medium on the same model: measured 2026-11-19 as the whole answer's
+// cost on 144-158 eval cases, Opus, same prompts (evals/effort-cost.mjs), so it scales the whole step.
 // shortcut: measured on Opus up to high; xhigh and max reuse high, so their extra spend shows as a floor.
 export const EFFORT_COST: Record<string, number> = { low: 0.72, medium: 1, high: 1.4, xhigh: 1.4, max: 1.4 }
 const effortCost = (e: string | undefined) => (e && EFFORT_COST[e]) || 1
 
 // What a step would have cost with no router: on the model and effort the request came with (`asked`) instead of the
-// ones it ran on (`sent`). A step the router moved to another model re-read the chat as a cache write (`warm` tokens)
-// that the asked model would have read from its warm cache (audit 2026-11-19: Haiku moves booked fake savings).
-export function withoutRouter(asked: { model: string; effort?: string }, sent: { model: string; effort?: string }, u: Usage, warm = 0): number {
+// ones it ran on (`sent`). A step the router moved to another model wrote the chat to a fresh cache that the asked
+// model would have read from its warm one (`warm`: the context the asked model last cached); only the part not already
+// read from the new model's own cache, so the credit is given once, on the first moved step (audit 2026-11-19).
+export function withoutRouter(asked: { model: string; effort?: string }, sent: { model: string; effort?: string }, u: Usage, warm = 0, longCache = false): number {
   const moved = family(asked.model) !== family(sent.model)
-  const cached = moved ? Math.min(u.cache_creation_input_tokens, warm) : 0
-  return costUsd(asked.model, {
-    input_tokens: u.input_tokens,
-    output_tokens: (u.output_tokens * effortCost(asked.effort)) / effortCost(sent.effort),
+  const cached = moved ? Math.max(0, Math.min(u.cache_creation_input_tokens, warm - u.cache_read_input_tokens)) : 0
+  const usd = costUsd(asked.model, {
+    ...u,
     cache_read_input_tokens: u.cache_read_input_tokens + cached,
     cache_creation_input_tokens: u.cache_creation_input_tokens - cached,
-  })
+  }, longCache)
+  return (usd * effortCost(asked.effort)) / effortCost(sent.effort)
 }
 
 // A cache break after an effort change: the step re-read far less than the one before.

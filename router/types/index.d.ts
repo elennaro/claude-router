@@ -25,9 +25,15 @@ export type Bucket = {
   first: number
   last: number // epoch ms
   turns: number // main-loop turns
-  byModel: Record<string, { usd: number; base: number; extra: number; steps: number }> // base: with no router; 0 for the classifier
+  byModel: Record<string, { usd: number; base: number; extra: number; steps: number; cache?: Cache }> // base: with no router; 0 for the classifier
   agents?: Record<string, AgentTally> // per subagent type
 }
+
+// Prompt tokens by where they came from: read = served from the prompt cache. Cache hit = read / (input + read + write).
+export type Cache = { input: number; read: number; write: number }
+
+// This chat's spend per model and effort ("opus:high"), for the session's model band; with its prompt tokens.
+export type Mix = Record<string, { usd: number; steps: number; cache: Cache }>
 
 // A subagent type's runs on one day: routed = sent to another model than the parent's; respawned = the same brief again.
 export type AgentTally = { runs: number; routed: number; respawned: number; usd: number; base: number; extra: number }
@@ -57,6 +63,7 @@ export type TurnLog = {
   steps: number
   auto?: boolean // the router moved this main-chat turn to its class model
   asked?: boolean // the prompt named the model or effort
+  cache?: Cache // absent on rows from before 0.7
 }
 
 // The installed CLIs against their latest release, checked weekly.
@@ -72,6 +79,7 @@ declare module 'claude-code' {
       tally: Shaped<Tally>
       view: Shaped<RouterView>
       log: Shaped<Array<TurnLog>>
+      mix: Mix // this chat's spend per model and effort
       panel: 'none' | 'stats' | 'settings' // what the band has expanded under its row
       isWidgetOpen: boolean
       modes: { global: string | null; project: string | null; isProject: boolean } // "mode" as written in each routing.json

@@ -1,9 +1,9 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import {
-  BUILTIN, CLASS_LABELS, adviseSwitch, effortRank, rank, agentTier, autoModel, needsSecondSample, briefHash, briefTier, stepUp, classifyByRules, costUsd, firstModel, isCacheBreak, isContinuation, merge, parseJev, parseSessionCheck, readLabel, spawnPick, turnEffort, withoutRouter,
+  BUILTIN, CLASS_LABELS, adviseSwitch, effortRank, rank, agentTier, autoModel, needsSecondSample, briefHash, briefTier, stepUp, classifyByRules, costUsd, firstModel, isCacheBreak, isContinuation, merge, parseJev, parseSessionCheck, parseMood, raiseEffort, moodPrompt, readLabel, spawnPick, turnEffort, withoutRouter,
 } from '../hooks/policy'
-import { boardHtml, cardLayout, netWords, savedUsd, statsSvg, withMode } from '../hooks/view'
+import { boardHtml, cacheStrength, cardLayout, hitPct, svgSize, netWords, savedUsd, shade, statsSvg, withMode } from '../hooks/view'
 import { RUNNER, type Step, labelOf } from '../hooks/db'
 import { shield } from '../hooks/guard'
 
@@ -184,25 +184,69 @@ test('the no-router cost: the asked model and effort, a warm cache for a moved t
   const usd = (n: number) => Math.round(n * 1e6) // micro-dollars
   // nothing changed (a Sonnet session the router left alone): the baseline is what it spent, not an Opus price
   expect(usd(withoutRouter({ model: 'sonnet', effort: 'medium' }, { model: 'claude-sonnet-5-5', effort: 'medium' }, u, 80_000))).toBe(usd(costUsd('sonnet', u))) // a cache write on the same model happens either way
-  // a turn raised to high: with no router its output would be 1/1.4 as long, so the router spent extra
+  // a turn raised to high: with no router the step would cost 1/1.4 as much (measured as whole-answer cost), so extra
   const raised = withoutRouter({ model: 'opus', effort: 'medium' }, { model: 'opus', effort: 'high' }, u)
-  expect(raised < costUsd('opus', u)).toBe(true)
-  expect(usd(raised)).toBe(usd(costUsd('opus', { ...u, output_tokens: 10_000 / 1.4 })))
+  expect(usd(raised)).toBe(usd(costUsd('opus', u) / 1.4))
   // a turn moved to Haiku wrote the chat into Haiku's cache; Opus would have read it warm
   const moved = withoutRouter({ model: 'opus', effort: 'medium' }, { model: 'haiku', effort: 'medium' }, u, 80_000)
   expect(usd(moved)).toBe(usd(costUsd('opus', { ...u, cache_creation_input_tokens: 0, cache_read_input_tokens: 80_000 })))
   expect(moved < costUsd('opus', u) / 2).toBe(true) // not the fake saving of pricing 80K as an Opus cache write
+  // the next moved step reads Haiku's own cache: Opus would have read the same, and written the same new tokens
+  const next = { input_tokens: 10, output_tokens: 500, cache_read_input_tokens: 80_000, cache_creation_input_tokens: 3_000 }
+  expect(usd(withoutRouter({ model: 'opus', effort: 'medium' }, { model: 'sonnet', effort: 'medium' }, next, 80_000, true))).toBe(usd(costUsd('opus', next, true)))
 })
 
-test('the Stats card: two columns in a narrow band, extra spend and dearer turns drawn in the accent', () => {
+test('prices: 1-hour cache writes cost 2x input, 5-minute ones 1.25x; Haiku past 100K costs 5x on every side', () => {
+  const w = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 1_000_000 }
+  expect(costUsd('opus', w, true)).toBe(8) // main thread: 1-hour entries (pricing page 2026-11-19: $8/M on Opus)
+  expect(costUsd('opus', w)).toBe(5) // subagents: 5-minute entries
+  const long = { input_tokens: 100_001, output_tokens: 1_000_000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+  expect(Math.round(costUsd('haiku', long) * 100)).toBe(Math.round((100_001 * 0.5 / 1e6 + 2.5) * 100)) // output $2.50/M past 100K
+})
+
+test('the Stats card: two columns in a narrow band, bars up for more and down for less than no router', () => {
   expect(cardLayout(100)).toEqual({ width: 800, perRow: 4 })
   expect(cardLayout(50)).toEqual({ width: 400, perRow: 2 })
   expect(cardLayout(10).width).toBe(320) // never narrower than two readable columns
-  const turn = (usd: number, baseUsd: number) => ({ id: 't', who: 'main', cls: 'debugging', model: 'opus', effort: 'high', picker: '', usd, baseUsd, steps: 1 })
-  const svg = statsSvg([{ label: 'This chat vs no router', value: '$0.52 extra', sub: '', isExtra: true }], [turn(2, 1), turn(1, 2)], 400, 2)
+  const turn = (usd: number, baseUsd: number, cache?: { input: number; read: number; write: number }) => ({ id: 't', who: 'main', cls: 'debugging', model: 'opus', effort: 'high', picker: '', usd, baseUsd, steps: 1, cache })
+  const svg = statsSvg([{ label: 'This chat', value: '$0.52 extra', sub: '', isExtra: true }], [turn(2, 1, { input: 10, read: 80, write: 10 }), turn(1, 2), turn(1, 1.01)], 400, 2)
   expect(svg).toContain('class="v x"')
-  expect(svg.match(/<rect class="g"[^>]*\/><rect class="x"/g)?.length).toBe(1) // only the turn that cost more than with no router
-  expect(svg).toContain('<title>debugging, Opus high: $2.00 spent, $1.00 with no router</title>')
+  const bars = [...svg.matchAll(/<rect class="m-opus-2" x="[\d.]+" y="([\d.]+)" width="[\d.]+" height="([\d.]+)"/g)].map(m => [Number(m[1]), Number(m[2])])
+  const mid = Number(svg.match(/<line class="d" x1="44" y1="([\d.]+)"/)![1]) - 0.5
+  expect(bars).toHaveLength(3)
+  expect(bars[0]![0] + bars[0]![1]).toBe(mid) // cost more: up from the no-router line
+  expect(bars[1]![0]).toBe(mid + 1) // cost less: down from it
+  expect(bars[0]![1]).toBe(35) // the biggest difference fills its half (36 px less the line)
+  expect(bars[2]![1]).toBe(3.5) // square-root scale: 1/100 of the biggest is 1/10 of its height, not a 2 px floor
+  expect(svg).toContain('<title>debugging: Opus high. $2.00 spent, $1.00 with no router (+$1.00). Cache hit 80%</title>')
+  expect(svg.match(/<rect class="c" /g)).toHaveLength(1) // a cache square only where the hit is known
+  // the cache squares are a section of their own under the spending chart, not part of it
+  expect(svg.indexOf('Cache hit per turn')).toBeGreaterThan(svg.indexOf('Cost per turn vs no router'))
+  expect(Number(svg.match(/<rect class="c" x="[\d.]+" y="([\d.]+)"/)![1])).toBeGreaterThan(mid + 36 + 24)
+})
+
+test('model colors: darker is more effort in both themes, dark steps get a ring on a dark page; the model band keeps price order', () => {
+  expect([shade('opus', 'low'), shade('opus', 'medium'), shade('opus', 'high'), shade('opus', 'max')]).toEqual(['#e4a089', '#D97757', '#98533d', '#623627'])
+  expect(shade('sonnet', 'xhigh', 'dark')).toBe(shade('sonnet', 'max', 'dark'))
+  const lum = (h: string) => [1, 3, 5].reduce((a, i) => a + parseInt(h.slice(i, i + 2), 16), 0)
+  expect(lum(shade('fable', 'max', 'dark'))).toBeLessThan(lum(shade('fable', 'high', 'dark'))) // darker is more effort on a dark page too
+  expect(lum(shade('fable', 'low', 'dark'))).toBeGreaterThan(lum(shade('fable', 'medium', 'dark'))) // low is the lightest
+  const dark = statsSvg([], [], 400, 2, {}, '').split('@media (prefers-color-scheme:dark)').at(-1)!
+  expect(dark).toContain('.m-opus-3{stroke:#ffffff73') // the ring only on a dark page
+  expect(statsSvg([], [], 400, 2, {}, '').indexOf('stroke:#ffffff73')).toBeGreaterThan(statsSvg([], [], 400, 2, {}, '').lastIndexOf('@media'))
+  const mix = { 'opus:high': { usd: 3, steps: 2, cache: { input: 1, read: 8, write: 1 } }, 'haiku:low': { usd: 0.001, steps: 1, cache: { input: 1, read: 0, write: 1 } } }
+  const svg = statsSvg([], [], 400, 2, mix, '2 turns re-routed')
+  expect(svg.indexOf('class="m-haiku-0"')).toBeLessThan(svg.indexOf('class="m-opus-2"')) // cheapest first
+  expect(svg).toContain('Haiku &lt;1%')
+  expect(svg).toContain('2 turns re-routed')
+  expect(hitPct({ input: 1, read: 8, write: 1 })).toBe(80)
+  expect(hitPct(undefined)).toBeUndefined()
+  expect(hitPct({ input: 2, read: 330468, write: 1236 })).toBe(99.6) // a warm chat (this session's own steps): never rounded up to 100
+  expect(hitPct({ input: 0, read: 5, write: 0 })).toBe(100)
+  const near = (c: { input: number; read: number; write: number }) => Math.round(cacheStrength(c)! * 100) / 100
+  expect([near({ input: 1, read: 999, write: 0 }), near({ input: 1, read: 99, write: 0 }), near({ input: 1, read: 9, write: 0 }), near({ input: 1, read: 0, write: 0 })]).toEqual([1, 0.67, 0.33, 0]) // 99.9%, 99%, 90%, 0%
+  expect(cacheStrength({ input: 1, read: 249, write: 0 })! - cacheStrength({ input: 1, read: 99, write: 0 })!).toBeGreaterThan(0.1) // 99.6% vs 99%: visibly apart
+  expect(svgSize(svg)).toEqual({ width: 400, height: Number(svg.match(/height="(\d+)"/)![1]) })
 })
 
 test('the money words say which way it went, and savings and extra stay apart', () => {
@@ -238,12 +282,13 @@ async function end($: any) {
   await $.session.end({ reason: 'other', sessionId: 'sess-1', resume: { sessionId: 'sess-1' } })
 }
 
-function wire(on: any, opts: { batches?: Array<Array<Step>>; runFails?: boolean; store?: Map<string, unknown>; haiku?: string | (() => string); tokens?: number; ownClock?: boolean; sent: Array<unknown>; asked?: { n: number }; lines?: Array<string | undefined>; opened?: Array<unknown>; surfaces?: Array<string>; files?: Record<string, string>; models?: Array<string>; read?: number }) {
+function wire(on: any, opts: { batches?: Array<Array<Step>>; runFails?: boolean; store?: Map<string, unknown>; haiku?: string | ((e: { system?: string }) => string); tokens?: number; model?: string; messages?: Array<unknown>; ownClock?: boolean; sent: Array<unknown>; asked?: { n: number }; lines?: Array<string | undefined>; opened?: Array<unknown>; surfaces?: Array<string>; files?: Record<string, string>; models?: Array<string>; read?: number; write?: number }) {
   on('env.get', (_: unknown, e: { name: string }) => ({ value: e.name === 'USERPROFILE' ? '/home' : undefined }))
   on('session.root', () => ({ value: '/proj' }))
   on('session.id', () => ({ value: 'sess-1' }))
   on('session.surfaces', () => ({ value: opts?.surfaces ?? ['desktop'] }))
-  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  on('session.model', () => ({ value: opts.model ?? 'claude-opus-5-5' }))
+  if (opts.messages) on('session.messages', () => ({ value: opts.messages }))
   if (!opts.ownClock) on('clock.now', () => ({ value: 1_000 }))
   if (!opts.ownClock) on('clock.after', () => ({ value: undefined })) // timers never fire here: tests flush at session.end
   on('ui.open', (_: unknown, e: unknown) => { opts.opened?.push(e); return { value: { isPlaced: true } } })
@@ -278,13 +323,13 @@ function wire(on: any, opts: { batches?: Array<Array<Step>>; runFails?: boolean;
   on('command.register', () => ({ value: { command: 'route' } }))
   on('session.start', (_: unknown, e: { cwd: string }) => ({ cwd: e.cwd }))
   on('prompt.submit', (_: unknown, e: { text: string }) => ({ text: e.text }))
-  on('model.complete', () => { opts.asked && opts.asked.n++; return { value: { isAnswered: true, text: (typeof opts.haiku === 'function' ? opts.haiku() : opts.haiku) ?? 'default 0.9', usage: USAGE } } })
+  on('model.complete', (_: unknown, e: { system?: string }) => { opts.asked && opts.asked.n++; return { value: { isAnswered: true, text: (typeof opts.haiku === 'function' ? opts.haiku(e) : opts.haiku) ?? 'default 0.9', usage: USAGE } } })
   // tokens set = a chat already under way (no first-prompt pick); unset = a new chat
   on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200_000, ...(opts.tokens === undefined ? {} : { tokens: opts.tokens }) }, rateLimits: [] } }))
   on('turn.step', async function* (_: unknown, e: { effort?: unknown; model: string; turnId: string; index: number }) {
     opts.sent.push(e.effort)
     opts.models?.push(e.model)
-    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: { ...USAGE, cache_read_input_tokens: opts.read ?? 0, model: e.model === 'haiku' ? 'claude-haiku-5-5' : USAGE.model } }
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: { ...USAGE, cache_read_input_tokens: opts.read ?? 0, cache_creation_input_tokens: opts.write ?? 0, model: e.model === 'haiku' ? 'claude-haiku-5-5' : USAGE.model } }
   })
 }
 
@@ -381,8 +426,13 @@ test('generic subagents go by their brief: sure and cheap moves, unsure gets the
   const runs = rows(batches, 'spawns')
   expect(runs.map(r => r.slice(1))).toEqual([['sess-1', 'general-purpose', 1, 1, 0], ['sess-1', 'general-purpose', 1, 1, 0], ['sess-1', 'general-purpose', 1, 1, 1], ['sess-1', 'general-purpose', 1, 0, 0], ['sess-1', 'general-purpose', 1, 0, 0]])
   const spent = rows(batches, 'usage').filter(r => r[2] === 'general-purpose')
-  expect(spent.length).toBe(2) // sub1's and sub2's steps, each under its type
-  expect(spent.every(r => Number(r[5]) > 0)).toBe(true)
+  expect(spent.length).toBe(3) // sub1's and sub2's steps, each under its type, and the repeat's take-back
+  expect(spent.slice(0, 2).every(r => Number(r[5]) > 0)).toBe(true)
+  // the repeat replaced sub1: its baseline goes and all it spent counts as extra, so it saved nothing (audit 2026-11-19)
+  const [sub1, , back] = spent
+  expect([back![4], back![5]]).toEqual([0, 0])
+  expect(Number(back![6])).toBe(-Number(sub1![6]))
+  expect(Number(back![7])).toBe(Number(sub1![5]) - Number(sub1![7]))
   expect(JSON.stringify(batches)).not.toContain('Swap every variable')
 })
 
@@ -491,6 +541,95 @@ test('a model or effort named in the prompt wins for that turn, floors included;
   expect(sent).toEqual(['high', 'medium', 'high', 'high'])
 })
 
+test('"use opus" on an Opus chat keeps a sure quick task on Opus (audit 2026-11-19)', async (engine, on) => {
+  const $ = engine as any // the test engine fills origin, wait and the other session-set fields
+  const models: Array<string> = []
+  wire(on, { sent: [], models, haiku: 'mechanical 0.95', tokens: 5_000 })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: 'Swap every variable called foo for bar in the utils module' })
+  await step($, 'medium') // a sure quick task: its own turn on Haiku
+  await $.prompt.submit({ text: 'use opus: swap every variable called baz for qux in the utils module' })
+  await step($, 'medium')
+  expect(models).toEqual(['haiku', 'claude-opus-5-5'])
+})
+
+test('a nested agent is measured against its parent\'s no-router model, not the parent\'s routed one', async (engine, on) => {
+  const $ = engine as any // the test engine fills origin, wait and the other session-set fields
+  const batches: Array<Array<Step>> = []
+  wire(on, { sent: [], batches, files: { '/home/.claude/routing.json': ROUTING }, haiku: 'mechanical 0.95', tokens: 5_000 })
+  let n = 0
+  on('agent.spawn', (_: unknown, e: { model?: string }) => ({ model: e.model ?? 'inherit', agentId: `sub${++n}` }))
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await $.agent.spawn({ prompt: 'Swap every variable called foo for bar across the utils folder', subagentType: 'general-purpose', parentModel: 'claude-opus-5-5' }) // sub1: Haiku
+  await $.agent.spawn({ prompt: 'please review this PR for bugs and missing edge cases', subagentType: 'general-purpose', parentModel: 'claude-haiku-5-5', parentAgentId: 'sub1' }) // sub2: back up to Opus
+  await step($, 'medium', 'sub2')
+  await end($)
+  const sub2 = rows(batches, 'usage').find(r => r[2] === 'general-purpose')!
+  // with no router sub1 ran on Opus, so its child is priced on Opus; only the review's raised effort (high) is extra,
+  // not the gap to a Haiku parent the person never chose
+  expect(Math.round(Number(sub2[6]) * 1e9)).toBe(Math.round((Number(sub2[5]) / 1.4) * 1e9))
+})
+
+test('the moved-subagent memory is saved per session in the store', async (engine, on) => {
+  const $ = engine as any // the test engine fills origin, wait and the other session-set fields
+  const store = new Map<string, unknown>()
+  wire(on, { sent: [], batches: [], store, files: { '/home/.claude/routing.json': ROUTING }, haiku: 'mechanical 0.95', tokens: 5_000 })
+  on('agent.spawn', (_: unknown, e: { model?: string }) => ({ model: e.model ?? 'inherit', agentId: 'sub1' }))
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await $.agent.spawn({ prompt: 'Swap every variable called foo for bar across the utils folder', subagentType: 'general-purpose', parentModel: 'claude-opus-5-5' })
+  await end($)
+  const kept = store.get('agents:sess-1') as { asked: Array<[string, string]>; type: Array<[string, string]> }
+  expect(kept.asked).toEqual([['sub1', 'opus']])
+  expect(kept.type).toEqual([['sub1', 'general-purpose']])
+  expect(store.get('agents')).toEqual([['sess-1', 1_000]])
+})
+
+test('after a restart a moved subagent is still measured against the model it was moved from', async (engine, on) => {
+  const $ = engine as any // the test engine fills origin, wait and the other session-set fields
+  const batches: Array<Array<Step>> = []
+  // what the process before the restart left in the store
+  const stats = { tally: { actualUsd: 5, baselineUsd: 6, extraUsd: 0 }, log: [], mix: { 'opus:medium': { usd: 5, steps: 3, cache: { input: 1, read: 8, write: 1 } } } }
+  const store = new Map<string, unknown>([['agents:sess-1', { at: 1, asked: [['sub1', 'opus']], type: [['sub1', 'general-purpose']], stats }]])
+  wire(on, { sent: [], batches, store, files: { '/home/.claude/routing.json': ROUTING }, tokens: 5_000 })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  for await (const _ of $.turn.step({ turnId: 't', index: 0, model: 'haiku', effort: 'medium', messageCount: 1, agentId: 'sub1' })) { /* drain */ }
+  await end($)
+  const row = rows(batches, 'usage').find(r => r[2] === 'general-purpose')!
+  expect(row[3]).toBe('haiku')
+  expect(Number(row[6])).toBeGreaterThan(Number(row[5]) * 10) // [5] spent, [6] no router: priced on Opus, not on Haiku
+  expect(row.slice(8)).toEqual([USAGE.input_tokens, 0, 0]) // prompt tokens: uncached, read, written
+  // the chat's Stats carried on from before the restart
+  const kept = store.get('agents:sess-1') as { stats: { tally: { actualUsd: number }; mix: Record<string, { steps: number }> } }
+  expect(kept.stats.tally.actualUsd).toBeGreaterThan(5)
+  expect(Object.keys(kept.stats.mix)).toEqual(['opus:medium', 'haiku:medium'])
+})
+
+test('a chat from before the model band gets its band from the turn log', async (engine, on) => {
+  const $ = engine as any // the test engine fills origin, wait and the other session-set fields
+  const row = { id: 't1', who: 'main', cls: 'message', model: 'sonnet', effort: 'medium', picker: 'medium', usd: 0.2, baseUsd: 0.4, steps: 2 }
+  const store = new Map<string, unknown>([['agents:sess-1', { at: 1, stats: { tally: { actualUsd: 0.2, baselineUsd: 0.4, extraUsd: 0 }, log: [row] } }]])
+  wire(on, { sent: [], batches: [], store, files: { '/home/.claude/routing.json': ROUTING }, tokens: 5_000 })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await end($)
+  const kept = store.get('agents:sess-1') as { stats: { mix: Record<string, { usd: number; steps: number }> } }
+  expect(kept.stats.mix).toEqual({ 'sonnet:medium': { usd: 0.2, steps: 2, cache: { input: 0, read: 0, write: 0 } } })
+})
+
+test('a main-thread step pays the 1-hour cache write, a subagent step the 5-minute one', async (engine, on) => {
+  const $ = engine as any // the test engine fills origin, wait and the other session-set fields
+  const batches: Array<Array<Step>> = []
+  wire(on, { sent: [], batches, files: { '/home/.claude/routing.json': ROUTING }, haiku: 'default 0.9', write: 1_000_000, tokens: 5_000 })
+  on('agent.spawn', (_: unknown, e: { model?: string }) => ({ model: e.model ?? 'inherit', agentId: 'sub1' }))
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await step($, 'medium')
+  await $.agent.spawn({ prompt: 'x', subagentType: 'Explore', parentModel: 'claude-opus-5-5', model: 'opus' })
+  await step($, 'medium', 'sub1')
+  await end($)
+  const usd = (who: string) => Math.round(Number(rows(batches, 'usage').find(r => r[2] === who)![5]))
+  expect(usd('main')).toBe(8) // $8 per M on Opus
+  expect(usd('Explore')).toBe(5) // $5 per M
+})
+
 test('Claude calling Codex in Bash is pointed to the router tool', async (engine, on) => {
   const $ = engine as any // the test engine fills origin, wait and the other session-set fields
   wire(on, { sent: [] })
@@ -565,7 +704,7 @@ test('the band is one row; Stats opens the card; Settings turns routing off for 
 
   await band.press({ key: 'router-stats' })
   const card = await band.find({ type: 'Svg' })
-  expect(card?.props.alt).toMatch(/This chat vs no router saved \$0\.00/)
+  expect(card?.props.alt).toMatch(/This chat saved \$0\.00/)
   expect(card?.props.alt).toMatch(/Now Haiku low \(auto\), you picked high/)
 
   await band.press({ key: 'router-settings' })
@@ -638,7 +777,7 @@ test('the ledger keeps each session per day; the classifier counts as spend with
   expect(usage.map(r => r[2])).toEqual(['router', 'router', 'router', 'main', 'main'])
   expect(usage.filter(r => r[2] === 'router').every(r => r[6] === 0 && r[7] === r[5])).toBe(true)
   const main = usage.find(r => r[2] === 'main')!
-  expect(Math.round(Number(main[6]) * 1e8)).toBe(23444) // Opus, output x 1.4/0.72 for high vs low: 10 x $4 + 9.72 x $20 per M
+  expect(Math.round(Number(main[6]) * 1e8)).toBe(27222) // Opus, the whole step x 1.4/0.72 for high vs low: (10 x $4 + 5 x $20) per M
   expect(Math.round(Number(main[5]) * 1e8)).toBe(350) // $0.0000035 on Haiku
   expect(main[7]).toBe(0) // cheaper than with no router: nothing extra
 })
@@ -678,7 +817,7 @@ test("0.2's JSON ledger is read into router.db once; a damaged file is skipped, 
   expect(opts.store.get('ledgerImported')).toBe(true)
   expect(rows(opts.batches, 'sessions')[0]).toEqual(['old-1', 'proj', 'Fix the parser'])
   expect(rows(opts.batches, 'days')[0]).toEqual(['2026-11-17', 'old-1', 3, 5, 9])
-  expect(rows(opts.batches, 'usage')[0]).toEqual(['2026-11-17', 'old-1', 'main', 'opus', 7, 2, 2, 0])
+  expect(rows(opts.batches, 'usage')[0]).toEqual(['2026-11-17', 'old-1', 'main', 'opus', 7, 2, 2, 0, 0, 0, 0]) // 0.2 kept no prompt tokens
   expect(rows(opts.batches, 'spawns')[0]).toEqual(['2026-11-17', 'old-1', 'Explore', 2, 1, 0])
 
   const before = opts.batches.length
@@ -795,7 +934,10 @@ test('the widget is a glance of two rows and the bars; expanded it is the Stats 
   await widget.unmount()
 
   const dock = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect((await dock.find({ type: 'Svg' }))?.props.alt).toMatch(/Spent this chat \$[0-9.]+, re-routed 1 turn/)
+  const card = await dock.find({ type: 'Svg' })
+  expect(card?.props.alt).toMatch(/Spent this chat \$[0-9.]+, cache hit 0%/) // the stub steps read nothing from cache
+  expect(card?.props.source).toContain('1 turn, 0 agents re-routed')
+  expect(card?.props.source).toContain('class="m-haiku-0"') // the model band: this turn ran on Haiku at low effort
   await dock.unmount()
 })
 
@@ -986,5 +1128,76 @@ test('the offer button compacts, then the chat runs on the offered model', async
   expect(await band.find({ key: 'router-offer-compact' })).toBeFalsy()
   await step($, 'medium')
   expect(models).toEqual(['sonnet'])
+  await band.unmount()
+})
+
+test('mood: Haiku reads the exchange; only a sure answer counts; effort rises one step per unhappy reply, two at most', async () => {
+  expect(parseMood('unhappy 0.9')).toBe('unhappy')
+  expect(parseMood('same: 0.8')).toBe('same')
+  expect(parseMood('unhappy 0.6')).toBe(undefined) // unsure: nothing changes
+  expect(parseMood('I think they are unhappy')).toBe(undefined)
+  expect(raiseEffort('medium', 1)).toBe('high')
+  expect(raiseEffort('medium', 5)).toBe('xhigh') // two steps at most
+  expect(raiseEffort('xhigh', 2)).toBe('max')
+  expect(raiseEffort('low', 0)).toBe('low')
+  const p = moodPrompt({ asked: 'fix the login', answer: 'x'.repeat(3000) + 'END', next: 'still broken' })
+  expect(p).toContain('END') // the end of the answer, where it says what it did
+  expect(p).toContain('<next_message>\nstill broken')
+})
+
+const EXCHANGE = [
+  { role: 'user', text: 'why does the refund never reach the ledger service', toolUses: [] },
+  { role: 'assistant', text: 'The queue name was wrong; I fixed it in config.ts.', toolUses: [] },
+]
+
+test('unhappy replies keep the task class; the 2nd raises effort, the 4th raises again and offers the next model; a new task resets', async (engine, on) => {
+  const $ = engine as any // the test engine fills origin, wait and the other session-set fields
+  const sent: Array<unknown> = []
+  const moods = ['same 0.9', 'unhappy 0.9', 'same 0.9', 'unhappy 0.85', 'unhappy 0.9', 'unhappy 0.9', 'new 0.9']
+  const haiku = (e: { system?: string }) => (e.system?.startsWith('You read one exchange') ? moods.shift()! : 'default 0.9')
+  wire(on, { sent, haiku, tokens: 5_000, model: 'claude-sonnet-5-5', messages: EXCHANGE })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const turn = async (text: string) => { await $.prompt.submit({ text }); await step($, 'medium') }
+  await turn('please review this PR for bugs and missing edge cases') // critique: high
+  await turn('that did not help, the refund still never shows up in the ledger') // 1st unhappy: kept critique, no raise (one misread costs nothing)
+  await turn('I meant the refunds table, not the payments one') // a clarification: no change
+  await turn('no, it is still not there after your change, look again') // 2nd: one step up
+  await turn('still nothing in the ledger') // 3rd: no change
+  expect(await band.find({ type: 'Text', text: /fits this task better/ })).toBeFalsy()
+  await turn('it is the same as before, this is not working') // 4th: a second step and the tip
+  expect(await band.find({ type: 'Text', text: /Opus fits this task better/ })).toBeTruthy()
+  await turn('Swap every variable called foo for bar in the utils module and the tests too') // a new task: calm again
+  expect(sent).toEqual(['high', 'high', 'high', 'xhigh', 'xhigh', 'max', 'medium'])
+  await band.unmount()
+})
+
+test('unhappy on Opus raises effort but never offers Fable', async (engine, on) => {
+  const $ = engine as any // the test engine fills origin, wait and the other session-set fields
+  const sent: Array<unknown> = []
+  wire(on, { sent, haiku: e => (e.system?.startsWith('You read one exchange') ? 'unhappy 0.95' : 'default 0.9'), tokens: 5_000, messages: EXCHANGE })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  for (const text of ['that is still not what I asked for, try again please', 'still not right, please try once more', 'no, wrong again', 'this is still not it']) {
+    await $.prompt.submit({ text })
+    await step($, 'medium')
+  }
+  expect(sent).toEqual(['medium', 'high', 'high', 'xhigh'])
+  expect(await band.find({ type: 'Text', text: /fits this task better/ })).toBeFalsy()
+  await band.unmount()
+})
+
+test('Settings: model and effort choices carry their colors as children (a label would hide them on the desktop)', async (engine, on) => {
+  const $ = engine as any // the test engine fills origin, wait and the other session-set fields
+  wire(on, { sent: [] })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await band.press({ key: 'router-settings' })
+  const dots = (await band.findAll({ type: 'Text', text: '●' })).map((d: { props: { color?: string } }) => d.props.color)
+  expect(dots).toContain('#2394AE') // Sonnet's teal
+  expect(dots).toContain(shade('opus', 'max', 'dark')) // the chat model's darkest step
+  expect(dots).toContain(shade('opus', 'low', 'dark'))
+  expect((await band.find({ key: 'router-model-auto' }))?.props.label).toBe('Auto') // Auto has no color
+  await band.press({ key: 'router-model-sonnet' }) // still a button
   await band.unmount()
 })
