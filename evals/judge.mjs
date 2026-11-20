@@ -1,6 +1,6 @@
-// Shared replay and judging (docs/research-eval-design.md): answers are cached per case, tier and seed;
-// a pair is judged in both orders by Fable with evidence before the verdict and ties allowed; a verdict counts only
-// when both orders agree, otherwise Opus decides, and a pair Opus can't settle is "uncertain".
+// Shared replay and judging (docs/research-eval-design.md): answers are cached per case, tier and seed.
+// One judge: Jev in both orders decides where it is sure; otherwise Opus in both orders, with evidence before the
+// verdict and ties allowed (judgeFast, calibrated in calibrate/run.mjs).
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { OFFLINE, WORK, cacheGet, cachePut, claude, offlineMiss } from './lib.mjs'
@@ -37,8 +37,8 @@ export async function answer(c, tier, seed = 0) {
 }
 
 const SCALE = ['A much better', 'A slightly better', 'same', 'B slightly better', 'B much better']
-const VERDICT = { type: 'object', properties: { evidence: { type: 'string' }, verdict: { type: 'string', enum: SCALE } }, required: ['evidence', 'verdict'] }
-const prompt = (c, a, b) => `You compare two answers to the same request from someone who wants top-quality work. Judge only what the person would care about: correctness, completeness, judgment, craft of the writing, following every instruction. Length is not quality: a longer answer is better only if the extra content helps. First write the evidence (the concrete differences that matter, quoting briefly), then the verdict. Say "same" when the person would be equally happy with either.
+export const VERDICT ={ type: 'object', properties: { evidence: { type: 'string' }, verdict: { type: 'string', enum: SCALE } }, required: ['evidence', 'verdict'] }
+export const prompt = (c, a, b) => `You compare two answers to the same request from someone who wants top-quality work. Judge only what the person would care about: correctness, completeness, judgment, craft of the writing, following every instruction. Length is not quality: a longer answer is better only if the extra content helps. First write the evidence (the concrete differences that matter, quoting briefly), then the verdict. Say "same" when the person would be equally happy with either.
 
 <request>
 ${(c.history ?? []).map(h => `[earlier] user: ${h.user}\n[earlier] assistant: ${h.assistant}`).join('\n')}
@@ -55,7 +55,7 @@ ${b}
 </answer_B>`
 
 // +2..-2 for X, from one judgment where X sat at A (atA) or at B
-const score = (v, atA) => { const s = 2 - SCALE.indexOf(v); return atA ? s : -s }
+export const score = (v, atA) => { const s = 2 - SCALE.indexOf(v); return atA ? s : -s }
 const sign = s => (s > 0 ? 'better' : s < 0 ? 'worse' : 'same')
 
 export async function once(model, c, x, y, xAtA, tag) {
@@ -64,7 +64,7 @@ export async function once(model, c, x, y, xAtA, tag) {
   return v ? { s: score(v, xAtA), evidence: r.structured.evidence } : null
 }
 
-// The calibrated cheap judge (results/calibration.md: 95% right on gold pairs, 14% of the production judge's cost):
+// The calibrated judge (results/calibration.md: 95% right on gold pairs, 93% without the easy Kotlin test pairs):
 // Jev in both orders; where its averaged probability is under SURE, Opus in both orders decides.
 // -> { score: +1 x better, -1 worse, 0 same, by }
 export const SURE = 0.8
@@ -79,19 +79,10 @@ export async function judgeFast(c, x, y, tag) {
   return { score: Math.sign((a?.s ?? 0) + (b?.s ?? 0)), by: 'opus', p: j.p, scores: [a?.s, b?.s] }
 }
 
-// A judgment settled by the old "a tie and a slight lean is same" shortcut: the two orders split, no Opus call.
-// That shortcut leaned toward the cheaper label in both directions, so such judgments are re-judged.
-export const splitWithoutOpus = j => j?.by === 'fable' && j.scores?.length === 2 && sign(j.scores[0]) !== sign(j.scores[1])
-
-// Is x (the routed answer) better, the same or worse than y (the reference)? -> {verdict, scores, evidence}
-// prior: the two Fable scores of an earlier judgment of the same pair, reused instead of asking Fable again.
-export async function judgePair(c, x, y, tag, prior) {
-  const [p, q] = prior?.length >= 2 && prior.slice(0, 2).every(Number.isFinite) ? prior.slice(0, 2).map(s => ({ s }))
-    : await Promise.all([once('fable', c, x, y, true, `${tag}:fable-ab`), once('fable', c, x, y, false, `${tag}:fable-ba`)])
-  if (p && q && sign(p.s) === sign(q.s)) return { verdict: sign(p.s), by: 'fable', scores: [p.s, q.s], evidence: p.evidence }
-  const o = await once('opus', c, x, y, Math.random() < 0.5, `${tag}:opus`)
-  if (!o) return { verdict: 'uncertain', by: 'none', scores: [p?.s, q?.s] }
-  const fableLean = (p?.s ?? 0) + (q?.s ?? 0)
-  const agrees = sign(o.s) === 'same' || sign(o.s) === sign(fableLean) || fableLean === 0
-  return { verdict: agrees ? sign(o.s) : 'uncertain', by: 'opus', scores: [p?.s, q?.s, o.s], evidence: o.evidence }
+// The one judge (the cascade above) as a verdict: is x (the routed answer) better, the same or worse than y (the
+// reference)? 'uncertain' when Opus gave no verdict. judge: 'cascade' marks judgments made by this judge, so saved
+// judgments from the old Fable judge (dropped 2026-11-20) are told apart and re-judged.
+export async function judge(c, x, y, tag) {
+  const j = await judgeFast(c, x, y, tag)
+  return { verdict: j.by === 'none' ? 'uncertain' : sign(j.score), by: j.by, p: j.p, scores: j.scores, judge: 'cascade' }
 }

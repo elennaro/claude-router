@@ -65,7 +65,7 @@ export function smellSamples(csv) {
     const s = (by[`${r[2]}|${r[3]}`] ??= { id: r[2], smell: r[3], repo: r[8].slice(15, -4), commit: r[9], path: r[10], from: +r[11], to: +r[12], sev: [] })
     s.sev.push(SEV[r[4]])
   }
-  const agreed = Object.values(by).filter(s => s.sev.length >= 2 && s.to - s.from >= 7 && s.to - s.from < 80)
+  const agreed = Object.values(by).filter(s => s.sev.length >= 2 && s.to - s.from >= 7 && s.to - s.from < 150)
   return {
     clean: agreed.filter(s => s.sev.every(v => v === 0)),
     smelly: agreed.filter(s => s.sev.every(v => v >= 2)),
@@ -90,14 +90,21 @@ const ASK = {
   'long method': 'Show a Java method that is clean, easy to read and easy to maintain.',
   'data class': 'Show a Java class that is well designed: it keeps the behavior that works on its data with that data.',
 }
+const short = s => s.to - s.from < 80
 for (const [smell, request] of Object.entries(ASK)) {
-  const goods = spread(clean.filter(s => s.smell === smell), 20), bads = spread(smelly.filter(s => s.smell === smell), 20)
-  let made = 0
-  for (let i = 0; made < 10 && i < Math.min(goods.length, bads.length); i++) {
-    const [good, bad] = await Promise.all([code(goods[i]), code(bads[i])])
-    if (good && bad) pairs.push({ id: `sm-${bads[i].id}-${goods[i].id}`, set: 'smells', family: smell, request, good, bad }), made++
+  const of = xs => xs.filter(s => s.smell === smell)
+  const tried = new Set()
+  const add = async (good, bad) => {
+    tried.add(good.id).add(bad.id)
+    const [g, b] = await Promise.all([code(good), code(bad)])
+    if (g && b) pairs.push({ id: `sm-${bad.id}-${good.id}`, set: 'smells', family: smell, request, good: g, bad: b })
+    return Boolean(g && b)
   }
-  if (made < 10) log(`MLCQ ${smell}: only ${made} pairs (repos moved or gone)`)
+  // first 10: snippets under 80 lines (the first calibration run); then every other agreed sample up to 150 lines
+  const goods = spread(of(clean).filter(short), 20), bads = spread(of(smelly).filter(short), 20)
+  for (let i = 0, made = 0; made < 10 && i < Math.min(goods.length, bads.length); i++) made += await add(goods[i], bads[i])
+  const moreGood = of(clean).filter(s => !tried.has(s.id)), moreBad = of(smelly).filter(s => !tried.has(s.id))
+  for (let i = 0; i < Math.min(moreGood.length, moreBad.length); i++) await add(moreGood[i], moreBad[i])
 }
 
 const JAVA_STYLE =`Rewrite this Kotlin function so it behaves exactly the same and still compiles, but written the way a Java

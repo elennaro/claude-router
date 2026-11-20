@@ -11,7 +11,7 @@ Four suites test the router's decisions against labeled cases, through `claude -
 
 Haiku writes code only as a self-contained edit of about 10 lines that nothing else uses (a private helper, a one-off script). Renames and any change that reaches other files are `scoped-code`. The tool-loop suite keeps one such change (`rename`) as a control.
 
-Labels: the **needed tier** is the cheapest model and effort that keeps top quality. Per prompt, it is measured by replay (`measure.mjs`): candidate answers judged against Opus medium in both orders. A deciding verdict (a cheaper tier worse, Opus high better) is confirmed on a second, independent answer and stands only if the repeat agrees: one judgment flips about 19% of the time, two agreeing ones by chance about 4%. The session and subagent labels come from two labelers (Opus high, Fable high). Where they disagree, Fable's label wins, except production-code investigation, where the stronger label wins. Each run spends at most `EVAL_CAP_USD` (default $5, counted for that run only); `work/spend.jsonl` keeps every call.
+Labels: the **needed tier** is the cheapest model and effort that keeps top quality. Per prompt, it is measured by replay (`measure.mjs`): candidate answers judged against Opus medium in both orders by the one judge (Jev where sure, else Opus; `judge.mjs judge`). The labels committed now were made by the earlier Fable judge; re-judging them is step 0 of `docs/NEXT-VERSION.md`. A deciding verdict (a cheaper tier worse, Opus high better) is confirmed on a second, independent answer and stands only if the repeat agrees: one judgment flips about 19% of the time, two agreeing ones by chance about 4%. The session and subagent labels come from two labelers (Opus high, Fable high). Where they disagree, Fable's label wins, except production-code investigation, where the stronger label wins. Each run spends at most `EVAL_CAP_USD` (default $5, counted for that run only); `work/spend.jsonl` keeps every call.
 
 ## Acceptance criteria (release gates)
 
@@ -109,10 +109,40 @@ idiomatic Kotlin against a Java-style rewrite, and Kotlin HumanEval answers with
 catch (needs `kotlinc` and `java`; Apache-2.0). Every judge call is cached on disk, so a re-run is free. MLCQ replaced
 human-rated Java readability (se2p/code-readability-merged) on 2026-11-20, because that set states no license.
 
+Result (2026-11-20, 239 pairs; in brackets the 95% interval, the range the true rate likely falls in):
+
+| Judge | All 239 pairs | Without the 105 easy Kotlin test pairs | Code smells (44) |
+|---|---|---|---|
+| Production (Fable + Opus split) | 95% (91-97) | 92% (86-95) | 82% (68-90) |
+| Opus, both orders | 95% (91-97) | 92% (86-95) | 84% (71-92) |
+| Jev, both orders | 84% (78-88) | 72% (64-79) | 70% (56-82) |
+| **Cascade: Jev if at least 0.8 sure, else Opus** | 95% (92-97) | 93% (87-96) | 86% (73-94) |
+| Share the cascade sends to Opus | 33% | 53% | 43% |
+
+The honest headline is the middle column: about 92% right on pairs that are not trivial. The "all" figure is lifted
+by the Kotlin test pairs, which every judge gets nearly all right. Design judgment (code smells) is the weak spot for
+every judge. The cascade (Jev where it is at least 0.8 sure, else Opus) is 95% right on all pairs at 15% of the
+production judge's cost.
+
+Tried to push the cascade to 97% (2026-11-20, tuned on half the pairs, read on the other half), and none of it helped:
+- **Jev questions** (`calibrate/jev-variants.mjs`, $0.04): a sharper pairwise question with a "same" exit, and scoring
+  each answer on its own (correct, complete, craft) so order cannot matter. Every variant tops out at the same rate:
+  on the pairs Jev hands over, Opus's own accuracy is the limit. Jev alone is 84% under every wording.
+- **Thresholds**: higher thresholds only send more pairs to Opus; where Jev is sure and wrong, Opus is wrong too.
+- **Opus prompt** (`calibrate/opus-variant.mjs`, $8.43 for 64 of the 80 pairs Jev hands over): work out the right
+  answer first, then compare, and weigh maintainability for code. One pair fixed, two made worse: no gain.
+- **Ties to Jev's lean**: reaches 97% on gold pairs, because gold pairs always have a winner, but on real router
+  answers it turns 24 of 28 correct "same" verdicts (Opus medium against itself) into invented wins and losses.
+
+What blocks 97%: 5 of the 11 misses are pairs where Jev, Opus and Fable all prefer the "worse" answer, mostly MLCQ
+data classes and JudgeBench; the gold label there is debatable. So the current question and prompt stay.
+
 ```
-node calibrate/gold.mjs      # public pairs -> work/gold/pairs.jsonl
-node calibrate/kotlin.mjs    # Kotlin test-checked pairs (kotlinc), added to the same file
-node calibrate/run.mjs       # production judge, Opus alone, Jev, and the Jev cascade -> results/calibration.md
+node calibrate/gold.mjs          # public pairs -> work/gold/pairs.jsonl
+node calibrate/kotlin.mjs        # Kotlin test-checked pairs (kotlinc), added to the same file
+node calibrate/run.mjs           # production judge, Opus alone, Jev, and the Jev cascade -> results/calibration.md
+node calibrate/jev-variants.mjs  # Jev question variants in the cascade -> results/jev-variants.md
+node calibrate/opus-variant.mjs  # the Opus prompt variant -> results/opus-variant.md
 ```
 
 Jev needs `TYPESAFE_API_KEY` in the environment.

@@ -7,13 +7,13 @@
 // Every step takes two judgments, each on an independent answer of the candidate (seed 0, 1, ...) against the same
 // reference answer; when they split, a third decides. One judgment says "worse" 19% of the time on Opus medium
 // against itself; two of three wrong by chance about 9%, the same in both directions (the old rule confirmed only
-// verdicts that cost more, so the labels leaned cheap). Re-running keeps every judgment already made, re-judges the
-// ones the old tie shortcut settled, and only adds what is missing.
+// verdicts that cost more, so the labels leaned cheap). Re-running keeps every judgment the current judge made
+// (judge.mjs judge) and only adds what is missing; judgments from the old Fable judge are made again.
 // Usage: node measure.mjs [category ...]  -> labels-measured/<category>.jsonl {id, need, steps}
 import assert from 'node:assert/strict'
 import { readdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { answer, judgePair, key, splitWithoutOpus } from './judge.mjs'
+import { answer, judge, key } from './judge.mjs'
 import { ROOT, log, pool, readJsonl, writeJsonl } from './lib.mjs'
 
 const T = m => { const [model, effort] = m.split('-'); return { model, effort } }
@@ -38,21 +38,24 @@ assert.equal(settle(['uncertain', 'better', 'same'], false), 'same')
 assert.equal(settle(['better', 'same'], true), undefined)
 assert.equal(settle(['better', 'same', 'better'], true), 'better')
 assert.equal(settle(['same', 'worse'], true), 'same')
-// steps saved before the judgments list: first verdict plus an optional repeat
-const judgmentsOf = s => s.judgments ?? [{ verdict: s.first ?? s.verdict, by: s.by, scores: s.scores }, ...(s.repeat ? [s.repeat] : [])]
-assert.deepEqual(judgmentsOf({ verdict: 'same', first: 'worse', by: 'fable', scores: [-1, -1], repeat: { verdict: 'same' } }).map(j => j.verdict), ['worse', 'same'])
+// judgments the current judge made; the judgment at index i was made on the candidate's answer seed i, so the
+// kept ones must be a prefix (an old judgment in between would pair a new verdict with the wrong seed)
+export function kept(js = []) {
+  const i = js.findIndex(j => j.judge !== 'cascade')
+  return i < 0 ? js : js.slice(0, i)
+}
+assert.deepEqual(kept([{ judge: 'cascade' }, { by: 'fable' }, { judge: 'cascade' }]), [{ judge: 'cascade' }])
+assert.deepEqual(kept(undefined), [])
 
 async function measure(c, prior = []) {
   const steps = []
   const vs = async (cand, ref, up) => {
     const tag = `measure:${c.id}:${key(cand)}-vs-${key(ref)}`
     const old = prior.find(s => s.cand === key(cand) && s.ref === key(ref))
-    const pick = j => ({ verdict: j.verdict, by: j.by, scores: j.scores })
-    const js = old ? judgmentsOf(old) : []
-    for (const [i, j] of js.entries()) if (splitWithoutOpus(j)) js[i] = pick(await judgePair(c, await answer(c, cand, i), await answer(c, ref), `${tag}:rejudge${i || ''}`, j.scores))
+    const js = kept(old?.judgments)
     while (settle(js.map(j => j.verdict), up) === undefined) {
       const i = js.length
-      js.push(pick(await judgePair(c, await answer(c, cand, i), await answer(c, ref), `${tag}${i ? `:repeat${i > 1 ? i : ''}` : ''}`)))
+      js.push(await judge(c, await answer(c, cand, i), await answer(c, ref), `${tag}${i ? `:repeat${i > 1 ? i : ''}` : ''}`))
     }
     const step = { cand: key(cand), ref: key(ref), first: js[0].verdict, verdict: settle(js.map(j => j.verdict), up), judgments: js }
     steps.push(step)
@@ -77,9 +80,10 @@ const cats = process.argv.slice(2).length ? process.argv.slice(2) : all
 await pool(cats, 2, async cat => {
   const out = join(ROOT, 'labels-measured', `${cat}.jsonl`)
   const done = new Map(readJsonl(out).map(r => [r.id, r]))
-  // MEASURE_PER=n measures the first n cases of each category, so a spend cap leaves every category covered
+  // MEASURE_PER=n measures the first n cases of each category, so a spend cap leaves every category covered;
+  // MEASURE_LABELED=1 re-judges only cases that already have labels (a judge change), never measuring new ones
   const per = Number(process.env.MEASURE_PER ?? Infinity)
-  const todo = readJsonl(join(ROOT, 'cases', `${cat}.jsonl`)).slice(0, per)
+  const todo = readJsonl(join(ROOT, 'cases', `${cat}.jsonl`)).slice(0, per).filter(c => !process.env.MEASURE_LABELED || done.has(c.id))
   // one case at a time per category keeps the saved file current, so a usage limit loses at most a few cases
   await pool(todo, 3, async c => {
     const before = done.get(c.id)
