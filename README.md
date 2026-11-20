@@ -42,6 +42,6 @@ Contributing: [CLAUDE.md](CLAUDE.md) has the layout, commands and rules. Checks:
 
 ## Credits and license
 
-The judge calibration downloads public datasets at run time and does not ship them: [JudgeBench](https://huggingface.co/datasets/ScalerLab/JudgeBench) (MIT), [CodeJudgeBench](https://huggingface.co/datasets/mattymchen/codejudgebench) (Apache-2.0), [Kotlin HumanEval](https://huggingface.co/datasets/JetBrains/Kotlin_HumanEval) (Apache-2.0) and [code-readability-merged](https://huggingface.co/datasets/se2p/code-readability-merged) (no license stated). No third-party code is included.
+The judge calibration downloads public datasets at run time and does not ship them: [JudgeBench](https://huggingface.co/datasets/ScalerLab/JudgeBench) (MIT), [CodeJudgeBench](https://huggingface.co/datasets/mattymchen/codejudgebench) (Apache-2.0), [Kotlin HumanEval](https://huggingface.co/datasets/JetBrains/Kotlin_HumanEval) (Apache-2.0) and [MLCQ](https://doi.org/10.5281/zenodo.3666840) (CC BY 4.0; L. Madeyski and T. Lewowski, "MLCQ: Industry-Relevant Code Smell Data Set", EASE 2020). MLCQ holds pointers, not code: the rated Java snippets are fetched from Apache projects on GitHub (Apache-2.0). An earlier version used [code-readability-merged](https://huggingface.co/datasets/se2p/code-readability-merged) instead; it was dropped because it states no license. No third-party code is included.
 
 MIT, see [LICENSE](LICENSE).

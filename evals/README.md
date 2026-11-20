@@ -102,9 +102,12 @@ case gets that tier's score on the case, else the tier's pooled score.
 ## Judge calibration
 
 The judges are checked on gold pairs where the better answer is known without asking a model (public data only, so
-outside services such as Jev may see it): JudgeBench, CodeJudgeBench (codegen, repair, test writing), human-rated Java
-readability, idiomatic Kotlin against a Java-style rewrite, and Kotlin HumanEval answers with one hidden bug that the
-task's own tests catch (needs `kotlinc` and `java`). Every judge call is cached on disk, so a re-run is free.
+outside services such as Jev may see it): JudgeBench (MIT), CodeJudgeBench (codegen, repair, test writing;
+Apache-2.0), Java code smells rated by professional developers (MLCQ, CC BY 4.0: a method or class every reviewer
+rated major or critical against one every reviewer rated clean; code fetched from Apache projects at the rated commit),
+idiomatic Kotlin against a Java-style rewrite, and Kotlin HumanEval answers with one hidden bug that the task's own tests
+catch (needs `kotlinc` and `java`; Apache-2.0). Every judge call is cached on disk, so a re-run is free. MLCQ replaced
+human-rated Java readability (se2p/code-readability-merged) on 2026-11-20, because that set states no license.
 
 ```
 node calibrate/gold.mjs      # public pairs -> work/gold/pairs.jsonl

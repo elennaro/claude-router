@@ -64,7 +64,7 @@ export async function once(model, c, x, y, xAtA, tag) {
   return v ? { s: score(v, xAtA), evidence: r.structured.evidence } : null
 }
 
-// The calibrated cheap judge (results/calibration.md: 97% right on gold pairs, 14% of the production judge's cost):
+// The calibrated cheap judge (results/calibration.md: 95% right on gold pairs, 14% of the production judge's cost):
 // Jev in both orders; where its averaged probability is under SURE, Opus in both orders decides.
 // -> { score: +1 x better, -1 worse, 0 same, by }
 export const SURE = 0.8

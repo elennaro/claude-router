@@ -97,7 +97,7 @@ Newest at the bottom. Each entry: what we did, what happened, what we learned. N
 4. **Calibrating the judge on gold pairs** where the better answer is known without a model: JudgeBench,
    CodeJudgeBench, human-rated Java readability, idiomatic Kotlin against a Java-style rewrite, and Kotlin with one
    hidden bug that the task's own tests catch. Result: the production judge and Opus alone both 97% right with 1–2%
-   order flips; Jev 88%, strong on style, weak on hard code and reasoning.
+   order flips; Jev 88%, strong on style, weak on hard code and reasoning. (Rerun 2026-11-20 with MLCQ code smells in place of the readability set: 95% overall; smells are the hardest set, 70-75% right for every judge; the cascade keeps 95% at 14% of the cost.)
 5. **Test-verified hidden bugs** when the benchmark was too easy (Haiku passed 176 of 180 Kotlin HumanEval answers):
    a model plants one realistic bug, and the pair counts only if the real tests catch it. 105 hard gold pairs for
    about a dollar.
