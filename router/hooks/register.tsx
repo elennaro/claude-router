@@ -887,9 +887,13 @@ export const register: Register = on => {
   }))
 
   on('agent.spawn', async ($, e, next) => shield($, e, next, async go => {
+    // the main model's own words in the brief ("high effort", "use opus") win over the router's pick: the spawn event
+    // carries no effort, so the brief is the only place a master's effort can come from (owner 2026-11-21)
+    const said = s.cfg.mode === 'off' ? undefined : explicitAsk(e.prompt)
     // every started run counts on the Board (a denied one does not); a resume is the same run going on
     const named = async (x: typeof e, routed = false, respawned = false) => {
       const r = await go(x)
+      if (r.agentId && said?.effort) s.agentEffort.set(r.agentId, said.effort)
       if (r.agentId) s.agentType.set(r.agentId, e.subagentType) // for the dashboard log
       if (!r.deny && !e.resume) await countAgent($, s, e.subagentType, routed, respawned)
       return r
@@ -898,6 +902,7 @@ export const register: Register = on => {
     if (s.ask?.agents) return named({ ...e, model: s.ask.agents }) // the prompt asked for this model's subagents
     // an exact version means its family: the newest model of it runs
     if (e.model) return named(claudeFamily(e.model) ? { ...e, model: claudeFamily(e.model)! } : e) // explicit model on the call wins
+    if (said?.model) return named({ ...e, model: said.model }) // a model named in the brief, next
     const def: Def = e.subagentType.includes(':') ? { model: 'plugin' } : await definition($, s, e.subagentType)
     if (def.model && claudeFamily(def.model)) return named({ ...e, model: claudeFamily(def.model)! }) // pinned to a version in frontmatter
     if (def.model && def.model !== 'inherit') return named(e) // pinned to a family in frontmatter
@@ -921,7 +926,7 @@ export const register: Register = on => {
     if (started.deny) return started
     if (run) s.siblings.set(run, model)
     if (hash) s.briefs.set(hash, model)
-    if (started.agentId && tier?.effort && !def.effort) s.agentEffort.set(started.agentId, tier.effort)
+    if (started.agentId && tier?.effort && !def.effort && !said?.effort) s.agentEffort.set(started.agentId, tier.effort)
     // with no router a nested agent's parent would itself be on its own no-router model (audit 2026-11-19)
     const parentNoRouter = (e.parentAgentId && s.agentAsked.get(e.parentAgentId)) || family(e.parentModel)
     if (started.agentId && (moved ? model : family(e.parentModel)) !== parentNoRouter) s.agentAsked.set(started.agentId, parentNoRouter)

@@ -420,6 +420,27 @@ test('a routed subagent gets its tier effort; headless sessions keep the main ef
   expect(sent).toEqual(['medium', 'medium'])
 })
 
+test("the main model's words in a brief win: its effort beats the tier, its model beats the pick", async (engine, on) => {
+  const $ = engine as any
+  const sent: Array<unknown> = []
+  wire(on, { sent, files: { '/home/.claude/routing.json': ROUTING }, haiku: () => 'mechanical 0.95', tokens: 5_000 })
+  const spawned: Array<string | undefined> = []
+  let n = 0
+  on('agent.spawn', (_: unknown, e: { model?: string }) => { spawned.push(e.model); return { model: e.model ?? 'inherit', agentId: `sub${++n}` } })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const spawn = (prompt: string, more = {}) => $.agent.spawn({ prompt, subagentType: 'general-purpose', parentModel: 'claude-opus-5-5', ...more })
+
+  await spawn('Swap every variable called foo for bar across the utils folder. Use high effort.')
+  await step($, 'low', 'sub1') // mechanical would be Haiku low; the brief asked high
+  await spawn('Review this diff for bugs, at high effort', { model: 'opus' })
+  await step($, 'low', 'sub2') // model on the call, effort in the brief: both kept
+  await spawn('Swap every variable called baz for qux across the app folder, use opus')
+  await step($, 'medium', 'sub3') // no effort asked: the engine's own
+
+  expect(spawned).toEqual(['haiku', 'opus', 'opus'])
+  expect(sent).toEqual(['high', 'high', 'medium'])
+})
+
 test('generic subagents go by their brief: sure and cheap moves, unsure gets the Sonnet default, a repeat climbs, siblings share', async (engine, on) => {
   const $ = engine as any // the test engine fills origin, wait and the other session-set fields
   const sent: Array<unknown> = []
