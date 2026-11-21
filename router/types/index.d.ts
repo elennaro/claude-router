@@ -1,6 +1,8 @@
 // The chat's own model; null = the session default. by: 'auto' (the first prompt picked it) or 'you' (the person chose; auto stays off).
 // effort: the person's pick for this chat (Settings); null or absent = each turn's effort follows its task.
-export type ChatModel = { model: string | null; by: 'auto' | 'you' | null; effort?: string | null }
+// routed: the model came from pressing a router tip or offer; from: the chat's model before the first such switch
+// (null = the session default). The no-router baseline stays on that model, so a router-suggested move is the router's cost.
+export type ChatModel = { model: string | null; by: 'auto' | 'you' | null; effort?: string | null; routed?: boolean; from?: string | null }
 
 // A session-check offer the band shows with buttons: up or down to model, compact first or start fresh.
 export type Advice = { action: 'up' | 'down'; model: string; kind: 'compact' | 'fresh'; trigger: string }

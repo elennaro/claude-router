@@ -450,7 +450,7 @@ async function switchChat($: EngineInterface, s: State, model: string, kind: 'co
       s.prev = NO_PREV // our own compaction skips our compact hook
     }
     if (kind === 'fresh') await $.command.run({ command: 'clear' })
-    await update($, chat, (c): ChatModel => ({ ...c, model, by: 'you' }))
+    await update($, chat, (c): ChatModel => ({ ...c, model, by: 'you', routed: true, from: c.routed ? (c.from ?? null) : c.model }))
     await update($, advice, () => null)
     await update($, hint, () => null)
   } catch {
@@ -482,8 +482,8 @@ async function clearChat($: EngineInterface, s: State) {
 
 // Settings: the person picks this chat's model (no auto moves for the chat then), or Auto gives it back to the router.
 async function pickModel($: EngineInterface, v: string) {
-  if (v === 'auto') return update($, chat, (c): ChatModel => ({ ...c, model: null, by: null }))
-  await update($, chat, (c): ChatModel => ({ ...c, model: v, by: 'you' }))
+  if (v === 'auto') return update($, chat, (c): ChatModel => ({ ...c, model: null, by: null, routed: false, from: null }))
+  await update($, chat, (c): ChatModel => ({ ...c, model: v, by: 'you', routed: false, from: null }))
   await update($, advice, () => null)
   await update($, hint, () => null)
   const isNew = (await $.session.usage().catch(() => undefined))?.context.tokens === undefined
@@ -981,7 +981,8 @@ export const register: Register = on => {
     // router's); a moved subagent on its parent's model (audit 2026-11-19: Opus was the baseline even on a Sonnet session)
     const who = e.agentId ? (s.agentType.get(e.agentId) ?? 'agent') : 'main'
     const noRouter = {
-      model: e.agentId ? (s.agentAsked.get(e.agentId) ?? u.model) : (asked ?? (picked?.by === 'you' ? base : undefined) ?? e.model),
+      // a model reached through a router tip or offer is the router's doing: the baseline stays on the model before it (owner 2026-11-21)
+      model: e.agentId ? (s.agentAsked.get(e.agentId) ?? u.model) : (asked ?? (picked?.routed ? (picked.from ?? e.model) : picked?.by === 'you' ? base : undefined) ?? e.model),
       effort: (ask?.effort ?? picked?.effort ?? e.effort) as string | undefined,
     }
     const longCache = e.agentId === undefined
@@ -1052,7 +1053,7 @@ export const register: Register = on => {
     const flip = (p: 'stats' | 'settings') => () => update($, panel, x => (x === p ? 'none' : p))
     const board = () => openBoard($, s).catch(() => $.ui.toast('router: could not open the board'))
     const picked = await read($, chat)
-    const undo = () => update($, chat, (c): ChatModel => ({ ...c, model: null, by: 'you' })) // back to the default; auto stays off for this chat
+    const undo = () => update($, chat, (c): ChatModel => ({ ...c, model: null, by: 'you', routed: false, from: null })) // back to the default; auto stays off for this chat
 
     const row = (
       <Box key="router-row" flexDirection="row" alignItems="center" gap={2} width={e.props.bodyColumns}>

@@ -338,7 +338,7 @@ function wire(on: any, opts: { batches?: Array<Array<Step>>; runFails?: boolean;
   on('turn.step', async function* (_: unknown, e: { effort?: unknown; model: string; turnId: string; index: number }) {
     opts.sent.push(e.effort)
     opts.models?.push(e.model)
-    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: { ...USAGE, cache_read_input_tokens: opts.read ?? 0, cache_creation_input_tokens: opts.write ?? 0, model: e.model === 'haiku' ? 'claude-haiku-5-5' : USAGE.model } }
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: { ...USAGE, cache_read_input_tokens: opts.read ?? 0, cache_creation_input_tokens: opts.write ?? 0, model: ({ haiku: 'claude-haiku-5-5', sonnet: 'claude-sonnet-5-5', fable: 'claude-fable-5-2' } as Record<string, string>)[e.model] ?? USAGE.model } }
   })
 }
 
@@ -1174,6 +1174,28 @@ test('the offer button compacts, then the chat runs on the offered model', async
   await step($, 'medium')
   expect(models).toEqual(['sonnet'])
   await band.unmount()
+})
+
+test("a model reached through the router's own offer is measured against the model before it (owner case 2026-11-21)", async (engine, on) => {
+  const $ = engine as any
+  const sent: Array<unknown> = []
+  const batches: Array<Array<Step>> = []
+  wire(on, { sent, batches, files: { '/home/.claude/routing.json': ROUTING }, haiku: 'final-copy 0.95', tokens: 40_000 })
+  on('ui.toast', () => ({ value: undefined }))
+  on('session.compact', () => ({ messages: [{ role: 'user', text: 'summary', toolUses: [] }] }))
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await $.prompt.submit({ text: 'write the launch post for the new product, for our blog' })
+  await band.press({ key: 'router-tip-switch' }) // the Opus chat goes to Fable on the router's tip
+  await step($, 'medium')
+  await band.unmount()
+  await end($)
+  const main = rows(batches, 'usage').find(r => r[2] === 'main')!
+  const effort = Number(main[6]) / costUsd('claude-opus-5-5', USAGE, true) // the effort factor alone: the baseline priced on Opus
+  expect(main[3]).toBe('fable')
+  expect(sent).toEqual([sent[0]]) // one step
+  expect(Math.round(effort * 100)).toBe(100) // medium both ways (final copy is high on Opus, so medium on Fable)
+  expect(Number(main[7])).toBeGreaterThan(0) // Fable costs more than the Opus chat would have: extra, not saved
 })
 
 test('a subagent sent to investigate production and reproduce the failure runs as a long run: Opus xhigh, never Fable', async () => {
