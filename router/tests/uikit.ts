@@ -74,6 +74,7 @@ export function numberIssues(text: string): Array<string> {
     if (m[2] === '-' || m[2] === '−') { if (Number(v) === 0) out.push('negative zero money') }
   }
   if (/\$-/.test(text)) out.push('minus after the "$" (write -$1.00)')
+  if (/\b(about|costs?|warm) \$0\.00\b|\$0\.00 (each|a nudge)/.test(text)) out.push('a cost stated as $0.00 (write "under $0.01")')
   if (/\d\s+%/.test(text)) out.push('space before "%"')
   if (/\d\.\d+K\b/.test(text)) out.push('tokens with decimals (write 96K)')
   if (/\b(NaN|undefined|Infinity|null)\b/.test(text)) out.push('a raw NaN/undefined/null/Infinity')

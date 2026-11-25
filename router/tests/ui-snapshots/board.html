@@ -26,7 +26,7 @@ table{width:100%;border-collapse:collapse}th{font-weight:500;color:var(--muted);
 .over{color:var(--over);font-weight:600}.under{color:var(--under);font-weight:600}
 .label{max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.proj{max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media (max-width:960px){.label{max-width:200px}.opt2{display:none}}
-.now{font-size:12px;color:var(--accent-text);margin-left:8px}
+.now{font-size:12px;color:var(--accent-text);margin-right:8px} /* before the label: the label may be cut, the tag never */
 .bar{width:22%;min-width:110px}.meter{position:relative;height:8px}.meter span{position:absolute;left:0;top:0;height:8px;border-radius:4px}.ghost{background:var(--ghost)}.solid{background:var(--spent)}.solid.up{background:var(--accent)}
 .mix-row{display:grid;grid-template-columns:96px 1fr 300px;gap:12px;align-items:center;padding:8px 0}.track{height:8px;border-radius:4px;background:var(--line)}.track span{display:block;height:8px;border-radius:4px}
 .band{display:flex;gap:2px;height:8px}.band span{border-radius:2px;min-width:2px}.band.big{height:12px;margin:16px 0 4px}.band.big span{border-radius:3px}.band.mini{width:96px}
@@ -243,7 +243,7 @@ function draw() {
   $('awake').textContent = awake.nudges ? 'Keep awake: ' + awake.nudges + (awake.nudges === 1 ? ' nudge' : ' nudges') + ' cost ' + money(awake.usd) + ' and saved ' + money(awake.saved) + ' of re-reading idle chats.' : '';
   const ss = Object.entries(sessions).sort((a, b) => b[1].last - a[1].last).slice(0, 60);
   $('sessions').innerHTML = ss.length ? ss.map(([id, s]) => '<tr>
-<td class="label" title="' + esc(s.label) + '">' + (esc(s.label) || '<span class="muted">untitled</span>') + (id === D.session ? '<span class="now">this chat</span>' : '') + '</td>
+<td class="label" title="' + esc(s.label) + '">' + (id === D.session ? '<span class="now">this chat</span>' : '') + (esc(s.label) || '<span class="muted">untitled</span>') + '</td>
 <td class="opt proj" title="' + esc(s.project) + '">' + esc(s.project) + '</td>
 <td class="opt muted">' + new Date(s.last).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) + '</td>
 <td class="opt">' + band(s.models, 'mini') + '</td>

@@ -3,6 +3,8 @@
 import type { Bucket, By, Cache, Mix, Tally, Tool, TurnLog, Versions, Why } from '../types'
 
 export const money = (n: number) => (n <= -0.005 ? `-$${(-n).toFixed(2)}` : `$${Math.max(0, n).toFixed(2)}`) // no "-$0.00" from rounding
+// A price in a sentence: "about $0.02", or "under $0.01" where money() would say a cost of $0.00.
+export const about = (n: number) => (n > 0 && n < 0.005 ? 'under $0.01' : `about ${money(n)}`)
 // What a switch offer says it costs: the new model writes the chat to its own cache once (less after compacting).
 // The offer after an hour away: resuming re-reads everything anyway; compacting first adds a little and saves per step.
 export const coldWords = (c: { cache: number; resume: number; extra: number; perStep: number; payback: number }) =>
@@ -346,7 +348,7 @@ table{width:100%;border-collapse:collapse}th{font-weight:500;color:var(--muted);
 .over{color:var(--over);font-weight:600}.under{color:var(--under);font-weight:600}
 .label{max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.proj{max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media (max-width:960px){.label{max-width:200px}.opt2{display:none}}
-.now{font-size:12px;color:var(--accent-text);margin-left:8px}
+.now{font-size:12px;color:var(--accent-text);margin-right:8px} /* before the label: the label may be cut, the tag never */
 .bar{width:22%;min-width:110px}.meter{position:relative;height:8px}.meter span{position:absolute;left:0;top:0;height:8px;border-radius:4px}.ghost{background:var(--ghost)}.solid{background:var(--spent)}.solid.up{background:var(--accent)}
 .mix-row{display:grid;grid-template-columns:96px 1fr 300px;gap:12px;align-items:center;padding:8px 0}.track{height:8px;border-radius:4px;background:var(--line)}.track span{display:block;height:8px;border-radius:4px}
 .band{display:flex;gap:2px;height:8px}.band span{border-radius:2px;min-width:2px}.band.big{height:12px;margin:16px 0 4px}.band.big span{border-radius:3px}.band.mini{width:96px}
@@ -444,7 +446,7 @@ function draw() {
   $('split').textContent = rows.length ? 'Saved ' + money(saved) + ' on steps the router made cheaper. Spent ' + money(extra) + ' extra on stronger steps and on its own Haiku calls.' : '';
   $('awake').textContent = awake.nudges ? 'Keep awake: ' + awake.nudges + (awake.nudges === 1 ? ' nudge' : ' nudges') + ' cost ' + money(awake.usd) + ' and saved ' + money(awake.saved) + ' of re-reading idle chats.' : '';
   const ss = Object.entries(sessions).sort((a, b) => b[1].last - a[1].last).slice(0, 60);
-  $('sessions').innerHTML = ss.length ? ss.map(([id, s]) => '<tr><td class="label" title="' + esc(s.label) + '">' + (esc(s.label) || '<span class="muted">untitled</span>') + (id === D.session ? '<span class="now">this chat</span>' : '') + '</td><td class="opt proj" title="' + esc(s.project) + '">' + esc(s.project) + '</td><td class="opt muted">' + new Date(s.last).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) + '</td><td class="opt">' + band(s.models, 'mini') + '</td><td class="n opt">' + s.turns +'</td><td class="n">' + money(s.usd) + '</td><td class="n muted opt opt2">' + money(s.base) + '</td><td class="n">' + diff(s.usd, s.base) + '</td></tr>').join('') : empty(8, 'No sessions in this range. Pick a longer range above.');
+  $('sessions').innerHTML = ss.length ? ss.map(([id, s]) => '<tr><td class="label" title="' + esc(s.label) + '">' + (id === D.session ? '<span class="now">this chat</span>' : '') + (esc(s.label) || '<span class="muted">untitled</span>') + '</td><td class="opt proj" title="' + esc(s.project) + '">' + esc(s.project) + '</td><td class="opt muted">' + new Date(s.last).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) + '</td><td class="opt">' + band(s.models, 'mini') + '</td><td class="n opt">' + s.turns +'</td><td class="n">' + money(s.usd) + '</td><td class="n muted opt opt2">' + money(s.base) + '</td><td class="n">' + diff(s.usd, s.base) + '</td></tr>').join('') : empty(8, 'No sessions in this range. Pick a longer range above.');
   const ps = Object.entries(projects).sort((a, b) => b[1].usd - a[1].usd);
   const top = Math.max(...ps.map(p => Math.max(p[1].base, p[1].usd)), 1e-9);
   $('projects').innerHTML = ps.length ? ps.map(([name, p]) => '<tr><td>' + esc(name) + '</td><td class="n">' + money(p.usd) + '</td><td class="n muted opt">' + money(p.base) + '</td><td class="n">' + diff(p.usd, p.base) + '</td><td class="bar opt">' + meter(p.usd, p.base, top) + '</td></tr>').join('') : empty(5, 'No spend in this range.');

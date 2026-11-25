@@ -17,7 +17,7 @@ import {
   COMPACT_POINTS, cheapestPoint, compactStepUsd,
   SIZED, briefPaths, bucket, sizeOf, cacheSheet, PASTE_MIN, estTokens, keepsRaw, pasteModel, pasteSystem, pastePrompt, offloaded,
 } from './policy'
-import { type Cell, NAMES, TOOL_NAMES, addWhy, awayWords, cacheClock, minutesLeft, coldWords, whyWords, barsSvg, boardHtml, cardLayout, hitPct, switchCost, svgSize, isExtra, modelColor, money, shade, net, netPct, netWords, savedUsd, statsSvg, withMode } from './view'
+import { type Cell, NAMES, TOOL_NAMES, about, addWhy, awayWords, cacheClock, minutesLeft, coldWords, whyWords, barsSvg, boardHtml, cardLayout, hitPct, switchCost, svgSize, isExtra, modelColor, money, shade, net, netPct, netWords, savedUsd, statsSvg, withMode } from './view'
 
 const PANE = 'router'
 const hint = atom({ plugin: 'router', key: 'hint' } as const, null)
@@ -836,7 +836,7 @@ function awakeCell(s: State, f: Awaited<ReturnType<typeof facts>>): Cell {
   const next = on && s.lastContext >= AWAKE_MIN && !s.openTurn ? minutesLeft(s.prev.at, f.at, AWAKE_PING_MS / 60_000) : undefined
   const sub = [
     next ? `nudge in ${next} min` : on && s.lastContext < AWAKE_MIN ? 'starts at 20K tokens' : on ? '' : 'off in Settings',
-    a?.extra ? `nudges ${money(a.extra)}` : '',
+    a?.extra ? `cost ${money(a.extra)}` : '', // short: the 4-column card cuts this note at about 29 characters
   ].filter(Boolean).join(' · ')
   return { label: 'Keep awake', value: a && a.saved >= 0.005 ? `saved ${money(a.saved)}` : on ? 'On' : 'Off', sub: sub || 'no nudges yet' }
 }
@@ -844,7 +844,7 @@ function awakeCell(s: State, f: Awaited<ReturnType<typeof facts>>): Cell {
 // The cache sheet in one line: what a model switch, a reset and compacting would cost right now.
 const sheetLine = (s: State, f: Awaited<ReturnType<typeof facts>>) => s.lastContext < 1000
   ? ''
-  : `Switching model writes the chat once on the new one: ${f.sheet.switches.map(x => `${pretty(x.model)} ${money(x.usd)}`).join(', ')}. Compacting: about ${money(f.sheet.compact)}. Keeping it warm while you are away: about ${money(f.sheet.ping)} a nudge, one every 50 minutes. After an hour idle the cache is gone anyway, so switching then costs only the difference.`
+  : `Switching model writes the chat once on the new one: ${f.sheet.switches.map(x => `${pretty(x.model)} ${money(x.usd)}`).join(', ')}. Compacting: ${about(f.sheet.compact)}. Keeping it warm while you are away: ${about(f.sheet.ping)} a nudge, one every 50 minutes. After an hour idle the cache is gone anyway, so switching then costs only the difference.`
 
 // The note at the end of the Stats card's model band header.
 const reroutedNote = (v: RouterView) => `${v.rerouted} ${v.rerouted === 1 ? 'turn' : 'turns'}, ${v.routedAgents} ${v.routedAgents === 1 ? 'agent' : 'agents'} re-routed`
@@ -1364,12 +1364,12 @@ export const register: Register = on => {
     const board = () => openBoard($, s).catch(() => $.ui.toast('router: could not open the board'))
     const picked = await read($, chat)
     const undo = () => update($, chat, (c): ChatModel => ({ ...c, model: null, by: 'you', routed: false, from: null })) // back to the default; auto stays off for this chat
-    // under 72 cells the row keeps 1-cell gaps and leaves the cache hit to Stats; narrower still, the buttons wrap
-    // onto a second line instead of running off the edge (checked at 40-120 cells by tests/ui.test.ts)
+    // under 72 cells the row leaves the cache hit to Stats; narrower still, the buttons wrap onto a second line
+    // instead of running off the edge. Gaps stay 2 cells: at 1, plain buttons read as one phrase (tests/ui.test.ts)
     const narrow = e.props.bodyColumns < 72
 
     const row = (
-      <Box key="router-row" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={narrow ? 1 : 2} width={e.props.bodyColumns}>
+      <Box key="router-row" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} width={e.props.bodyColumns}>
         <Text><Text color={f.v.isOn ? 'success' : 'inactive'}>●</Text> Router</Text>
         {f.v.isOn && <Text wrap="truncate-end"><Text color={modelColor(f.main?.model ?? s.cfg.main.model)}>■</Text> {f.now}</Text>}
         {f.v.isOn && picked.by === 'auto' && picked.model && <Button key="router-chat-undo" plain dimColor label={`Picked ${pretty(picked.model)} for this chat · Undo`} onPress={undo} />}
@@ -1462,7 +1462,7 @@ export const register: Register = on => {
     const field = (key: string, label: string, kids: Array<ReturnType<typeof h>> | ReturnType<typeof h>, top = false) => (
       <Box key={key} flexDirection="row" alignItems={top ? 'flex-start' : 'center'} gap={1}>
         <Box key={`${key}-label`} width={LABEL} flexShrink={0}><Text dimColor>{label}</Text></Box>
-        <Box key={`${key}-kids`} flexDirection="row" alignItems="center" columnGap={1} flexWrap="wrap" flexShrink={1}>{kids}</Box>
+        <Box key={`${key}-kids`} flexDirection="row" alignItems="center" columnGap={2} flexWrap="wrap" flexShrink={1}>{kids}</Box>
       </Box>
     )
     const note = (key: string, text: string) => <Box key={key} marginLeft={LABEL + 1}><Text dimColor wrap="wrap">{text}</Text></Box>
@@ -1501,7 +1501,7 @@ export const register: Register = on => {
     const kt = (n: number) => `${Math.round(n / 1000)}K`
     const src = bd?.autocompactSource === 'env' ? ' (set by CLAUDE_CODE_AUTO_COMPACT_WINDOW, which beats settings.json)' : bd?.autocompactSource === 'settings' ? ' (your settings.json)' : ''
     const shown = at ?? best
-    const acNote = `Now ${kt(s.lastContext)}; Claude Code itself compacts at ${kt(engineAt)}${src}.${s.lastContext >= 1000 ? ` Compacting now costs about ${money(f.sheet.compact)}.` : ''} ${growth === undefined
+    const acNote = `Now ${kt(s.lastContext)}; Claude Code itself compacts at ${kt(engineAt)}${src}.${s.lastContext >= 1000 ? ` Compacting now costs ${about(f.sheet.compact)}.` : ''} ${growth === undefined
       ? 'The cheapest point shows after a few steps.'
       : `This chat grows about ${kt(growth)} a step; a step reads ${money(stepUsd(acModel, s.lastContext, 0))} now${shown ? `, and compacting at ${kt(shown)} averages about ${money(compactStepUsd(acModel, shown, growth))} a step` : ''}.`} A point you pick is used after the turn that passes it, for this chat only.`
     // order: what a person changes most (this chat) first, then what to save on, then where routing is on at all
@@ -1530,7 +1530,7 @@ export const register: Register = on => {
           note('router-f-pastes-note', 'A message over about 10K tokens goes to a file, and a cheaper model reads it first. Write "raw" to skip.'),
           feat('awake', 'Keep awake'),
           field('router-awake-hours', 'Keep it for', choices('router-awake-hours', AWAKE_HOURS.map(h => [String(h), `${h}h`] as [string, string]), String(f.hours), v => setAwakeHours($, Number(v)))),
-          note('router-f-awake-note', `A hidden nudge every 50 minutes keeps an idle chat's cache warm${s.lastContext >= 1000 ? ` (about ${money(f.sheet.ping)} each, against ${money(f.sheet.reset)} to re-read it)` : ''}. After ${f.hours} hours it compacts the chat into a handoff${s.lastContext >= 1000 ? ` (about ${money(f.sheet.compact)})` : ''} and stops. Off: the band offers to compact once the cache lapses.`))}
+          note('router-f-awake-note', `A hidden nudge every 50 minutes keeps an idle chat's cache warm${s.lastContext >= 1000 ? ` (${about(f.sheet.ping)} each, against ${money(f.sheet.reset)} to re-read it)` : ''}. After ${f.hours} hours it compacts the chat into a handoff${s.lastContext >= 1000 ? ` (${about(f.sheet.compact)})` : ''} and stops. Off: the band offers to compact once the cache lapses.`))}
         {group('router-g-scope',
           field('router-scope', 'Routing', [
             <Text key="router-global-l">Everywhere</Text>,
@@ -1584,7 +1584,7 @@ export const register: Register = on => {
           {line('w-saved', isExtra(f.chat) ? 'Extra this chat' : 'Saved this chat', `${money(Math.abs(net(f.chat)))} · ${netPct(f.chat)}%`)}
           {s.lastContext >= 1000 && line('w-cache', 'Cache', `${Math.round(s.lastContext / 1000)}K · losing it ${money(f.sheet.reset)}`)}
           {s.lastContext >= 1000 && line('w-switch', 'Switch costs', f.sheet.switches.map(x => `${pretty(x.model)} ${money(x.usd)}`).join(', '))}
-          {s.lastContext >= 1000 && line('w-keep', 'Keep or compact', `warm ${money(f.sheet.ping)} a nudge · compact ${money(f.sheet.compact)}`)}
+          {s.lastContext >= 1000 && line('w-keep', 'Keep or compact', `warm ${about(f.sheet.ping)} a nudge · compact ${money(f.sheet.compact)}`)}
           {Svg && f.turns.length > 1 && <Svg key="w-bars" isInteractive source={barsSvg(f.turns, 220, 24)} width={220} height={24} alt={`Cost of the last ${f.turns.length} turns against no router`} />}
         </Box>
       )

@@ -52,6 +52,9 @@ function audit(tree: Node, state: string, surface: string, width: number): Array
     if (n.type === 'Button') for (const i of labelIssues(textOf(n))) out.push(`button "${textOf(n)}": ${i}`)
     if (n.type === 'Text' && !(n.children ?? []).some(c => typeof c !== 'string')) for (const i of numberIssues(textOf(n))) out.push(`text "${textOf(n).slice(0, 50)}": ${i}`)
     if (n.type === 'Svg') for (const i of numberIssues(String(n.props?.alt ?? ''))) out.push(`card alt: ${i}`)
+    // plain buttons have no chrome: 1 cell apart, "Board Stats Settings" reads as one phrase
+    const plain = (n.children ?? []).filter(c => typeof c !== 'string' && c.type === 'Button' && c.props?.plain).length
+    if (n.type === 'Box' && n.props?.flexDirection === 'row' && plain >= 2 && Number(n.props?.columnGap ?? n.props?.gap ?? 0) < 2) out.push(`${String(n.props?.key ?? 'row')}: plain buttons closer than 2 cells`)
   })
   out.push(...overfullRows(tree, width, surface))
   return [...new Set(out)].map(x => `${state} · ${surface} · ${width}: ${x}`).filter(x => !KNOWN.some(k => k.test(x)))
@@ -113,6 +116,8 @@ test('the rules themselves: contrast, labels, numbers, cell widths, row budgets'
   expect(numberIssues('saved $0.12 · cache hit 94% · 96K tokens · $0.004')).toEqual([])
   expect(numberIssues('$0.1 and $-2.00 and 5 % and 96.4K and NaN')).toHaveLength(6) // $-2.00 is both a bad amount and a misplaced minus
   expect(numberIssues('$0.123')).toEqual(['money "$0.123" has 3 decimals at $0.10 or more'])
+  expect(numberIssues('(about $0.00 each, against $0.02 to re-read it)')).toEqual(['a cost stated as $0.00 (write "under $0.01")'])
+  expect(numberIssues('saved $0.00')).toEqual([]) // a saving of nothing is a fact, not a price
   expect(cells('Opus 高')).toBe(7)
   const row = (width: number): Node => ({ type: 'Box', props: { flexDirection: 'row', gap: 2, width }, children: [{ type: 'Text', children: ['● Router'] }, { type: 'Text', props: { wrap: 'truncate-end' }, children: ['Haiku low (auto)'] }, { type: 'Button', props: { label: 'Settings' } }] })
   expect(overfullRows(row(40), 40)).toEqual([])

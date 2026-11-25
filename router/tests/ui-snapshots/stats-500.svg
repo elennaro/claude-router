@@ -47,12 +47,12 @@
 <text class="v" x="264" y="186">Model moves</text>
 <text class="s" x="264" y="204">saved $1.90 · +$0.42 effort</text>
 <g>
-<title>Keep awake: saved $3.10 · nudge in 41 min · nudges $0.18</title>
+<title>Keep awake: saved $3.10 · nudge in 41 min · cost $0.18</title>
 <rect class="hit" x="0" y="216" width="232" height="72"/>
 </g>
 <text class="l" x="0" y="232">Keep awake</text>
 <text class="v" x="0" y="258">saved $3.10</text>
-<text class="s" x="0" y="276">nudge in 41 min · nudges $0.18</text>
+<text class="s" x="0" y="276">nudge in 41 min · cost $0.18</text>
 <line class="d" x1="0" y1="296.5" x2="496" y2="296.5"/>
 <text class="l" x="0" y="320">Models this chat</text>
 <text class="s" x="496" y="320" text-anchor="end">5 turns, 3 agents re-routed</text>

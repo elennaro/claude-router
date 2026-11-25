@@ -40,7 +40,7 @@ const CELLS = [
   { label: 'Spent this chat', value: view.money(TALLY.actualUsd), sub: 'cache hit 99.4%' },
   { label: 'Cache', value: '184K tokens', sub: `${view.cacheClock(1, 1 + 23 * 60_000)} · rebuild $2.76` },
   { label: 'Where it went', ...view.whyWords(TALLY.by) },
-  { label: 'Keep awake', value: 'saved $3.10', sub: 'nudge in 41 min · nudges $0.18' },
+  { label: 'Keep awake', value: 'saved $3.10', sub: 'nudge in 41 min · cost $0.18' },
 ]
 const DAY = 864e5
 const today = new Date(2026, 10, 25, 12)
@@ -144,7 +144,7 @@ const MEASURE = `
     for (const e of leaves) {
       const r = e.getBoundingClientRect(), cs = getComputedStyle(e)
       const bg = bgOf(e) || [255, 255, 255]
-      out.html.push({ tag: e.tagName.toLowerCase(), cls: e.className || '', t: e.textContent.trim().slice(0, 60), x: r.left, y: r.top, w: r.width, h: r.height, px: parseFloat(cs.fontSize), wt: +cs.fontWeight || 400, cr: ratio(P(cs.color), bg), clip: e.scrollWidth > e.clientWidth + 1 && cs.overflow !== 'visible' && cs.textOverflow !== 'ellipsis' })
+      out.html.push({ tag: e.tagName.toLowerCase(), cls: e.className || '', t: e.textContent.trim().slice(0, 60), x: r.left, y: r.top, w: r.width, h: r.height, px: parseFloat(cs.fontSize), wt: +cs.fontWeight || 400, cr: ratio(P(cs.color), bg), clip: e.scrollWidth > e.clientWidth + 1 && cs.overflow !== 'visible' && cs.textOverflow !== 'ellipsis', hid: (() => { for (let p = e.parentElement; p; p = p.parentElement) if (getComputedStyle(p).overflowX !== 'visible') { const q = p.getBoundingClientRect(); return r.left >= q.right - 1 || r.right > q.right + 1 } return false })() })
     }
     out.targets = [...document.querySelectorAll('button, a[href], input, select')].filter(e => e.offsetParent !== null).map(e => { const r = e.getBoundingClientRect(); return { t: e.textContent.trim(), w: r.width, h: r.height } })
     out.scrollers = [...document.querySelectorAll('.card')].filter(e => e.scrollWidth > e.clientWidth + 1).map(e => e.previousElementSibling?.textContent || 'a card')
@@ -174,6 +174,7 @@ function judge(s, theme, m) {
       const need = kit.isLarge(e.px, e.wt) ? kit.MIN_LARGE : kit.MIN_TEXT
       if (m.dark === (theme === 'dark') && e.cr < need) add(at, `"${e.t}" (${e.tag}${e.cls ? '.' + e.cls : ''}) contrast ${e.cr.toFixed(2)}:1, needs ${need}:1`)
       if (e.clip) add(at, `"${e.t}" is clipped without an ellipsis`)
+      if (e.hid) add(at, `"${e.t}" (${e.tag}${e.cls ? '.' + e.cls : ''}) is cut off by the box around it`)
       if (e.x + e.w > m.w + 1) add(at, `"${e.t}" runs past the right edge`)
     }
     for (const t of m.targets ?? []) if (t.w < 24 || t.h < 24) add(at, `target "${t.t}" is ${Math.round(t.w)}x${Math.round(t.h)} px, under 24x24`)
