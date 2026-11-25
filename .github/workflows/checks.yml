@@ -1,0 +1,33 @@
+# The free checks on every OS the plugin supports. No model calls, no secrets.
+name: checks
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  checks:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install -g @anthropic-ai/claude-code
+      - name: plugin tests
+        working-directory: router
+        run: claude plugin test .
+      - name: plugin validate
+        working-directory: router
+        run: claude plugin validate .
+      - name: ledger SQL
+        working-directory: router
+        run: node tests/db.check.mjs
+      - name: eval scoring checks
+        working-directory: evals
+        run: |
+          node store.test.mjs
+          node toolloop/checks.test.mjs
