@@ -78,11 +78,12 @@ export const BUILTIN: Config = {
       quick: { family: 'luna', effort: 'low', why: 'lookups, formatting, small edits' },
     },
     antigravity: {
-      review: { family: 'hydrogen', effort: 'high', why: 'Hydrogen edges Argon on the composite index (third-party, 2026-11)' },
-      validate: { family: 'hydrogen', effort: 'high', why: 'as review' },
-      deep: { family: 'hydrogen', effort: 'xhigh', why: 'Hydrogen is the only Gemini family in agy with xhigh' },
-      visual: { family: 'argon', effort: 'medium', why: 'ties Hydrogen on vision evals at about half the cost' },
-      quick: { family: 'flash', effort: 'low', why: 'the small, fast family' },
+      // Argon and 3.8 Flash leave agy on 2026-11-30 (Google's models page). Neon is on paid plans only; without it, Hydrogen runs.
+      review: { family: 'neon', effort: 'high', why: 'Neon tops the Gemini 4 families on the Artificial Analysis index (61 vs Hydrogen 54) at 32% less per task than Carbon (Google, 2026-11)' },
+      validate: { family: 'neon', effort: 'high', why: 'as review' },
+      deep: { family: 'neon', effort: 'xhigh', why: 'Neon at its strongest setting' },
+      visual: { family: 'neon', effort: 'medium', why: 'no vision ranking is published; the strongest family at a middle effort' },
+      quick: { family: 'hydrogen', effort: 'low', why: 'the small, fast family, on every plan' },
     },
   },
 }

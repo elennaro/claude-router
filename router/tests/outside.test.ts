@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
 import { claudeFamily, cmpVersion, fitEffort, isSanePrices, newestAgy, newestCodex, parsePrices, versionIn } from '../hooks/latest'
-import { outsideCall, runAgy, runCodex } from '../hooks/outside'
+import { env, outsideCall, runAgy, runCodex } from '../hooks/outside'
 import { BUILTIN, BUILTIN_PRICE, classifyByRules, explicitAsk, isContinuation, merge } from '../hooks/policy'
 
 // The shape `codex debug models` writes to ~/.codex/models_cache.json (fields trimmed).
@@ -46,7 +46,7 @@ test('Codex runs read-only with the standard flags, web search, the unelevated W
       },
     },
   }
-  const v = { home: '/home', windows: true, appdata: '/appdata' }
+  const v = { home: '/home', windows: true, npmRoot: '/appdata/npm/node_modules' }
   const a = await runCodex($ as any, v, { family: 'sol', effort: 'high' } as any, { role: 'review', brief: 'check it', dir: '/proj' }, { sol: { slug: 'gpt-6.2-sol', version: '6.2', efforts: ['low', 'high'] } } as any)
   expect(a).toEqual({ text: 'looks fine', model: 'gpt-6.2-sol', effort: 'high' })
   expect(runs[0]!.argv).toEqual([
@@ -70,8 +70,35 @@ test('a failed Codex call never returns text left in its answer file', async () 
       },
     },
   }
-  const a = await runCodex($ as any, { home: '/h', windows: false, appdata: '' }, { family: 'sol', effort: 'high' } as any, { role: 'review', brief: '- a bullet first' }, { sol: { slug: 'gpt-6.2-sol', version: '6.2', efforts: ['high'] } } as any)
+  const a = await runCodex($ as any, { home: '/h', windows: false, npmRoot: '' }, { family: 'sol', effort: 'high' } as any, { role: 'review', brief: '- a bullet first' }, { sol: { slug: 'gpt-6.2-sol', version: '6.2', efforts: ['high'] } } as any)
   expect('error' in a && a.error.includes('rate limited')).toBe(true)
+})
+
+test('on Windows, Codex is found where npm says its global packages live (a custom prefix or nvm moves them)', async () => {
+  const asked: Array<Array<string>> = []
+  const vars: Record<string, string> = { USERPROFILE: 'C:\\Users\\u', OS: 'Windows_NT', APPDATA: 'C:\\Users\\u\\AppData\\Roaming' }
+  const $ = {
+    env: { get: async (k: string) => vars[k] },
+    process: { run: async (argv: Array<string>) => { asked.push(argv); return { exitCode: 0, stdout: 'D:\\nvm\\v24\\node_modules\r\n', stderr: '' } } },
+  }
+  const v = await env($ as any)
+  expect(asked[0]).toEqual(['cmd', '/c', 'npm', 'root', '-g'])
+  expect(v.npmRoot).toBe('D:/nvm/v24/node_modules')
+  await env($ as any)
+  expect(asked.length).toBe(1) // asked once per session
+})
+
+test('an Antigravity role whose family the plan lacks or Google retired runs on Hydrogen, at the nearest effort it has', async () => {
+  const runs: Array<Array<string>> = []
+  const $ = { process: { run: async (argv: Array<string>) => { runs.push(argv); return { exitCode: 0, stdout: 'ok', stderr: '' } } } }
+  const picks = newestAgy(AGY) // argon, hydrogen, flash: no neon
+  const a = await runAgy($ as any, BUILTIN.outside.antigravity.deep as any, { role: 'deep', brief: 'think' }, picks)
+  expect(a).toEqual({ text: 'ok', model: 'gemini-4-hydrogen-xhigh', effort: 'xhigh' })
+  expect('error' in await runAgy($ as any, BUILTIN.outside.antigravity.deep as any, { role: 'deep', brief: 'think' }, {})).toBe(true)
+})
+
+test('no Antigravity role uses a family leaving on 2026-11-30 (Argon, 3.8 Flash)', () => {
+  for (const r of Object.values(BUILTIN.outside.antigravity)) expect(['argon', 'flash']).not.toContain(r.family)
 })
 
 test('an Antigravity brief that starts with "-" cannot be read as a flag', async () => {

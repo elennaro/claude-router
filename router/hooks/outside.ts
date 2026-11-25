@@ -15,18 +15,24 @@ export type OutsideTable = Partial<Record<AgentName, Partial<Record<Role, RoleTi
 const DAY = 86_400_000
 const SLOTS = 8 // rolling Codex answer files: the plugin API has no delete, so a small fixed set gets overwritten
 
-export type Env = { home: string; windows: boolean; appdata: string }
+export type Env = { home: string; windows: boolean; npmRoot: string }
 
+// npm's global folder moves with its prefix (nvm, a custom prefix), so npm itself is asked, once per session
+let npmRoot: Promise<string> | undefined
 export async function env($: EngineInterface): Promise<Env> {
   const home = ((await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME')) ?? '').replace(/\\/g, '/')
   const windows = (await $.env.get('OS')) === 'Windows_NT'
-  const appdata = ((await $.env.get('APPDATA')) ?? `${home}/AppData/Roaming`).replace(/\\/g, '/')
-  return { home, windows, appdata }
+  const fallback = `${((await $.env.get('APPDATA')) ?? `${home}/AppData/Roaming`).replace(/\\/g, '/')}/npm/node_modules`
+  npmRoot ??= windows
+    ? $.process.run(['cmd', '/c', 'npm', 'root', '-g'], { stdin: '', timeoutMs: 30_000 })
+        .then(r => (r.exitCode === 0 && r.stdout.trim() ? r.stdout.trim().replace(/\\/g, '/') : fallback)).catch(() => fallback)
+    : Promise.resolve('')
+  return { home, windows, npmRoot: await npmRoot }
 }
 
-// npm installs Codex as a .cmd shim on Windows, which cannot start without a shell; its entry is a node script, so node runs it
-// and every argument reaches Codex exactly as given.
-const codexBin = (v: Env) => (v.windows ? ['node', `${v.appdata}/npm/node_modules/@openai/codex/bin/codex.js`] : ['codex'])
+// npm installs Codex as a .cmd shim on Windows, which cannot start without a shell; its entry is a node script (the
+// package's declared bin), so node runs it and every argument reaches Codex exactly as given.
+const codexBin = (v: Env) => (v.windows ? ['node', `${v.npmRoot}/@openai/codex/bin/codex.js`] : ['codex'])
 const npmBin = (v: Env) => (v.windows ? ['cmd', '/c', 'npm'] : ['npm'])
 
 async function readJson($: EngineInterface, path: string): Promise<unknown> {
@@ -95,8 +101,9 @@ export async function runCodex($: EngineInterface, v: Env, tier: RoleTier, call:
 // wrote files (agy 1.5.11, 2026-11-25), so deny rules for this session (--settings, never saved) make it read-only.
 const AGY_READ_ONLY = JSON.stringify({ permissions: { deny: ['write_file(*)', 'command(*)', 'unsandboxed(*)', 'mcp(*)'] } })
 export async function runAgy($: EngineInterface, tier: RoleTier, call: Call, picks: Record<string, Pick>): Promise<Answer> {
-  const pick = picks[tier.family]
-  if (!pick) return { error: `Antigravity lists no model in the "${tier.family}" family. Update Antigravity (router Settings), then try again.` }
+  // a family your plan lacks (Neon is paid-only) or Google retired falls back to Hydrogen, which every plan has
+  const pick = picks[tier.family] ?? picks.hydrogen
+  if (!pick) return { error: `Antigravity lists no model in the "${tier.family}" or "hydrogen" family. Update Antigravity (router Settings), then try again.` }
   const effort = fitEffort(tier.effort, pick.efforts) ?? tier.effort
   const model = `${pick.slug}-${effort}`
   // shortcut: agy has no image flag, so image paths are named in the brief for it to open itself; switch when agy gets one
