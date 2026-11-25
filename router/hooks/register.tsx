@@ -50,6 +50,7 @@ const units = atom({ plugin: 'router', key: 'units' } as const, 'usd' as 'usd' |
 // machine spent per weekly point: this week's ledger spend (from the window's start day) over the week's percent.
 // shortcut: spend elsewhere (claude.ai, another machine) moves the percent but not the ledger, so the % reads high there.
 type RateWindow = { kind: string; percentUsed: number; resetsAt?: string }
+type PlanStart = { at: number; total: number; isExact: boolean } // at: the window's start, in hours since 1970
 async function refreshPlan($: EngineInterface, s: State, limits?: ReadonlyArray<RateWindow>) {
   const got = limits ?? (await $.session.usage().catch(() => undefined))?.rateLimits
   const win = (k: string) => { const w = got?.find(x => x.kind === k); return w ? { pct: w.percentUsed, resetsAt: w.resetsAt } : undefined }
@@ -58,8 +59,22 @@ async function refreshPlan($: EngineInterface, s: State, limits?: ReadonlyArray<
   let rate: number | undefined
   const reset = week?.resetsAt ? Date.parse(week.resetsAt) : NaN
   if (week && Number.isFinite(reset) && s.home) {
-    const rows = await run($, s.home, [spendSinceQuery(dayOf(reset - 7 * 86_400_000))]).catch(() => undefined)
-    if (rows) rate = planRate(spendOf(rows), week.pct)
+    // The week starts at a clock time, the ledger keeps days: the spend on the reset day before the reset would count
+    // (review 2026-11-25: up to 9x off on that day). So the ledger's total when this machine first sees the new window
+    // is the week's zero; spend only happens in turns, which refresh this, so nothing after the reset is missed. The
+    // first window ever seen (a fresh install) falls back to the window's first day.
+    const start = reset - 7 * 86_400_000
+    const rows = await run($, s.home, [spendSinceQuery(''), spendSinceQuery(dayOf(start))]).catch(() => undefined)
+    if (rows) {
+      const total = spendOf(rows)
+      const key = Math.round(start / 3_600_000)
+      let zero = (await $.store.get('planStart').catch(() => undefined)) as PlanStart | undefined
+      if (zero?.at !== key) {
+        zero = { at: key, total, isExact: zero !== undefined }
+        await $.store.set('planStart', zero).catch(() => undefined)
+      }
+      rate = planRate(zero.isExact ? total - zero.total : spendOf(rows.slice(1)), week.pct)
+    }
   }
   await update($, plan, (): Plan => ({ week, five, rate }))
 }
@@ -607,17 +622,13 @@ async function tick($: EngineInterface, s: State, model: string) {
       if (stop === 'unlikely') {
         const curve = returnCurve(await gapsOf($), now)
         const gain = (curve ? backAtAll(curve, now) : 0) * (rebuildUsd(fam, s.lastContext) - rebuildUsd(fam, Math.min(s.lastContext, COMPACT_KEEP)))
-        if (gain > compactUsd(fam, s.lastContext)) await awayCompact($, s)
+        if (gain > compactUsd(fam, s.lastContext) && (await awayCompact($, s))) return
       }
-      return
+      // no nudges from here: a return after the hour still gets the compact-first offer, as with keep-awake off
+      return armCold($, s, model, now)
     }
   }
-  if (next === 'cold') {
-    const left = 60 * 60_000 - (now - s.prev.at)
-    if (left > 0) s.coldTimer = $.clock.after(left, () => { void coldOffer($, s, model) })
-    else await coldOffer($, s, model)
-    return
-  }
+  if (next === 'cold') return armCold($, s, model, now)
   if (next === 'ping') {
     // marked here, not in our prompt hook: a plugin's own prompt need not pass through its own hooks
     s.pinging = true
@@ -628,12 +639,23 @@ async function tick($: EngineInterface, s: State, model: string) {
   await awayCompact($, s)
 }
 
+// The cache lapses an hour after the last step: show the compact-first offer then.
+async function armCold($: EngineInterface, s: State, model: string, now: number) {
+  const left = 60 * 60_000 - (now - s.prev.at)
+  if (left > 0) s.coldTimer = $.clock.after(left, () => { void coldOffer($, s, model) })
+  else await coldOffer($, s, model)
+}
+
 // The window is over (or nudges stopped paying): a warm compaction (a cached read and a summary) leaves a short chat to come back to.
-async function awayCompact($: EngineInterface, s: State) {
+// The report keeps why nudging stopped, also when no nudge ran (review 2026-11-25). true: compacted.
+async function awayCompact($: EngineInterface, s: State): Promise<boolean> {
   s.switching = true
   try {
-    if (await compactChat($, s, '', AWAY_COMPACT)) await update($, away, (a): Away => ({ ...a, pings: a?.pings ?? 0, usd: a?.usd ?? 0, rebuild: a?.rebuild ?? 0, compacted: true }))
-  } catch { /* a turn started meanwhile: that turn's step re-arms the timer */ } finally { s.switching = false }
+    if (!(await compactChat($, s, '', AWAY_COMPACT))) return false
+    const stop = s.awakeStop || undefined
+    await update($, away, (a): Away => ({ ...a, pings: a?.pings ?? 0, usd: a?.usd ?? 0, rebuild: a?.rebuild ?? 0, compacted: true, ...(stop ? { stop } : {}) }))
+    return true
+  } catch { return false /* a turn started meanwhile: that turn's step re-arms the timer */ } finally { s.switching = false }
 }
 
 // Idle gaps, across sessions (the plugin's store): the open one per chat is replaced when it closes.
@@ -1237,6 +1259,10 @@ export const register: Register = on => {
     await followScope($, s).catch(() => undefined) // routing switched on or off in another session
     // the first prompt names the session on the Board (labelOf: 60 characters, secrets masked)
     if (!e.command && !e.isMeta && !s.label) s.label = labelOf(e.text)
+    // only the person's own message (typed, or from their phone), a slash command included, ends an idle gap; set before
+    // the early return, so a /command or a chat with routing off still closes it (review 2026-11-25)
+    const own = !e.isMeta && (e.origin?.kind === 'composer' || e.origin?.kind === 'bridge')
+    s.ownPrompt = own
     if (s.cfg.mode === 'off' || s.headless || e.command || e.isMeta) { s.switchTurn = false; return go(e) }
     if (e.origin?.kind === 'plugin' && e.text === AWAKE_TEXT) {
       // our own keep-awake nudge: no classifier, no mood, no paste reading; the chat's model at the lowest effort.
@@ -1247,9 +1273,7 @@ export const register: Register = on => {
       return go(e)
     }
     s.pinging = false
-    // only the person's own message (typed, or from their phone) is offloaded, never a peer's or a notification
-    const own = e.origin?.kind === 'composer' || e.origin?.kind === 'bridge'
-    s.ownPrompt = own
+    // only the person's own message is offloaded, never a peer's or a notification
     if (own && (await read($, cold))) await update($, cold, () => null) // the message re-reads the chat: the offer is moot
     if (own && (await read($, away))?.back) await update($, away, () => null) // you have seen the report
     const short = own && (await read($, features)).pastes ? await offload($, s, e.text) : undefined

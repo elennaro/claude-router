@@ -291,7 +291,7 @@ async function end($: any) {
   await $.session.end({ reason: 'other', sessionId: 'sess-1', resume: { sessionId: 'sess-1' } })
 }
 
-function wire(on: any, opts: { batches?: Array<Array<Step>>; runFails?: boolean; store?: Map<string, unknown>; haiku?: string | ((e: { system?: string }) => string); tokens?: number; model?: string; messages?: Array<unknown>; ownClock?: boolean; sent: Array<unknown>; asked?: { n: number }; lines?: Array<string | undefined>; opened?: Array<unknown>; surfaces?: Array<string>; files?: Record<string, string>; models?: Array<string>; read?: number; write?: number; select?: (sql: string) => Array<unknown>; argv?: Array<Array<string>>; nudges?: Array<{ text: string }>; window?: number; engineAt?: number; rateLimits?: Array<{ kind: string; percentUsed: number; resetsAt?: string }> }) {
+function wire(on: any, opts: { batches?: Array<Array<Step>>; runFails?: boolean; store?: Map<string, unknown>; haiku?: string | ((e: { system?: string }) => string); tokens?: number; model?: string; messages?: Array<unknown>; ownClock?: boolean; sent: Array<unknown>; asked?: { n: number }; lines?: Array<string | undefined>; opened?: Array<unknown>; surfaces?: Array<string>; files?: Record<string, string>; models?: Array<string>; read?: number; write?: number; select?: (sql: string, params?: ReadonlyArray<unknown>) => Array<unknown>; argv?: Array<Array<string>>; nudges?: Array<{ text: string }>; window?: number; engineAt?: number; rateLimits?: Array<{ kind: string; percentUsed: number; resetsAt?: string }> }) {
   on('env.get', (_: unknown, e: { name: string }) => ({ value: e.name === 'USERPROFILE' ? '/home' : undefined }))
   on('session.root', () => ({ value: '/proj' }))
   on('session.id', () => ({ value: 'sess-1' }))
@@ -328,7 +328,7 @@ function wire(on: any, opts: { batches?: Array<Array<Step>>; runFails?: boolean;
     if (opts.runFails) return { value: { exitCode: 1, stdout: '', stderr: 'no node', isStdoutTruncated: false, isStderrTruncated: false } }
     const steps = (JSON.parse(e.init?.stdin ?? '{}').steps ?? []) as Array<Step>
     opts.batches?.push(steps)
-    return { value: { exitCode: 0, stdout: JSON.stringify(steps.map(x => (x.all ? (opts.select?.(x.sql) ?? []) : null))), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    return { value: { exitCode: 0, stdout: JSON.stringify(steps.map(x => (x.all ? (opts.select?.(x.sql, x.params) ?? []) : null))), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('command.register', () => ({ value: { command: 'route' } }))
   on('session.start', (_: unknown, e: { cwd: string }) => ({ cwd: e.cwd }))
@@ -1219,7 +1219,8 @@ test('keep awake learns when people come back: an afternoon nudge pays, a 1 a.m.
   const { gaps, now } = habits()
   const curve = returnCurve(gaps, now)!
   const day = new Date(now), at = (h: number) => new Date(day.getFullYear(), day.getMonth(), day.getDate(), h, 0).getTime()
-  expect(curve[14]! > curve[3]! * 5).toBe(true)
+  expect(curve[15]! > curve[3]! * 5).toBe(true)
+  expect(curve[15]! > curve[14]! * 5).toBe(true) // a 15:10 return counts in the 15:00 hour, not the hour its 50-minute chunk began (review 2026-11-25)
   expect(Math.round(writeOverRead('claude-opus-5-5'))).toBe(40)
   expect(nudgePays(curve, at(14), 14, 40)).toBe(true)
   expect(nudgePays(curve, at(1) + 15 * 60_000, 14, 40)).toBe(false) // a night of nudges for a 1-in-4 chance at noon costs more than the rebuild
@@ -1275,6 +1276,73 @@ test('keep awake stops when, by past gaps, a return is too unlikely to pay; "Sto
   await clock.advance(3_000_000)
   expect(nudges.length).toBe(1)
   await band.unmount()
+})
+
+test('keep awake: a stopped chat still gets the compact-first offer once the cache lapses (review 2026-11-25)', async (engine, on) => {
+  const $ = engine as any
+  const nudges: Array<{ text: string }> = []
+  const messages = [{ role: 'user', text: 'thanks, that is all', toolUses: [] }, { role: 'assistant', text: 'Done. Nothing left.', toolUses: [] }]
+  wire(on, { sent: [], nudges, store: new Map(), messages, haiku: 'done 0.95', files: {}, read: 200_000, write: 0, ownClock: true })
+  const clock = mock.clock(on, { now: 1_000 })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await step($, 'medium')
+  await clock.advance(3_000_000)
+  expect(nudges.length).toBe(0)
+  expect(await band.find({ key: 'router-cold-compact' })).toBeFalsy() // the cache is still warm
+  await clock.advance(700_000)
+  expect(await band.find({ key: 'router-cold-compact' })).toBeTruthy()
+  await band.unmount()
+})
+
+test('keep awake: a slash command of yours ends the idle gap, a notification does not (review 2026-11-25)', async (engine, on) => {
+  const $ = engine as any
+  const store = new Map<string, unknown>()
+  const messages = [{ role: 'user', text: 'thanks, that is all', toolUses: [] }, { role: 'assistant', text: 'Done.', toolUses: [] }]
+  wire(on, { sent: [], nudges: [], store, messages, haiku: 'done 0.95', files: {}, read: 200_000, write: 0, ownClock: true })
+  const clock = mock.clock(on, { now: 1_000 })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await step($, 'medium')
+  await clock.advance(3_600_000)
+  await $.prompt.submit({ text: '/review', command: 'review', origin: { kind: 'composer' }, wait: false })
+  await step($, 'medium')
+  expect((store.get('gaps') as Array<Gap>)[0]!.end).toBe(3_601_000)
+})
+
+test('keep awake: an unlikely-back stop with no nudge compacts as a handoff and the report says it sent none (review 2026-11-25)', async (engine, on) => {
+  const $ = engine as any
+  const nudges: Array<{ text: string }> = []
+  const compacted: Array<unknown> = []
+  // people come back after about 20 hours: past the 12-hour window, so nudges cannot pay, but a warm handoff does
+  const store = new Map<string, unknown>([['gaps', Array.from({ length: 25 }, (_, i) => ({ s: `old${i}`, start: i * 86_400_000, end: i * 86_400_000 + 20 * 3_600_000 }))]])
+  wire(on, { sent: [], nudges, store, files: {}, read: 600_000, write: 0, ownClock: true })
+  on('session.compact', (_: unknown, e: unknown) => { compacted.push(e); return { messages: [{ role: 'user', text: 'summary', toolUses: [] }] } })
+  const clock = mock.clock(on, { now: 40 * 86_400_000 })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await step($, 'medium')
+  await clock.advance(3_000_000)
+  expect(nudges.length).toBe(0)
+  expect(compacted.length).toBe(1)
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await band.find({ type: 'Text', text: /sent no nudges: a return at these hours is too unlikely.*compacted the chat into a handoff/ })).toBeTruthy()
+  await band.unmount()
+})
+
+test('units: the week starts at its reset time, not at the start of that day (review 2026-11-25)', async (engine, on) => {
+  const $ = engine as any
+  const reset = new Date(2026, 10, 30, 18, 0).getTime()
+  const start = reset - 7 * 86_400_000
+  // this machine saw the last window, and the ledger held $500 when the new one began; $506 now, $56 on its first day
+  const store = new Map<string, unknown>([['planStart', { at: Math.round(start / 3_600_000), total: 500, isExact: true }]])
+  wire(on, { sent: [], files: {}, store, rateLimits: [{ kind: 'seven_day', percentUsed: 3, resetsAt: new Date(reset).toISOString() }], select: (sql, p) => (/SUM\(usd\)/.test(sql) ? [{ usd: p?.[0] === '' ? 506 : 56 }] : []) })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await step($, 'medium')
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await band.press({ key: 'router-stats' })
+  expect((await band.find({ type: 'Svg' }))?.props.alt).toMatch(/1% ≈ \$2\.00/) // $6 since the reset over 3 points, not $56
+  await band.unmount()
+  // a new window: the ledger's total then becomes its zero
+  expect((store.get('planStart') as { total: number }).total).toBe(500)
 })
 
 test('units: % of the plan comes from this week\'s spend over its percent, and only once both are big enough to trust', () => {

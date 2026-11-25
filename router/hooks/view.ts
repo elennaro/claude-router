@@ -13,7 +13,7 @@ export const coldWords = (c: { cache: number; resume: number; extra: number; per
 export const STOP_WORDS = { done: 'the work looked finished', unlikely: 'a return at these hours is too unlikely to pay for more' } as const
 export const awayWords = (a: { pings: number; usd: number; rebuild: number; compacted: boolean; back?: boolean; saved?: number; stop?: keyof typeof STOP_WORDS }, hours: number) =>
   a.stop && !a.back
-    ? `While you were away the router kept this chat's cache warm: ${a.pings} ${a.pings === 1 ? 'nudge' : 'nudges'} for ${money(a.usd)}, then stopped: ${STOP_WORDS[a.stop]}${a.compacted ? '. It compacted the chat into a handoff first' : ''}.`
+    ? `While you were away the router ${a.pings ? `kept this chat's cache warm: ${a.pings} ${a.pings === 1 ? 'nudge' : 'nudges'} for ${money(a.usd)}, then stopped` : 'sent no nudges'}: ${STOP_WORDS[a.stop]}${a.compacted ? '. It compacted the chat into a handoff first' : ''}.`
     : a.back && !a.compacted
     ? `While you were away the router kept this chat's cache warm: ${a.pings} ${a.pings === 1 ? 'nudge' : 'nudges'} for ${money(a.usd)}${a.saved ? `, saving about ${money(a.saved)} of re-reading it all` : ' (back within the hour: no re-read was due)'}.`
     : a.compacted

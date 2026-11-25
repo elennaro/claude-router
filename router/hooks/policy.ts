@@ -643,11 +643,16 @@ export function returnCurve(gaps: ReadonlyArray<Gap>, now: number): number[] | n
   for (const g of gaps) {
     const from = g.start + AWAKE_PING_MS
     const to = Math.min(g.end ?? now, g.start + GAP_SPAN)
-    for (let t = from; t < to; t += HOUR) {
-      const h = new Date(t).getHours()
-      risk[h]! += Math.min(HOUR, to - t) / HOUR
-      if (g.end !== null && g.end === to && to - t <= HOUR) back[h]!++
+    // by clock hour: exposure split at each hour's edge, a return booked in the hour it happened (review 2026-11-25)
+    for (let t = from; t < to; ) {
+      const d = new Date(t)
+      const h = d.getHours()
+      d.setMinutes(60, 0, 0)
+      const edge = Math.min(to, d.getTime())
+      risk[h]! += (edge - t) / HOUR
+      t = edge
     }
+    if (g.end !== null && g.end === to && to > from) back[new Date(to - 1).getHours()]!++
   }
   const all = back.reduce((a, b) => a + b, 0) / Math.max(1e-9, risk.reduce((a, b) => a + b, 0))
   return risk.map((r, h) => Math.min(1, (back[h]! + 2 * all) / (r + 2)))
