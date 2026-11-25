@@ -879,6 +879,30 @@ test('the band is one row; Stats opens the card; Settings turns routing off for 
   await band.unmount()
 })
 
+test('routing turned on for the project in another session reaches this one: the band follows within seconds (owner case 2026-11-25)', async (engine, on) => {
+  const $ = engine as any
+  const files: Record<string, string> = { '/proj/.claude/routing.json': JSON.stringify({ mode: 'off' }) }
+  wire(on, { sent: [], files, ownClock: true })
+  const clock = mock.clock(on, { now: 1_000 })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await band.find({ type: 'Text', text: 'off in this project' })).toBeTruthy()
+  files['/proj/.claude/routing.json'] = JSON.stringify({ mode: 'on' }) // another session's Settings wrote it
+  await clock.advance(11_000)
+  await band.unmount()
+  const again = await $.ui.mount({ ...BAND, surface: 'desktop' }) // a redraw notices the change and draws again
+  await clock.advance(1_000)
+  expect(await again.find({ type: 'Text', text: 'off in this project' })).toBeFalsy()
+  await again.unmount()
+  // and a prompt follows it at once, without waiting for a redraw
+  files['/proj/.claude/routing.json'] = JSON.stringify({ mode: 'off' })
+  await clock.advance(11_000)
+  await $.prompt.submit({ text: 'please review this PR for bugs and missing edge cases', origin: { kind: 'composer' }, wait: false })
+  const fourth = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await fourth.find({ type: 'Text', text: 'off in this project' })).toBeTruthy()
+  await fourth.unmount()
+})
+
 test('one prompt never proposes a cheaper model for the chat; a stronger one is still suggested', async (engine, on) => {
   const $ = engine as any // the test engine fills origin, wait and the other session-set fields
   const routing = JSON.stringify({

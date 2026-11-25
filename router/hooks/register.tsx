@@ -56,6 +56,8 @@ type State = {
   root: string
   project: string
   sources: string // which routing.json files loaded
+  scopeAt: number // when routing.json's mode was last read for a change made in another session
+  scopeQueued: boolean // a draw has asked for that check and it has not run yet
   lastClass: string | null
   lastHintModel: string | null
   hasClassified: boolean // any prompt classified yet (continuations skip Haiku after that)
@@ -822,6 +824,23 @@ async function setFeature($: EngineInterface, k: keyof Features, on: boolean) {
 }
 
 // Turns routing on or off in the global or the project routing.json, keeping the rest of the file as written.
+// Another session's Settings may have switched routing on or off in a routing.json: follow it here too.
+// Read at most every 10 s (each prompt and band draw asks); only a changed mode reloads the rules.
+async function followScope($: EngineInterface, s: State) {
+  const now = await $.clock.now()
+  if (now - s.scopeAt < 10_000 || !s.home) return
+  s.scopeAt = now
+  const modeOf = async (path: string) => {
+    try { return (await $.fs.exists(path)) ? (JSON.parse(String(await $.fs.read(path))) as { mode?: unknown }).mode ?? null : null } catch { return undefined } // a half-written file: look again later
+  }
+  const m = await read($, modes)
+  const g = await modeOf(`${s.home}/.claude/routing.json`)
+  const p = m.isProject ? await modeOf(`${s.root}/.claude/routing.json`) : null
+  if (g === undefined || p === undefined || (g === m.global && p === m.project)) return
+  s.defs.clear()
+  await load($, s)
+}
+
 async function setScope($: EngineInterface, s: State, scope: 'global' | 'project', mode: 'on' | 'off') {
   const path = scope === 'global' ? `${s.home}/.claude/routing.json` : `${s.root}/.claude/routing.json`
   try {
@@ -1005,7 +1024,7 @@ export const register: Register = on => {
   const s: State = {
     cfg: BUILTIN, home: '', root: '', project: 'unknown', sources: 'built-in only', lastClass: null, lastHintModel: null,
     hasClassified: false, hadClass: false, skipEffortThisTurn: false, headless: false, agentEffort: new Map(), defs: new Map(),
-    prev: NO_PREV, lastContext: 0, mainSteps: 0, mainOut: 0, cleanChanges: 0, baseEffort: '', rerouted: 0, lastRerouted: '', agentType: new Map(), agentAsked: new Map(), agentSpend: new Map(), briefRun: new Map(), wastedRuns: new Set(), paneOpened: false, pasted: false, coldTimer: undefined, minuteTick: undefined, awakeSince: 0, pinging: false, gapStart: 0, doneChecked: 0, awakeStop: '', ownPrompt: false, openTurn: '', seg: { ctx: 0, steps: 0 },
+    prev: NO_PREV, lastContext: 0, mainSteps: 0, mainOut: 0, cleanChanges: 0, baseEffort: '', rerouted: 0, lastRerouted: '', agentType: new Map(), agentAsked: new Map(), agentSpend: new Map(), briefRun: new Map(), wastedRuns: new Set(), paneOpened: false, pasted: false, coldTimer: undefined, minuteTick: undefined, awakeSince: 0, pinging: false, gapStart: 0, doneChecked: 0, awakeStop: '', ownPrompt: false, scopeAt: 0, scopeQueued: false, openTurn: '', seg: { ctx: 0, steps: 0 },
     session: 'session', label: '', lastLedgerTurn: '', pending: [], scheduled: false, warned: false, totals: { proj: EMPTY_TALLY, since: undefined }, routeModels: true, sure: false, switchTurn: false,
     ask: undefined, stickyAsk: undefined, v: undefined, seenPrompt: false, samples: [], turnCount: 0, quietUntil: 0, declined: null, switching: false,
     briefs: new Map(), siblings: new Map(), queue: Promise.resolve(), savedAgents: NO_AGENTS, unhappy: 0,
@@ -1169,6 +1188,7 @@ export const register: Register = on => {
 
   on('prompt.submit', async ($, e, next) => shield($, e, next, async go => {
     await seat($, s) // in case the surface joined before this module (re)loaded
+    await followScope($, s).catch(() => undefined) // routing switched on or off in another session
     // the first prompt names the session on the Board (labelOf: 60 characters, secrets masked)
     if (!e.command && !e.isMeta && !s.label) s.label = labelOf(e.text)
     if (s.cfg.mode === 'off' || s.headless || e.command || e.isMeta) { s.switchTurn = false; return go(e) }
@@ -1436,6 +1456,8 @@ export const register: Register = on => {
   // The band: one row above the prompt, in the style of Claude's own, stacked with other mods' bands.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
+    // a change from another session shows soon after a draw (a draw itself may only read state, so the check runs on a timer)
+    if (!s.scopeQueued) { s.scopeQueued = true; $.clock.after(0, async () => { s.scopeQueued = false; await followScope($, s).catch(() => undefined) }) }
     const below = await next(e).catch(() => undefined) // other mods share this slot: theirs draw below ours
     const el = $.ui.resolve(e)
     const { Box, Text, Button } = el
