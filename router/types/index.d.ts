@@ -88,7 +88,8 @@ export type Cold = { cache: number; resume: number; extra: number; perStep: numb
 // While you are away: the nudges sent since your last step, what they cost, what a rebuild would have cost, and whether
 // the window ended in a compaction. Shown in the band until your next message.
 // back: you returned (the report stays until your next message); saved: the rebuild it avoided, booked then
-export type Away = { pings: number; usd: number; rebuild: number; compacted: boolean; back?: boolean; saved?: number }
+// stop: why keep-awake stopped early: the work looked finished, or a return was unlikely enough that nudges would not pay
+export type Away = { pings: number; usd: number; rebuild: number; compacted: boolean; back?: boolean; saved?: number; stop?: 'done' | 'unlikely' }
 
 declare module 'claude-code' {
   interface PluginState {
@@ -111,6 +112,7 @@ declare module 'claude-code' {
       away: Away | null // keep-awake's report while you are away, until your next message
       awakeHours: number // how long keep-awake keeps an idle chat warm before compacting it (Settings, kept across sessions)
       compactAt: number | null // this chat's own auto-compact point in tokens (Settings), null: Claude Code's own window
+      chatAwake: boolean // keep-awake for this chat (Settings, This chat; the away report's button): off stops nudges here only
     }
   }
 }

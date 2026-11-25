@@ -13,7 +13,7 @@ import {
   type Ask, AUTO, BUILTIN, DELEGATE_ID, delegateSection, wantsDelegate, CLASS_LABELS, type Config, type Usage, type SessionWindow, adviseSwitch, agentTier, autoModel, classifierPrompt, firstModel, parseSessionCheck, sessionCheckPrompt, sessionCheckSystem, classifierSystem, classifyByRules, costUsd, explicitAsk, family,
   classifyPlan, isCacheBreak, merge, settleAnswers, readLabel, prices, rank, setPrices, turnEffort, briefHash, isHarder, needsSecondSample, spawnPick, withoutRouter,
   type Mood, longRun, moodPrompt, moodSystem, parseMood, raiseEffort, raiseSteps, stepUp, rebuildUsd, stepUsd, switchMath, FAMILIES, coldMath,
-  AWAKE_DEFAULT_HOURS, AWAKE_HOURS, AWAKE_MIN, AWAKE_PING_MS, AWAKE_TEXT, AWAY_COMPACT, awakeNext, isNudgeReply,
+  AWAKE_DEFAULT_HOURS, AWAKE_HOURS, AWAKE_MIN, AWAKE_PING_MS, AWAKE_TEXT, AWAY_COMPACT, awakeNext, isNudgeReply, type Gap, GAPS_KEPT, returnCurve, nudgePays, backAtAll, writeOverRead, doneSystem, donePrompt, parseDone, COMPACT_KEEP, compactUsd,
   type CompactLook, cheapestPoint, compactLook, compactPoints, compactsPer100, compactStepUsd,
   SIZED, briefPaths, bucket, sizeOf, cacheSheet, PASTE_MIN, estTokens, keepsRaw, pasteModel, pasteSystem, pastePrompt, offloaded,
 } from './policy'
@@ -42,6 +42,7 @@ const cold = atom({ plugin: 'router', key: 'cold' } as const, null as Cold | nul
 const away = atom({ plugin: 'router', key: 'away' } as const, null as Away | null)
 const awakeHours = atom({ plugin: 'router', key: 'awakeHours' } as const, AWAKE_DEFAULT_HOURS)
 const compactAt = atom({ plugin: 'router', key: 'compactAt' } as const, null as number | null)
+const chatAwake = atom({ plugin: 'router', key: 'chatAwake' } as const, true)
 const TODO_TOOLS = ['TodoWrite', 'mcp__ccd_turn__update_plan'] // the task list as Claude Code and the desktop app keep it
 
 const pretty = (m: string) => NAMES[family(m)] ?? m
@@ -55,6 +56,8 @@ type State = {
   root: string
   project: string
   sources: string // which routing.json files loaded
+  scopeAt: number // when routing.json's mode was last read for a change made in another session
+  scopeQueued: boolean // a draw has asked for that check and it has not run yet
   lastClass: string | null
   lastHintModel: string | null
   hasClassified: boolean // any prompt classified yet (continuations skip Haiku after that)
@@ -81,6 +84,10 @@ type State = {
   minuteTick: { cancel: () => void } | undefined // redraws the Stats card's cache clock once a minute while it is open
   awakeSince: number // the main chat's last step that was not a keep-awake nudge: the away window starts there
   pinging: boolean // the turn running now is the router's own keep-awake nudge
+  gapStart: number // this chat's open idle gap (it went idle then, and the person is not back yet); 0: none
+  doneChecked: number // the idle stretch (its awakeSince) the "is anything pending" check already read
+  awakeStop: '' | 'done' | 'unlikely' // why keep-awake stopped early in this idle stretch
+  ownPrompt: boolean // the running turn came from the person's own message (not a notification or a peer)
   openTurn: string // the main chat's turn still running ('' when idle): keep-awake waits while one is open
   seg: { ctx: number; steps: number } // where the chat stood at its first step since the last compaction or clear: its growth per step
   briefRun: Map<string, string> // brief hash -> the agentId of its latest run
@@ -548,13 +555,38 @@ async function compactChat($: EngineInterface, s: State, skipped: string, instru
 // the compact-first offer once the cache has lapsed. Deterministic and in the background: nothing waits on it.
 function arm($: EngineInterface, s: State, model: string) {
   s.coldTimer?.cancel()
-  s.coldTimer = $.clock.after(AWAKE_PING_MS, () => { void tick($, s, model) })
+  // a timer that outlives its session must not throw
+  s.coldTimer = $.clock.after(AWAKE_PING_MS, () => { void tick($, s, model).catch(() => undefined) })
 }
 async function tick($: EngineInterface, s: State, model: string) {
   // a turn still open (a question or a permission waiting on you): a nudge would only queue behind it; its next step re-arms
   if (s.switching || s.cfg.mode === 'off' || s.headless || s.openTurn) return
   const now = await $.clock.now()
-  const next = awakeNext({ on: (await read($, features)).awake, now, lastStep: s.prev.at, since: s.awakeSince, hours: await read($, awakeHours), cache: s.lastContext })
+  // an idle stretch past the first nudge's time is a gap, whatever keep-awake then does: it teaches when people come back
+  if (!s.gapStart && s.awakeSince && s.session) {
+    s.gapStart = s.awakeSince
+    await putGap($, { s: s.session, start: s.awakeSince, end: null })
+  }
+  const hours = await read($, awakeHours)
+  const on = (await read($, features)).awake && (await read($, chatAwake))
+  const next = awakeNext({ on, now, lastStep: s.prev.at, since: s.awakeSince, hours, cache: s.lastContext })
+  if (next === 'ping') {
+    const last = s.prev.at
+    const stop = await awakeStop($, s, model, now, hours)
+    if (s.prev.at !== last || s.openTurn || s.switching) return // the chat was used while Haiku read it: that step re-arms the timer
+    if (stop) {
+      s.awakeStop = stop
+      if ((await read($, away))?.pings) await update($, away, (a): Away | null => (a ? { ...a, stop } : null))
+      // unlikely back soon but likely later: a warm handoff still beats re-reading it all on return
+      const fam = family(model)
+      if (stop === 'unlikely') {
+        const curve = returnCurve(await gapsOf($), now)
+        const gain = (curve ? backAtAll(curve, now) : 0) * (rebuildUsd(fam, s.lastContext) - rebuildUsd(fam, Math.min(s.lastContext, COMPACT_KEEP)))
+        if (gain > compactUsd(fam, s.lastContext)) await awayCompact($, s)
+      }
+      return
+    }
+  }
   if (next === 'cold') {
     const left = 60 * 60_000 - (now - s.prev.at)
     if (left > 0) s.coldTimer = $.clock.after(left, () => { void coldOffer($, s, model) })
@@ -568,11 +600,46 @@ async function tick($: EngineInterface, s: State, model: string) {
     await $.prompt.submit({ text: AWAKE_TEXT }).catch(() => { s.pinging = false })
     return
   }
-  // the window is over: a warm compaction (a cached read and a summary) leaves a short chat to come back to
+  await awayCompact($, s)
+}
+
+// The window is over (or nudges stopped paying): a warm compaction (a cached read and a summary) leaves a short chat to come back to.
+async function awayCompact($: EngineInterface, s: State) {
   s.switching = true
   try {
-    if (await compactChat($, s, '', AWAY_COMPACT)) await update($, away, (a): Away => ({ pings: a?.pings ?? 0, usd: a?.usd ?? 0, rebuild: a?.rebuild ?? 0, compacted: true }))
+    if (await compactChat($, s, '', AWAY_COMPACT)) await update($, away, (a): Away => ({ ...a, pings: a?.pings ?? 0, usd: a?.usd ?? 0, rebuild: a?.rebuild ?? 0, compacted: true }))
   } catch { /* a turn started meanwhile: that turn's step re-arms the timer */ } finally { s.switching = false }
+}
+
+// Idle gaps, across sessions (the plugin's store): the open one per chat is replaced when it closes.
+const gapsOf = async ($: EngineInterface) => ((await $.store.get('gaps').catch(() => undefined)) as Array<Gap> | undefined) ?? []
+async function putGap($: EngineInterface, g: Gap) {
+  const all = (await gapsOf($)).filter(x => !(x.s === g.s && x.end === null))
+  await $.store.set('gaps', [...all, g].slice(-GAPS_KEPT))
+}
+
+// Before a nudge: stop when the work looked finished (asked once per idle stretch), or when, by how often people came
+// back at these hours, the nudges ahead cost more than the rebuild they could save. Undefined: nudge.
+async function awakeStop($: EngineInterface, s: State, model: string, now: number, hours: number): Promise<'done' | 'unlikely' | undefined> {
+  if (s.doneChecked !== s.awakeSince) {
+    s.doneChecked = s.awakeSince
+    if (await isDone($, s)) return 'done'
+  }
+  const curve = returnCurve(await gapsOf($), now)
+  if (!curve) return undefined // too few gaps yet: the fixed window
+  const left = Math.floor((hours * 60 * 60_000 - AWAKE_PING_MS - (now - s.awakeSince)) / AWAKE_PING_MS) + 1
+  return nudgePays(curve, now, left, writeOverRead(model)) ? undefined : 'unlikely'
+}
+
+// Is the work finished with nothing pending? One Haiku sample on the last message and the end of the last answer.
+async function isDone($: EngineInterface, s: State): Promise<boolean> {
+  const msgs = ((await $.session.messages().catch(() => [])) as Array<SessionMessage>) ?? []
+  const a = msgs.findLastIndex(m => m.role === 'assistant' && m.text.trim())
+  const asked = a < 0 ? undefined : msgs.slice(0, a).findLast(m => m.role === 'user' && m.text.trim() && !m.toolResults?.length && m.text !== AWAKE_TEXT)
+  if (!asked) return false
+  const r = await $.model.complete({ model: s.cfg.classifier.model, effort: 'low', maxTokens: 20, timeoutMs: 8000, system: doneSystem, prompt: donePrompt(asked.text, msgs[a]!.text) }).catch(() => undefined)
+  if (r?.isAnswered && r.usage) await record($, s, s.cfg.classifier.model, r.usage, 'router', 0)
+  return Boolean(r?.isAnswered && parseDone(r.text))
 }
 
 // The cache lapsed: offer to compact first when that pays back soon.
@@ -618,6 +685,9 @@ async function clearChat($: EngineInterface, s: State) {
   s.coldTimer?.cancel()
   s.awakeSince = 0
   s.pinging = false
+  s.gapStart = 0
+  s.awakeStop = ''
+  await update($, chatAwake, () => true)
   s.seg = { ctx: 0, steps: 0 }
   await update($, compactAt, () => null)
   await update($, cold, () => null)
@@ -708,6 +778,11 @@ async function showWidget($: EngineInterface, isShown: boolean) {
 }
 
 // How long keep-awake keeps an idle chat warm, for this session and every later one.
+// Keep awake for this chat only: off stops its nudges (the global switch and the other chats stay as they are).
+async function setChatAwake($: EngineInterface, isOn: boolean) {
+  await update($, chatAwake, () => isOn)
+}
+
 async function setAwakeHours($: EngineInterface, h: number) {
   await update($, awakeHours, () => h)
   await $.store.set('awakeHours', h)
@@ -749,6 +824,23 @@ async function setFeature($: EngineInterface, k: keyof Features, on: boolean) {
 }
 
 // Turns routing on or off in the global or the project routing.json, keeping the rest of the file as written.
+// Another session's Settings may have switched routing on or off in a routing.json: follow it here too.
+// Read at most every 10 s (each prompt and band draw asks); only a changed mode reloads the rules.
+async function followScope($: EngineInterface, s: State) {
+  const now = await $.clock.now()
+  if (now - s.scopeAt < 10_000 || !s.home) return
+  s.scopeAt = now
+  const modeOf = async (path: string) => {
+    try { return (await $.fs.exists(path)) ? (JSON.parse(String(await $.fs.read(path))) as { mode?: unknown }).mode ?? null : null } catch { return undefined } // a half-written file: look again later
+  }
+  const m = await read($, modes)
+  const g = await modeOf(`${s.home}/.claude/routing.json`)
+  const p = m.isProject ? await modeOf(`${s.root}/.claude/routing.json`) : null
+  if (g === undefined || p === undefined || (g === m.global && p === m.project)) return
+  s.defs.clear()
+  await load($, s)
+}
+
 async function setScope($: EngineInterface, s: State, scope: 'global' | 'project', mode: 'on' | 'off') {
   const path = scope === 'global' ? `${s.home}/.claude/routing.json` : `${s.root}/.claude/routing.json`
   try {
@@ -811,8 +903,9 @@ async function facts($: EngineInterface, s: State) {
   const sheet = cacheSheet(main?.model ?? s.cfg.main.model, s.lastContext)
   const feats = await read($, features)
   const hours = await read($, awakeHours)
+  const chatAwakeOn = await read($, chatAwake)
   const at = await $.clock.now()
-  return { v, turns, chat, proj, m, main, where, now, since, chatMode, cost, spend, hit, sheet, feats, hours, at }
+  return { v, turns, chat, proj, m, main, where, now, since, chatMode, cost, spend, hit, sheet, feats, chatAwake: chatAwakeOn, hours, at }
 }
 
 function cells(s: State, f: Awaited<ReturnType<typeof facts>>): Array<Cell> {
@@ -832,10 +925,11 @@ function cells(s: State, f: Awaited<ReturnType<typeof facts>>): Array<Cell> {
 // Keep awake's cell: what it saved this chat, when the next nudge goes and what the nudges cost.
 function awakeCell(s: State, f: Awaited<ReturnType<typeof facts>>): Cell {
   const a = f.chat.by?.awake
-  const on = f.feats.awake
-  const next = on && s.lastContext >= AWAKE_MIN && !s.openTurn ? minutesLeft(s.prev.at, f.at, AWAKE_PING_MS / 60_000) : undefined
+  const on = f.feats.awake && f.chatAwake
+  const next = on && !s.awakeStop && s.lastContext >= AWAKE_MIN && !s.openTurn ? minutesLeft(s.prev.at, f.at, AWAKE_PING_MS / 60_000) : undefined
   const sub = [
-    next ? `nudge in ${next} min` : on && s.lastContext < AWAKE_MIN ? 'starts at 20K tokens' : on ? '' : 'off in Settings',
+    s.awakeStop === 'done' ? 'stopped: work done' : s.awakeStop === 'unlikely' ? 'stopped: unlikely back' // short: the cell cuts at about 29 characters
+      : next ? `nudge in ${next} min` : on && s.lastContext < AWAKE_MIN ? 'starts at 20K tokens' : on ? '' : f.feats.awake ? 'off for this chat' : 'off in Settings',
     a && a.extra >= 0.005 ? `cost ${money(a.extra)}` : '', // short: the 4-column card cuts this note at about 29 characters
   ].filter(Boolean).join(' · ')
   return { label: 'Keep awake', value: a && a.saved >= 0.005 ? `saved ${money(a.saved)}` : on ? 'On' : 'Off', sub: sub || 'no nudges yet' }
@@ -930,7 +1024,7 @@ export const register: Register = on => {
   const s: State = {
     cfg: BUILTIN, home: '', root: '', project: 'unknown', sources: 'built-in only', lastClass: null, lastHintModel: null,
     hasClassified: false, hadClass: false, skipEffortThisTurn: false, headless: false, agentEffort: new Map(), defs: new Map(),
-    prev: NO_PREV, lastContext: 0, mainSteps: 0, mainOut: 0, cleanChanges: 0, baseEffort: '', rerouted: 0, lastRerouted: '', agentType: new Map(), agentAsked: new Map(), agentSpend: new Map(), briefRun: new Map(), wastedRuns: new Set(), paneOpened: false, pasted: false, coldTimer: undefined, minuteTick: undefined, awakeSince: 0, pinging: false, openTurn: '', seg: { ctx: 0, steps: 0 },
+    prev: NO_PREV, lastContext: 0, mainSteps: 0, mainOut: 0, cleanChanges: 0, baseEffort: '', rerouted: 0, lastRerouted: '', agentType: new Map(), agentAsked: new Map(), agentSpend: new Map(), briefRun: new Map(), wastedRuns: new Set(), paneOpened: false, pasted: false, coldTimer: undefined, minuteTick: undefined, awakeSince: 0, pinging: false, gapStart: 0, doneChecked: 0, awakeStop: '', ownPrompt: false, scopeAt: 0, scopeQueued: false, openTurn: '', seg: { ctx: 0, steps: 0 },
     session: 'session', label: '', lastLedgerTurn: '', pending: [], scheduled: false, warned: false, totals: { proj: EMPTY_TALLY, since: undefined }, routeModels: true, sure: false, switchTurn: false,
     ask: undefined, stickyAsk: undefined, v: undefined, seenPrompt: false, samples: [], turnCount: 0, quietUntil: 0, declined: null, switching: false,
     briefs: new Map(), siblings: new Map(), queue: Promise.resolve(), savedAgents: NO_AGENTS, unhappy: 0,
@@ -939,6 +1033,7 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     s.headless = !e.isInteractive // until a surface attaches: claude -p never gets one
     await load($, s)
+    s.gapStart = (await gapsOf($)).find(g => g.s === s.session && g.end === null)?.start ?? 0 // a gap left open before a restart
     await restoreAgents($, s)
     await seedMix($).catch(() => undefined)
     const kept = ((await $.store.get('features').catch(() => undefined)) ?? {}) as Partial<Features>
@@ -1000,7 +1095,7 @@ export const register: Register = on => {
   on('turn.complete', async ($, e, next) => shield($, e, next, async go => {
     if (e.turnId === s.openTurn) s.openTurn = ''
     // the nudge's turn is over: a later turn no prompt hook sees (a notification, a meta prompt) is not a nudge
-    if (e.agentId === undefined) s.pinging = false
+    if (e.agentId === undefined) { s.pinging = false; s.ownPrompt = false }
     const r = await go(e)
     if (e.agentId === undefined && s.cfg.mode !== 'off' && !s.headless) $.clock.after(500, async () => { await autoCompact($, s) })
     return r
@@ -1093,13 +1188,14 @@ export const register: Register = on => {
 
   on('prompt.submit', async ($, e, next) => shield($, e, next, async go => {
     await seat($, s) // in case the surface joined before this module (re)loaded
+    await followScope($, s).catch(() => undefined) // routing switched on or off in another session
     // the first prompt names the session on the Board (labelOf: 60 characters, secrets masked)
     if (!e.command && !e.isMeta && !s.label) s.label = labelOf(e.text)
     if (s.cfg.mode === 'off' || s.headless || e.command || e.isMeta) { s.switchTurn = false; return go(e) }
     if (e.origin?.kind === 'plugin' && e.text === AWAKE_TEXT) {
       // our own keep-awake nudge: no classifier, no mood, no paste reading; the chat's model at the lowest effort.
       // Dropped when the chat was used after the timer fired: its cache is warm already.
-      if ((await $.clock.now()) - s.prev.at < AWAKE_PING_MS - 60_000) return { drop: 'router: the chat was used meanwhile' }
+      if ((await $.clock.now()) - s.prev.at < AWAKE_PING_MS - 60_000) { s.pinging = false; return { drop: 'router: the chat was used meanwhile' } }
       s.pinging = true
       s.switchTurn = false
       return go(e)
@@ -1107,6 +1203,7 @@ export const register: Register = on => {
     s.pinging = false
     // only the person's own message (typed, or from their phone) is offloaded, never a peer's or a notification
     const own = e.origin?.kind === 'composer' || e.origin?.kind === 'bridge'
+    s.ownPrompt = own
     if (own && (await read($, cold))) await update($, cold, () => null) // the message re-reads the chat: the offer is moot
     if (own && (await read($, away))?.back) await update($, away, () => null) // you have seen the report
     const short = own && (await read($, features)).pastes ? await offload($, s, e.text) : undefined
@@ -1317,6 +1414,12 @@ export const register: Register = on => {
           saved = rebuildUsd(noRouter.model, r) - stepUsd(noRouter.model, r, 0)
           await bookSaving($, s, noRouter.model, saved)
         }
+        // the person is back from an open gap: it closes, with when (a notification or a peer turn is not a return)
+        if (s.ownPrompt) {
+          if (s.gapStart) await putGap($, { s: s.session, start: s.gapStart, end: now })
+          s.gapStart = 0
+          s.awakeStop = ''
+        }
         s.awakeSince = now
         // the report stays through your first turn back, with what it saved; your next message clears it
         if (a && !a.back) await update($, away, (x): Away | null => (x ? { ...x, back: true, saved } : null))
@@ -1353,6 +1456,8 @@ export const register: Register = on => {
   // The band: one row above the prompt, in the style of Claude's own, stacked with other mods' bands.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
+    // a change from another session shows soon after a draw (a draw itself may only read state, so the check runs on a timer)
+    if (!s.scopeQueued) { s.scopeQueued = true; $.clock.after(0, async () => { s.scopeQueued = false; await followScope($, s).catch(() => undefined) }) }
     const below = await next(e).catch(() => undefined) // other mods share this slot: theirs draw below ours
     const el = $.ui.resolve(e)
     const { Box, Text, Button } = el
@@ -1418,7 +1523,12 @@ export const register: Register = on => {
       : null
     const kept = f.v.isOn && !offerRow && !coldRow ? await read($, away) : null
     const keptRow = kept
-      ? <Text key="router-away" dimColor wrap="wrap">{awayWords(kept, await read($, awakeHours))}</Text>
+      ? (
+          <Box key="router-away-row" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} width={e.props.bodyColumns}>
+            <Text key="router-away" dimColor wrap="wrap">{awayWords(kept, await read($, awakeHours))}</Text>
+            {!kept.back && !kept.compacted && !kept.stop && (await read($, chatAwake)) && <Button key="router-away-stop" plain dimColor label="Stop for this chat" onPress={() => setChatAwake($, false)} />}
+          </Box>
+        )
       : null
     const extra = offerRow ?? coldRow ?? keptRow
     const head = extra ? <Box key="router-head" flexDirection="column" width={e.props.bodyColumns}>{row}{extra}</Box> : row
@@ -1524,7 +1634,9 @@ export const register: Register = on => {
             {at
               ? <Button key="router-compact-default-set" plain label={`Make ${kt(at)} my default (every chat, in settings.json)`} onPress={() => setDefaultWindow($, s, at)} />
               : bd?.autocompactSource === 'settings' && <Button key="router-compact-default-clear" plain label="Back to Claude Code's own window (settings.json)" onPress={() => setDefaultWindow($, s, null)} />}
-          </Box>)}
+          </Box>,
+          f.feats.awake && field('router-chat-awake', 'Keep awake', choices('router-chat-awake', ONOFF, (await read($, chatAwake)) ? 'on' : 'off', v => setChatAwake($, v === 'on'))),
+          f.feats.awake && note('router-chat-awake-note', 'Off: no nudges for this chat only, for example one you are done with.'))}
         {group('router-g-pick',
           field('router-model', 'Model', choices('router-model', [['auto', 'Auto'], ['haiku', 'Haiku'], ['sonnet', 'Sonnet'], ['opus', 'Opus'], ['fable', 'Fable']], picked.by === 'you' ? family(picked.model ?? s.cfg.main.model) : 'auto', v => pickModel($, v), v => (v === 'auto' ? undefined : modelColor(v)))),
           field('router-effort', 'Effort', choices('router-effort', [['auto', 'Auto'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra high'], ['max', 'Max']], picked.effort ?? 'auto', v => update($, chat, (c): ChatModel => ({ ...c, effort: v === 'auto' ? null : v })), v => (v === 'auto' ? undefined : shade(f.main?.model ?? s.cfg.main.model, v, 'dark')))),
