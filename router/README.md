@@ -24,6 +24,18 @@ In real use (the author's first 8 days, 2026-11-18 to 25): 1.7% more spend than 
 
 Every row is detailed under *What it does* below.
 
+## What's new
+
+- **0.9.0** The ledger records each step's effort, the effort it would have had with no router, its task class and why the effort was set (class, unhappy, pick, asked, agent, nudge, as-is), so extra spend can be traced to the raise that bought it. The ledger trims itself: effort detail after 60 days, the rest after 400.
+- **0.8.9** The Board writes the net as "saved $x" or "$x extra" (a bare "+$30" was read as a saving). Keep-awake and plan % fixes from a code review: plan % counts the week from its reset time, a stopped chat still gets the compact-first offer, a slash command ends an idle stretch.
+- **0.8.8** *Units*: savings in dollars or as a share of your plan's weekly limit, and a **Plan** cell in Stats with the week and 5-hour limits used. **Smart keep awake**: finished chats get no nudges, and once 20 idle stretches are recorded it nudges only while you're likely enough to come back. Keep awake **off for one chat**. Turning routing on or off in one session reaches your other open sessions within about 10 seconds.
+- **0.8.7** A readable UI everywhere: contrast, narrow panes, the Board at phone width, checked automatically in light and dark.
+- **0.8.5** *Compact at* goes up to the model's context limit, each point coloured green to red, with how often it compacts and what it costs.
+- **0.8.0 to 0.8.4** The cache-aware release: **big pastes** read first by a cheaper model, the **document reader** and **web researcher** subagents sized per brief, **keep awake** for idle chats, the **compact-first** offer after a break, and **Compact at** per chat. The model moves down by itself only when the cache rebuild pays back.
+- **0.7.x** Model colors, cache hit, the unhappy-reply check, restart memory; Codex and Antigravity second opinions are read-only; CI on Windows, macOS and Linux.
+- **0.6.0** Sonnet where it passed the acceptance eval, a *message* class, English-only keyword rules.
+- **0.5.0** Spend measured against no router, with saved and extra kept apart.
+
 ## Install
 
 ```

@@ -4,6 +4,7 @@ Short pages for people who use the router. The full spec is [router/README.md](.
 
 | Page | Read it when |
 |---|---|
+| [What's new](Whats-new.md) | you updated and want to know what changed |
 | [How it works](How-it-works.md) | you want the picture: what decides the model and effort, and when |
 | [Saving features](Saving-features.md) | you want to know what Move down, Helpers, Big pastes, Keep awake and Compact at do |
 | [Stats and the Board](Stats-and-Board.md) | a number in the band or the Board puzzles you |
