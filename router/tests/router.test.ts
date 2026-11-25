@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import {
-  BUILTIN, CLASS_LABELS, adviseSwitch, effortRank, rank, agentTier, autoModel, needsSecondSample, briefHash, briefTier, stepUp, classifyByRules, costUsd, firstModel, isCacheBreak, isContinuation, merge, parseJev, parseSessionCheck, parseMood, raiseEffort, moodPrompt, longRun, readLabel, spawnPick, turnEffort, withoutRouter, rebuildUsd, stepUsd, switchMath, remainingSteps, quickPays, type Life, sessionCheckSystem, briefPaths, sizeOf, bucket, estTokens, keepsRaw, pasteModel, pasteSystem, offloaded, cacheSheet, coldMath, awakeNext, AWAKE_TEXT, isNudgeReply, compactStepUsd, cheapestPoint, compactPoints, compactLook, compactsPer100,
+  BUILTIN, CLASS_LABELS, adviseSwitch, effortRank, rank, agentTier, autoModel, needsSecondSample, briefHash, briefTier, stepUp, classifyByRules, costUsd, firstModel, isCacheBreak, isContinuation, merge, parseJev, parseSessionCheck, parseMood, raiseEffort, moodPrompt, longRun, readLabel, spawnPick, turnEffort, withoutRouter, rebuildUsd, stepUsd, switchMath, remainingSteps, quickPays, type Life, sessionCheckSystem, briefPaths, sizeOf, bucket, estTokens, keepsRaw, pasteModel, pasteSystem, offloaded, cacheSheet, coldMath, awakeNext, AWAKE_TEXT, returnCurve, nudgePays, backAtAll, writeOverRead, parseDone, type Gap, isNudgeReply, compactStepUsd, cheapestPoint, compactPoints, compactLook, compactsPer100,
 } from '../hooks/policy'
 import { addWhy, cacheClock, minutesLeft, whoWords, whyWords, boardHtml, cacheStrength, cardLayout, hitPct, svgSize, switchCost, netWords, savedUsd, shade, statsSvg, withMode } from '../hooks/view'
 import { RUNNER, type Step, bucketsOf, labelOf, livesOf } from '../hooks/db'
@@ -1177,6 +1177,87 @@ test('keep-awake decides: nudge before the hour, compact when the window ends, o
   expect(awakeNext({ ...at, now: 70 * m, lastStep: 0 })).toBe('cold') // the timer ran late (the machine slept): the cache is gone
   expect(awakeNext({ ...at, now: 50 * m, on: false })).toBe('cold')
   expect(awakeNext({ ...at, now: 50 * m, cache: 15_000 })).toBe('cold') // a rebuild costs cents
+})
+
+// Someone who comes back within the afternoon and leaves chats overnight (local time)
+function habits(days = 22): { gaps: Array<Gap>; now: number } {
+  const at = (d: number, h: number, min = 0) => new Date(2026, 9, 1 + d, h, min).getTime()
+  const gaps: Array<Gap> = []
+  for (let d = 0; d < days; d++) {
+    gaps.push({ s: `day${d}`, start: at(d, 13), end: at(d, 15, 10) }) // back after about 2 hours
+    gaps.push({ s: `night${d}`, start: at(d, 0, 30), end: d % 4 ? null : at(d, 12, 40) }) // 1 in 4 picked up after noon; the rest left for a new chat
+  }
+  gaps.push({ s: 'left', start: at(days, 23), end: null }) // still open
+  return { gaps, now: at(days + 1, 12) }
+}
+
+test('keep awake learns when people come back: an afternoon nudge pays, a 1 a.m. one does not (owner case 2026-11-25)', () => {
+  const { gaps, now } = habits()
+  const curve = returnCurve(gaps, now)!
+  const day = new Date(now), at = (h: number) => new Date(day.getFullYear(), day.getMonth(), day.getDate(), h, 0).getTime()
+  expect(curve[14]! > curve[3]! * 5).toBe(true)
+  expect(Math.round(writeOverRead('claude-opus-5-5'))).toBe(40)
+  expect(nudgePays(curve, at(14), 14, 40)).toBe(true)
+  expect(nudgePays(curve, at(1) + 15 * 60_000, 14, 40)).toBe(false) // a night of nudges for a 1-in-4 chance at noon costs more than the rebuild
+  expect(nudgePays(curve, at(14), 0, 40)).toBe(false) // no nudges left in the window
+  expect(nudgePays(curve, at(1) + 15 * 60_000, 28, 80)).toBe(true) // on Fable, with a 24-hour window, the night pays: a rebuild is twice as dear
+  expect(backAtAll(curve.map(() => 0), at(1))).toBe(0)
+  expect(backAtAll(curve.map(() => 0.5), at(1)) > 0.99).toBe(true)
+  expect(returnCurve(habits(9).gaps, now)).toBe(null) // under 20 closed gaps: the fixed window stays
+})
+
+test('keep awake: a finished chat gets no nudge; its idle gap is kept, a notification does not close it, your own message does (owner case 2026-11-25)', async (engine, on) => {
+  const $ = engine as any
+  const store = new Map<string, unknown>()
+  const nudges: Array<{ text: string }> = []
+  const messages = [{ role: 'user', text: 'great, thanks, that is all for today', toolUses: [] }, { role: 'assistant', text: 'Done: pushed and released. Nothing left to do.', toolUses: [] }]
+  wire(on, { sent: [], nudges, store, messages, haiku: 'done 0.95', files: {}, read: 200_000, write: 0, ownClock: true })
+  const clock = mock.clock(on, { now: 1_000 })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await step($, 'medium')
+  await clock.advance(3_000_000)
+  expect(nudges.length).toBe(0) // Haiku read it as finished: nothing to keep warm
+  const gaps = () => store.get('gaps') as Array<Gap>
+  expect(gaps()).toEqual([{ s: 'sess-1', start: 1_000, end: null }])
+  await $.prompt.submit({ text: '<task-notification>done</task-notification>', isMeta: true, wait: false })
+  await step($, 'medium')
+  expect(gaps()[0]!.end).toBe(null) // a notification is not the person coming back
+  await clock.advance(600_000)
+  await $.prompt.submit({ text: 'one more thing', origin: { kind: 'composer' }, wait: false })
+  await step($, 'medium')
+  expect(gaps()).toEqual([{ s: 'sess-1', start: 1_000, end: 3_601_000 }])
+})
+
+test('keep awake stops when, by past gaps, a return is too unlikely to pay; "Stop for this chat" stops it too', async (engine, on) => {
+  const $ = engine as any
+  const nudges: Array<{ text: string }> = []
+  // people who left chats idle came back only after about 40 hours: nudging through the window cannot pay
+  const store = new Map<string, unknown>([['gaps', Array.from({ length: 25 }, (_, i) => ({ s: `old${i}`, start: i * 86_400_000, end: i * 86_400_000 + 40 * 3_600_000 }))]])
+  wire(on, { sent: [], nudges, store, files: {}, read: 200_000, write: 0, ownClock: true })
+  const clock = mock.clock(on, { now: 40 * 86_400_000 })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await step($, 'medium')
+  await clock.advance(3_000_000)
+  expect(nudges.length).toBe(0)
+  // with no history the fixed window nudges; the away report's button turns it off for this chat
+  store.set('gaps', [])
+  await $.prompt.submit({ text: 'back again', origin: { kind: 'composer' }, wait: false })
+  await step($, 'medium')
+  await clock.advance(3_000_000)
+  expect(nudges.length).toBe(1)
+  await step($, 'medium') // the nudge's turn
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await band.press({ key: 'router-away-stop' })
+  await clock.advance(3_000_000)
+  expect(nudges.length).toBe(1)
+  await band.unmount()
+})
+
+test('keep awake reads a finished chat as done only when Haiku is sure', () => {
+  expect(parseDone('done 0.9')).toBe(true)
+  expect(parseDone('done 0.6')).toBe(false)
+  expect(parseDone('open 0.95')).toBe(false)
+  expect(parseDone('I think it is done')).toBe(false)
 })
 
 test('keep awake: a nudge every 50 minutes at low effort on the same model, booked as extra; coming back books the rebuild it avoided', async (engine, on) => {

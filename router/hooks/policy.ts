@@ -626,6 +626,66 @@ export const AWAY_COMPACT = 'The person has been away for hours and this chat is
 // One nudge: read the chat from cache, write the nudge and its reply (about 150 tokens), a word out.
 export const pingUsd = (model: string, cache: number) => stepUsd(model, cache, 20) + rebuildUsd(model, 150)
 
+// ---- When nudging pays (owner, 2026-11-25: "at night I'm not at the PC; a finished chat needs no keep-awake") ----
+// Every chat that sits idle past the first nudge leaves a gap: when it went idle, and when the person came back (end),
+// or null while it is still open. Open gaps count as "not back yet" up to now, so abandoned chats weigh in too.
+export type Gap = { s: string; start: number; end: number | null }
+export const GAPS_KEPT = 600
+export const GAPS_NEEDED = 20 // closed gaps before the learned curve replaces the fixed window
+const HOUR = 60 * 60_000
+const GAP_SPAN = 48 * HOUR // a gap is followed this far; later returns count as never
+// The chance per hour of the day (local) that someone idle since past the first nudge comes back within that hour:
+// returns in that hour over the hours gaps spent open in it, pulled toward the all-day rate by 2 hours of prior.
+// shortcut: weekdays and weekends are pooled; split them once a weekend pattern shows in the data.
+export function returnCurve(gaps: ReadonlyArray<Gap>, now: number): number[] | null {
+  if (gaps.filter(g => g.end !== null).length < GAPS_NEEDED) return null
+  const risk = new Array<number>(24).fill(0), back = new Array<number>(24).fill(0)
+  for (const g of gaps) {
+    const from = g.start + AWAKE_PING_MS
+    const to = Math.min(g.end ?? now, g.start + GAP_SPAN)
+    for (let t = from; t < to; t += HOUR) {
+      const h = new Date(t).getHours()
+      risk[h]! += Math.min(HOUR, to - t) / HOUR
+      if (g.end !== null && g.end === to && to - t <= HOUR) back[h]!++
+    }
+  }
+  const all = back.reduce((a, b) => a + b, 0) / Math.max(1e-9, risk.reduce((a, b) => a + b, 0))
+  return risk.map((r, h) => Math.min(1, (back[h]! + 2 * all) / (r + 2)))
+}
+// The chance of coming back within one nudge interval that starts at t.
+const backWithin = (curve: ReadonlyArray<number>, t: number) => 1 - Math.pow(1 - curve[new Date(t).getHours()]!, AWAKE_PING_MS / HOUR)
+// Should this nudge go? In units of one cached read of the chat: a nudge costs 1, a return to a warm chat saves k - 1
+// (k = the cache-write price over the read price). Backward over the nudges the window still allows:
+// V = max(0, -1 + p (k - 1) + (1 - p) V_next); nudge while V > 0. Stopping is final: a later nudge would write it all.
+export function nudgePays(curve: ReadonlyArray<number>, now: number, left: number, k: number): boolean {
+  let v = 0
+  for (let i = left - 1; i >= 0; i--) {
+    const p = backWithin(curve, now + i * AWAKE_PING_MS)
+    v = Math.max(0, -1 + p * (k - 1) + (1 - p) * v)
+  }
+  return v > 0
+}
+// The chance of coming back at all within the span, from now (for whether a warm handoff compaction is worth it).
+export function backAtAll(curve: ReadonlyArray<number>, now: number): number {
+  let stay = 1
+  for (let t = now; t < now + GAP_SPAN; t += AWAKE_PING_MS) stay *= 1 - backWithin(curve, t)
+  return 1 - stay
+}
+// The write price over the read price of a family's cache (main chat: 1-hour entries): 40 on Opus 5.5, 80 on Fable.
+export const writeOverRead = (model: string) => rebuildUsd(model, 1e6) / stepUsd(model, 1e6, 0)
+// Before the first nudge of an idle stretch: is anything left for the person or the assistant? One Haiku sample.
+export const doneSystem = `You read the end of a conversation between a person and a coding and writing assistant: the person's last message and the end of the assistant's last answer. Decide whether this piece of work is finished.
+done: the work is complete and nothing waits on anyone: the person thanked or closed it ("thanks, that's all", "we're done"), or the assistant reported it finished with nothing left and asked nothing.
+open: anything else: a question or choice waits on the person, the assistant said what it will do next, work is half done, or you can't tell.
+Answer with the label and how sure you are, from 0 to 1, like "open 0.8". No other words.`
+export const donePrompt = (asked: string, answer: string) =>
+  `<last_message>\n${asked.slice(0, 1500)}\n</last_message>\n<answer_end>\n${answer.slice(-1500)}\n</answer_end>`
+// done only when sure: a wrong "done" loses a rebuild, a wrong "open" costs only nudges
+export function parseDone(reply: string, passAt = 0.8): boolean {
+  const m = /\b(done|open):?\s+([01](?:\.\d+)?)/i.exec(reply)
+  return Boolean(m && m[1]!.toLowerCase() === 'done' && Number(m[2]) >= passAt)
+}
+
 // What the keep-awake timer does when it fires, 50 minutes after the main chat's last step.
 // lastStep: that step (a nudge's too); since: the last step that was not a nudge; cold: show the compact-first offer.
 export function awakeNext(o: { on: boolean; now: number; lastStep: number; since: number; hours: number; cache: number }): 'ping' | 'compact' | 'cold' {
