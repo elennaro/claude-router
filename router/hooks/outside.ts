@@ -76,7 +76,7 @@ export async function runCodex($: EngineInterface, v: Env, tier: RoleTier, call:
   await $.fs.write(out, '')
   const argv = [
     ...codexBin(v), 'exec', '--ephemeral', '--disable', 'plugins', '-s', 'read-only', '--skip-git-repo-check',
-    '-m', pick.slug, '-c', `model_reasoning_effort=${effort}`, '-c', 'tools.web_search=true',
+    '-m', pick.slug, '-c', `model_reasoning_effort=${effort}`, '-c', 'web_search="live"', // tools.web_search is gone; top-level web_search is cached|live|disabled (Codex 0.17x)
     // the elevated Windows sandbox runs the first command only, then every one fails (seen in Codex 0.13x, 2026-10)
     ...(v.windows ? ['-c', 'windows.sandbox="unelevated"'] : []),
     // the brief goes on stdin ("-"): as an argument, one starting with "-" read as a flag (audit 2026-11-19)
@@ -91,7 +91,9 @@ export async function runCodex($: EngineInterface, v: Env, tier: RoleTier, call:
   return { error: `Codex ${pick.slug} (${effort}) gave no answer, exit ${r.exitCode}: ${(r.stderr || r.stdout).slice(-600)}` }
 }
 
-// Antigravity puts the effort in the model name (gemini-4-argon-high); plan mode keeps it from editing.
+// Antigravity puts the effort in the model name (gemini-4-argon-high). Plan mode is only a prompt: in -p it still
+// wrote files (agy 1.5.11, 2026-11-25), so deny rules for this session (--settings, never saved) make it read-only.
+const AGY_READ_ONLY = JSON.stringify({ permissions: { deny: ['write_file(*)', 'command(*)', 'unsandboxed(*)', 'mcp(*)'] } })
 export async function runAgy($: EngineInterface, tier: RoleTier, call: Call, picks: Record<string, Pick>): Promise<Answer> {
   const pick = picks[tier.family]
   if (!pick) return { error: `Antigravity lists no model in the "${tier.family}" family. Update Antigravity (router Settings), then try again.` }
@@ -101,7 +103,7 @@ export async function runAgy($: EngineInterface, tier: RoleTier, call: Call, pic
   const images = (call.images ?? []).map(i => `\nLook at this image file: ${i}`).join('')
   // -p is a plain flag and the brief a positional argument: one starting with "-" gets a leading newline, so no parser reads it as a flag
   const brief = (call.brief.startsWith('-') ? `\n${call.brief}` : call.brief) + images
-  const r = await $.process.run(['agy', '-p', brief, '--model', model, '--mode', 'plan', '--output-format', 'text'], {
+  const r = await $.process.run(['agy', '-p', brief, '--model', model, '--mode', 'plan', '--settings', AGY_READ_ONLY, '--output-format', 'text'], {
     stdin: '', timeoutMs: 600_000, ...(call.dir ? { cwd: call.dir } : {}),
   }).catch((err: unknown) => ({ exitCode: 1, stdout: '', stderr: String(err) }))
   const text = r.stdout.trim()

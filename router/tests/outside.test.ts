@@ -51,7 +51,7 @@ test('Codex runs read-only with the standard flags, web search, the unelevated W
   expect(a).toEqual({ text: 'looks fine', model: 'gpt-6.2-sol', effort: 'high' })
   expect(runs[0]!.argv).toEqual([
     'node', '/appdata/npm/node_modules/@openai/codex/bin/codex.js', 'exec', '--ephemeral', '--disable', 'plugins', '-s', 'read-only', '--skip-git-repo-check',
-    '-m', 'gpt-6.2-sol', '-c', 'model_reasoning_effort=high', '-c', 'tools.web_search=true', '-c', 'windows.sandbox="unelevated"',
+    '-m', 'gpt-6.2-sol', '-c', 'model_reasoning_effort=high', '-c', 'web_search="live"', '-c', 'windows.sandbox="unelevated"',
     '-C', '/proj', '-o', '/home/.claude/router/codex/answer-5.md', '-',
   ])
   expect(runs[0]!.stdin).toBe('check it')
@@ -79,6 +79,16 @@ test('an Antigravity brief that starts with "-" cannot be read as a flag', async
   const $ = { process: { run: async (argv: Array<string>) => { runs.push(argv); return { exitCode: 0, stdout: 'ok', stderr: '' } } } }
   await runAgy($ as any, { family: 'argon', effort: 'high' } as any, { role: 'visual', brief: '--help me review' }, { argon: { slug: 'gemini-4-argon', version: '4', efforts: ['high'] } } as any)
   expect(runs[0]![2]).toBe('\n--help me review')
+})
+
+test('Antigravity runs with writes, commands and MCP denied for the session (owner case 2026-11-25: plan mode alone wrote a file)', async () => {
+  const runs: Array<Array<string>> = []
+  const $ = { process: { run: async (argv: Array<string>) => { runs.push(argv); return { exitCode: 0, stdout: 'ok', stderr: '' } } } }
+  await runAgy($ as any, { family: 'argon', effort: 'high' } as any, { role: 'review', brief: 'look' }, { argon: { slug: 'gemini-4-argon', version: '4', efforts: ['high'] } } as any)
+  const argv = runs[0]!
+  expect(argv).not.toContain('--dangerously-skip-permissions')
+  const deny = JSON.parse(argv[argv.indexOf('--settings') + 1]!).permissions.deny
+  expect(deny).toEqual(['write_file(*)', 'command(*)', 'unsandboxed(*)', 'mcp(*)'])
 })
 
 test('the newest listed version wins per family; hidden models never', async () => {
