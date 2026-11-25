@@ -74,7 +74,10 @@ const add = (where, what) => findings.push(`${where}: ${what}`)
 // ---- static checks: no browser ----
 const texts = svg => [...svg.matchAll(/<(text|title)[^>]*>([^<]*)</g)].map(m => m[2].replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"'))
 function staticChecks() {
-  for (const s of SURFACES.filter(x => x.kind === 'svg')) for (const t of texts(s.src)) for (const i of kit.numberIssues(t)) add(s.name, `"${t.slice(0, 60)}": ${i}`)
+  for (const s of SURFACES.filter(x => x.kind === 'svg')) {
+    for (const t of texts(s.src)) for (const i of kit.numberIssues(t)) add(s.name, `"${t.slice(0, 60)}": ${i}`)
+    for (const t of texts(s.src)) if (/\([^)]*…$/.test(t)) add(s.name, `"${t}": cut inside brackets (drop the bracket whole)`)
+  }
   for (const c of CELLS) for (const i of kit.labelIssues(c.label, kit.LIMITS.label)) add('stats cell label', `"${c.label}": ${i}`)
   // words the plugin builds outside a surface, with the numbers they carry
   const words = [

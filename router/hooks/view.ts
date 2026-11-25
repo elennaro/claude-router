@@ -29,8 +29,11 @@ export const netWords = (t: Tally) => (isExtra(t) ? `${money(-net(t))} extra` : 
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 // Cut to max characters with "…", never inside a number: "rebuild $2.…" reads as another amount, so the cut steps
 // back to the word before it.
-const fit = (s: string, max: number) => {
+// A trailing "(you asked)" or "(auto)" goes first, whole: "Sonnet xhigh" beats "Sonnet xhigh (you …" (hover has all).
+const fit = (s: string, max: number): string => {
   if (s.length <= max) return s
+  const bare = s.replace(/\s*\([^()]*\)$/, '')
+  if (bare !== s && bare.length > 0) return fit(bare, max)
   const cut = s.slice(0, Math.max(1, max - 1))
   const inNumber = /[\d$][\d.,]*$/.test(cut) && /[\d.,%K]/.test(s[cut.length] ?? '')
   return `${((inNumber && cut.replace(/\s*\S+$/, '')) || cut).trimEnd()}…`
