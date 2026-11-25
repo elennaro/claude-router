@@ -891,7 +891,7 @@ async function setFeature($: EngineInterface, k: keyof Features, on: boolean) {
 
 // Training data (Settings > Training, off by default): one row per switch the router makes, never prompt text (rule 5).
 async function logSwitch($: EngineInterface, s: State, w: Omit<Switch, 'id' | 'at' | 'label'>) {
-  if (!(await read($, features)).labels) return
+  if (s.headless || !(await read($, features)).labels) return // claude -p (evals, scripts) is not your work
   const { day, now } = await stamp($, s)
   const sw: Switch = { ...w, id: `${s.session}:${now}:${Math.random().toString(36).slice(2, 8)}`, at: now, label: null }
   await update($, switches, (xs): Array<Switch> => [...xs, sw].slice(-SWITCHES_SHOWN))
@@ -1500,10 +1500,9 @@ export const register: Register = on => {
       s.agentSpend.set(e.agentId, { usd: a.usd + usd, base: a.base + baseUsd, extra: a.extra + Math.max(0, usd - baseUsd), model: family(u.model) })
     }
     const sent = String(effort ?? '')
-    // training data: the main chat's switches away from no router. A model named in the prompt is the person's, and so is
-    // the engine's own effort on an ultrathink turn (review 2026-11-25: both were logged as the router's)
-    if (isMain && !nudge) {
-      const from = { model: family(ask?.model ?? noRouter.model), effort: String((s.skipEffortThisTurn ? e.effort : noRouter.effort) ?? '') }
+    // training data: the main chat's switches away from no router; an ultrathink turn is yours, so it logs nothing
+    if (isMain && !nudge && !s.skipEffortThisTurn) {
+      const from = { model: family(noRouter.model), effort: String(noRouter.effort ?? '') }
       const to = { model: family(u.model), effort: sent }
       const row = { who: 'main', fromModel: from.model, fromEffort: from.effort, toModel: to.model, toEffort: to.effort, cls: s.lastClass ?? 'default' }
       // model and effort log apart, each once per new from-to; a quick turn logs once per turn and leaves the chat's keys alone

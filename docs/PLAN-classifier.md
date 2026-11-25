@@ -43,7 +43,7 @@ English-only bases (bge-small-en-v1.5, all-MiniLM-L6-v2, ettin, ModernBERT) are 
 
 | Base | Size | Licence | Russian | Runs in Node | Notes |
 |---|---|---|---|---|---|
-| **multilingual-e5-small** | ~118M params, int8 ONNX 118 MB | MIT | yes, in its language list with Russian benchmark scores | transformers.js build (`Xenova/multilingual-e5-small`, int8) | **Chosen base.** The only small one with confirmed Russian and a ready int8 build |
+| **multilingual-e5-small** | 117.7M params (96M of it the 250K-token word table, 21M the 12-layer, 384-wide transformer; arithmetic from its config.json), int8 ONNX 118 MB | MIT | yes, in its language list with Russian benchmark scores | transformers.js build (`Xenova/multilingual-e5-small`, int8) | **Chosen base.** The only small one with confirmed Russian and a ready int8 build |
 | potion-multilingual-128M (model2vec) | static table, 256 dims | MIT | 101 languages, Russian not named | no official JS; a third-party JSR port, Node unverified | Fallback if e5 is too slow or big: a lookup plus a mean, about 1 ms |
 | paraphrase-multilingual-MiniLM-L12-v2 | ~0.1B | Apache-2.0 | "50 languages", Russian not named | ONNX tag | Second choice if e5 loses on the eval |
 | mmBERT-small | 140M (42M non-embedding) | MIT | 1800+ languages | no ONNX | Needs our own export |
@@ -56,7 +56,7 @@ Cards: [multilingual-e5-small](https://huggingface.co/intfloat/multilingual-e5-s
 [mmBERT-small](https://huggingface.co/jhu-clsp/mmBERT-small),
 [NVIDIA classifier](https://huggingface.co/nvidia/prompt-task-and-complexity-classifier),
 [NVIDIA Open Model License](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/).
-Params for e5-small and any CPU latency were not published: measure them (step 1).
+Made by the E5 authors (Wang, Yang, Huang, Yang, Majumder, Wei; [arXiv:2402.05672](https://arxiv.org/abs/2402.05672)), released mid-2023, MIT. 512-token input. No CPU latency is published: measure it (step 1).
 
 ## Training data
 
@@ -191,5 +191,5 @@ weights and checkpoints on D: only, one copy. Only the head (and, if fine-tuned,
 - **Distribution shift**: public chat prompts are not coding-assistant prompts with pasted stack traces and file
   paths. The owner's labels fix this; until then the cascade keeps Haiku on anything unsure.
 - **Size and install**: a 118 MB download and a JS runtime on every OS, checked in CI on Windows, macOS and Linux.
-- **Unverified facts** from the research: e5-small's exact parameter count, any CPU latency, Russian coverage of the
+- **Unverified facts** from the research: any CPU latency, Russian coverage of the
   potion and MiniLM models, the Qwen Magpie set's licence. Step 1 and a licence read settle them.

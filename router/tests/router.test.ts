@@ -1197,6 +1197,34 @@ test('Training: 👎 on an old pick leaves a model you chose since in Settings',
   await band.unmount()
 })
 
+test('Training: claude -p runs (evals, scripts) log nothing', async (engine, on) => {
+  const $ = engine as any
+  const batches: Array<Array<Step>> = []
+  const store = new Map<string, unknown>([['features', { labels: true }]])
+  wire(on, { sent: [], batches, store, surfaces: [], files: { '/home/.claude/routing.json': ROUTING }, haiku: 'explore 0.95' })
+  on('agent.spawn', (_: unknown, e: { model?: string }) => ({ model: e.model ?? 'inherit', agentId: 'sub1' }))
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: false })
+  await $.agent.spawn({ prompt: 'find where the config is loaded', parentModel: 'claude-opus-5-5', subagentType: 'Explore' }) // routed to Haiku
+  await $.session.end({ reason: 'other', sessionId: 'sess-1', resume: { sessionId: 'sess-1' } })
+  expect(batches.flat().some(x => x.sql.includes('INTO switches'))).toBe(false)
+})
+
+test('Training: an ultrathink turn is yours and logs nothing', async (engine, on) => {
+  const $ = engine as any
+  const store = new Map<string, unknown>([['features', { labels: true }]])
+  const interactive: Array<Array<Step>> = []
+  wire(on, { sent: [], batches: interactive, store, tokens: 5_000, files: { '/home/.claude/routing.json': ROUTING }, haiku: 'mechanical 0.95' })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await band.press({ key: 'router-settings' })
+  await band.press({ key: 'router-effort-medium' }) // your pick; ultrathink then runs at the picker's high (review 2026-11-25)
+  await band.unmount()
+  await $.prompt.submit({ text: 'ultrathink: swap every variable called foo for bar in the utils module and the tests too' })
+  await step($, 'high')
+  await $.session.end({ reason: 'other', sessionId: 'sess-1', resume: { sessionId: 'sess-1' } })
+  expect(interactive.flat().some(x => x.sql.includes('INTO switches'))).toBe(false)
+})
+
 test('Training off (the default): no switch rows and no Switches button', async (engine, on) => {
   const $ = engine as any
   const batches: Array<Array<Step>> = []

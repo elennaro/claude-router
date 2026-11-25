@@ -3,3 +3,4 @@ router/.claude-plugin/types/
 evals/results/
 evals/work/
 *.log
+.claude/worktrees/
