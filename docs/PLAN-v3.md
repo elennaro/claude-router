@@ -59,9 +59,10 @@ flowchart TD
    - switch when N >= b; at a free switch point (just after compaction, or the cache is cold after a pause longer than its timer) the rebuild is due anyway, so b is near zero;
    - no history yet: switch only after the extra spend on the dearer model has reached the rebuild cost (the classic rule, never worse than 2x the best choice).
 3. **Switch up** never happens by itself: a button with the rough rebuild cost in dollars.
-4. **Quick turns** go to Haiku only while Haiku's rebuild is cheaper than the same turn on the chat's model; otherwise the chat's model at low effort.
-5. Ledger fixes found by comparing with ccusage: read the real 1h/5m write split where the engine gives it; flag unpriced models in the ledger and in `check-savings.mjs` instead of pricing them as Opus or $0; in `check-savings.mjs` keep the line with the most tokens per message and dedupe across files.
-6. Find where Haiku quick-turn calls are counted (they are not in main transcripts) before trusting quick-turn numbers.
+4. **Quick turns** go to Haiku only while Haiku's rebuild is cheaper than the same turn on the chat's model; otherwise the chat's model at the class's effort. Today this is a fixed cap (`SWITCH_MAX_CONTEXT`, 90K tokens, set from Haiku's 100K price step); slice 1 computes it from the cache size and live prices.
+5. **One decision, not two.** The class names a whole tier (model and effort together). If that tier's model is cheaper than the chat's, the switch rule above decides whether to move; a move takes the class's effort with it at no extra cache cost. If the move doesn't pay, the turn runs the class's effort on the current model.
+6. Ledger fixes found by comparing with ccusage: read the real 1h/5m write split where the engine gives it; flag unpriced models in the ledger and in `check-savings.mjs` instead of pricing them as Opus or $0; in `check-savings.mjs` keep the line with the most tokens per message and dedupe across files.
+7. Find where Haiku quick-turn calls are counted (they are not in main transcripts) before trusting quick-turn numbers.
 
 Tests: unit tables for rebuild cost and break-even (prices x sizes x TTL), the survival curve on fixtures, the switch rule at each branch, mutations for every comparison. UI: Board HTML snapshot tests plus one look in the browser pane.
 
