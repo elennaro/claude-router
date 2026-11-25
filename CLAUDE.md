@@ -1,6 +1,6 @@
 # claude-router
 
-A Claude Code plugin (a "mod": a TypeScript hooks module the engine loads) that picks the model and effort for each turn, subagent and outside-agent call. It is released publicly: every change must work on a clean install with nothing from the author's machine. Terms are defined in [GLOSSARY.md](GLOSSARY.md); settled decisions are in [docs/DESIGN.md](docs/DESIGN.md) and [docs/PLAN-v2.md](docs/PLAN-v2.md).
+A Claude Code plugin (a "mod": a TypeScript hooks module the engine loads) that picks the model and effort for each turn, subagent and outside-agent call. It is released publicly: every change must work on a clean install with nothing from the author's machine. Terms are defined in [GLOSSARY.md](GLOSSARY.md); settled decisions are in [docs/DESIGN.md](docs/DESIGN.md) and [docs/PLAN-v2.md](docs/PLAN-v2.md); the current plan (cache-aware token economy) is [docs/PLAN-v3.md](docs/PLAN-v3.md).
 
 ## Layout
 

@@ -40,4 +40,12 @@
 
 **Saved**: spend below the no-router cost, summed over the steps where the router went cheaper.
 
+**Cache size**: how many tokens of the chat's history the model has cached right now and can re-read cheaply.
+
+**Rebuild cost**: what it costs to cache the history again from scratch: cache size times the write price of the model that will read it. A model switch always pays it; so does an effort change unless it is sent in a cache-safe way.
+
+**Free switch point**: a moment when the cache is already small or gone, so changing model costs almost nothing: just after compaction, or after a pause longer than the cache lives.
+
+**Switch up / switch down**: moving the chat to a stronger / cheaper model. Switch down happens on its own only when the saving over the expected rest of the chat beats the rebuild cost, or at a free switch point. Switch up never happens on its own: the owner is asked, with the rough rebuild cost shown.
+
 **Extra spend**: spend above the no-router cost, summed over the steps where the router went stronger, plus the router's own classifier and session-check calls. Saved and extra spend are shown apart, never only netted.
