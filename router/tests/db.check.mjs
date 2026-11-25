@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, 
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { BOARD, IMPORTED, SWEEP, bucketsOf, dayRow, isAlreadyImported, paths, run, sessionRow, spawnRow, totalsOf, totalsQuery, usageRow, livesOf, livesQuery, spendOf, spendSinceQuery, effortRow, cleanupSteps, EFFORTS_DAYS } from '../hooks/db.ts'
+import { BOARD, IMPORTED, SWEEP, bucketsOf, dayRow, isAlreadyImported, paths, run, sessionRow, spawnRow, totalsOf, totalsQuery, usageRow, livesOf, livesQuery, spendOf, spendSinceQuery, effortRow, cleanupSteps, EFFORTS_DAYS, switchRow, labelRow } from '../hooks/db.ts'
 
 const home = mkdtempSync(join(tmpdir(), 'router-db-'))
 const old = mkdtempSync(join(tmpdir(), 'router-db-0.4-'))
@@ -113,9 +113,16 @@ try {
     { why: 'class', steps: 2, usd: 4.2, base: 3, extra: 1.2 }, { why: 'unhappy', steps: 1, usd: 1, base: 1, extra: 0 },
   ])
   q.close()
+  // switches (training labels): a row once per id, the 👍/👎 label filled in later; kept like the ledger, not like efforts
+  const W = { id: 'w1', at: 1, who: 'main', kind: 'effort', fromModel: 'opus', fromEffort: 'medium', toModel: 'opus', toEffort: 'low', cls: 'quick-fix', why: 'class', undoUsd: 0, label: null }
+  await run($, home, [switchRow(day, 's1', W), switchRow(day, 's1', { ...W, toEffort: 'high' }), switchRow('2026-11-17', 's1', { ...W, id: 'w0' }), labelRow('w1', 'bad', 5)])
+  q = db()
+  assert.deepEqual({ ...q.prepare('SELECT to_effort, label, source, labelled FROM switches WHERE id = ?').get('w1') }, { to_effort: 'low', label: 'bad', source: 'button', labelled: 5 })
+  q.close()
   // effort detail older than 60 days goes before the rest (400): here 2026-11-18 is past the first cutoff, 2026-11-17 past both
   await run($, home, cleanupSteps(n => (n === EFFORTS_DAYS ? '2026-11-19' : '2026-11-18')))
   q = db()
+  assert.deepEqual(q.prepare('SELECT id FROM switches').all().map(r => r.id), ['w1'])
   assert.equal(q.prepare('SELECT count(*) AS n FROM efforts').get().n, 0)
   assert.deepEqual(q.prepare('SELECT DISTINCT day FROM usage').all().map(r => r.day), ['2026-11-18'])
   assert.deepEqual(q.prepare('SELECT id FROM sessions ORDER BY id').all().map(r => r.id), ['s1']) // s2 had no day left

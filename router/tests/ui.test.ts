@@ -75,7 +75,7 @@ async function states($: any, on: any, routing: string, setup: ($: any) => Promi
         if (key) await band.press({ key })
         issues.push(...audit(await band.drawn(), state, surface, width))
       }
-      const open = presses.map(p => p[1]).filter(k => k === 'router-stats' || k === 'router-settings').at(-1)
+      const open = presses.map(p => p[1]).filter(k => k === 'router-stats' || k === 'router-settings' || k === 'router-switches').at(-1)
       if (open && (await band.find({ key: open }))) await band.press({ key: open }) // close the panel left open
       await band.unmount()
     }
@@ -91,6 +91,11 @@ const stepped = async ($: any) => {
 test('the band, Stats and Settings fit 40 to 120 cells, with sentence-case labels and clean numbers', async (engine, on) => {
   const issues = await states(engine as any, on, ROUTING, stepped, [['band', undefined], ['stats', 'router-stats'], ['settings', 'router-settings']])
   expect(issues).toEqual([])
+})
+
+test('Training on: the Switches list with its 👍 👎 fits every width', async (engine, on) => {
+  const presses: Array<[string, string | undefined]> = [['settings', 'router-settings'], ['training on', 'router-f-labels-on'], ['band', 'router-settings'], ['switches', 'router-switches']]
+  expect(await states(engine as any, on, ROUTING, stepped, presses)).toEqual([])
 })
 
 test('a model tip row fits every width too, with Settings open under it', async (engine, on) => {

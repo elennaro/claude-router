@@ -1,8 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionMessage } from 'claude-code'
 
-import type { Advice, Away, Bucket, Cache, ChatModel, Cold, Features, Hint, Mix, Plan, Tally, RouterView, TurnLog, Why } from '../types'
-import { BOARD, SWEEP, cleanupSteps, effortRow, type EffortOf, type EffortWhy, livesQuery, livesOf, type Step, type Totals, IMPORTED, addCache, bucketsOf, dayRow, isAlreadyImported, labelOf, legacySteps, run, sessionRow, spawnRow, spendOf, spendSinceQuery, totalsOf, totalsQuery, usageRow } from './db'
+import type { Advice, Away, Bucket, Cache, ChatModel, Cold, Features, Hint, Mix, Plan, Switch, Tally, RouterView, TurnLog, Why } from '../types'
+import { BOARD, SWEEP, cleanupSteps, effortRow, type EffortOf, type EffortWhy, livesQuery, livesOf, type Step, type Totals, IMPORTED, addCache, bucketsOf, dayRow, isAlreadyImported, labelOf, legacySteps, run, sessionRow, spawnRow, spendOf, spendSinceQuery, totalsOf, totalsQuery, usageRow, switchRow, labelRow } from './db'
 import { shield } from './guard'
 import { claudeFamily } from './latest'
 import {
@@ -36,7 +36,7 @@ const tools = atom({ plugin: 'router', key: 'tools' } as const, null as Versions
 const updating = atom({ plugin: 'router', key: 'updating' } as const, null as Tool | null)
 const chat = atom({ plugin: 'router', key: 'chat' } as const, { model: null, by: null } as ChatModel) // the chat's model: picked on its first prompt, or by the person
 const advice = atom({ plugin: 'router', key: 'advice' } as const, null as Advice | null)
-const FEATURES_ON: Features = { autoSwitch: true, sizing: true, pastes: true, awake: true }
+const FEATURES_ON: Features = { autoSwitch: true, sizing: true, pastes: true, awake: true, labels: false } // labels: training data stays off until switched on
 const features = atom({ plugin: 'router', key: 'features' } as const, FEATURES_ON)
 const cold = atom({ plugin: 'router', key: 'cold' } as const, null as Cold | null)
 const away = atom({ plugin: 'router', key: 'away' } as const, null as Away | null)
@@ -45,6 +45,9 @@ const compactAt = atom({ plugin: 'router', key: 'compactAt' } as const, null as 
 const chatAwake = atom({ plugin: 'router', key: 'chatAwake' } as const, true)
 const plan = atom({ plugin: 'router', key: 'plan' } as const, null as Plan | null)
 const units = atom({ plugin: 'router', key: 'units' } as const, 'usd' as 'usd' | 'plan')
+const switches = atom({ plugin: 'router', key: 'switches' } as const, [] as Array<Switch>)
+const SWITCHES_SHOWN = 10
+const WARN_UNDO_USD = 0.1 // 👎 on a model pick: a rebuild above this is said first (a toast), below it goes back silently
 
 // The plan's usage windows as Claude Code reports them (nothing on an API key), and how many API-price dollars this
 // machine spent per weekly point: this week's ledger spend (from the window's start day) over the week's percent.
@@ -116,6 +119,7 @@ type State = {
   baseEffort: string // the effort the session started on: the app picker's default, routed like main.effort
   rerouted: number // main-loop turns sent at another effort than the picker's
   lastRerouted: string // turnId last counted in rerouted
+  lastSwitch: string // the main chat's last logged switch (from and to), so the same state logs once
   agentType: Map<string, string> // agentId -> subagent type, for the dashboard log
   agentAsked: Map<string, string> // agentId -> the model it would have run on with no router (the parent's, before any move of the parent), when that differs from what it runs on
   agentSpend: Map<string, { usd: number; base: number; extra: number; model: string }> // agentId -> the run's recorded totals
@@ -732,7 +736,7 @@ async function clearChat($: EngineInterface, s: State) {
   Object.assign(s, {
     session: '', label: '', lastLedgerTurn: '', stickyAsk: undefined, ask: undefined, seenPrompt: false, hasClassified: false,
     hadClass: false, lastClass: null, lastHintModel: null, switchTurn: false, sure: false, samples: [], turnCount: 0, quietUntil: 0, declined: null, unhappy: 0,
-    prev: NO_PREV, lastContext: 0, mainSteps: 0, mainOut: 0, rerouted: 0, lastRerouted: '',
+    prev: NO_PREV, lastContext: 0, mainSteps: 0, mainOut: 0, rerouted: 0, lastRerouted: '', lastSwitch: '',
   })
   for (const m of [s.briefs, s.siblings, s.agentEffort, s.agentType, s.agentAsked, s.agentSpend, s.briefRun, s.wastedRuns]) m.clear()
   s.savedAgents = NO_AGENTS // the old chat's memory stays in the store, for a resume of it
@@ -752,6 +756,7 @@ async function clearChat($: EngineInterface, s: State) {
   await update($, tally, () => EMPTY_TALLY)
   await update($, log, (): Array<TurnLog> => [])
   await update($, mix, (): Mix => ({}))
+  await update($, switches, (): Array<Switch> => [])
   await update($, view, (v): RouterView => ({ ...v, lastClass: null, rerouted: 0, routedAgents: 0 }))
 }
 
@@ -880,6 +885,31 @@ async function setFeature($: EngineInterface, k: keyof Features, on: boolean) {
   const next = { ...(await read($, features)), [k]: on }
   await update($, features, (): Features => next)
   await $.store.set('features', next)
+}
+
+// Training data (Settings > Training, off by default): one row per switch the router makes, never prompt text (rule 5).
+async function logSwitch($: EngineInterface, s: State, w: Omit<Switch, 'id' | 'at' | 'label'>) {
+  if (!(await read($, features)).labels) return
+  const { day, now } = await stamp($, s)
+  const sw: Switch = { ...w, id: `${s.session}:${now}:${Math.random().toString(36).slice(2, 8)}`, at: now, label: null }
+  await update($, switches, (xs): Array<Switch> => [...xs, sw].slice(-SWITCHES_SHOWN))
+  later($, s, [switchRow(day, s.session, sw)])
+}
+
+// 👍 keeps the switch. 👎 also goes back where something is left to go back to: the chat's model (as Undo does) and
+// its effort (pinned, as in Settings). A quick turn or a subagent run is over already: the label is all a press records.
+async function rateSwitch($: EngineInterface, s: State, id: string, label: 'good' | 'bad') {
+  const w = (await read($, switches)).find(x => x.id === id)
+  if (!w || w.label) return
+  await update($, switches, (xs): Array<Switch> => xs.map(x => (x.id === id ? { ...x, label } : x)))
+  later($, s, [labelRow(id, label, await $.clock.now())])
+  if (label === 'good' || w.kind === 'quick' || w.kind === 'agent') return
+  if (w.kind === 'pick') {
+    const usd = rebuildUsd(w.fromModel, s.lastContext)
+    if (usd > WARN_UNDO_USD) $.ui.toast(`router: back to ${pretty(w.fromModel)}; the next request re-reads this chat once, about ${money(usd)}`)
+    await update($, chat, (c): ChatModel => ({ ...c, model: null, by: 'you', routed: false, from: null }))
+  }
+  if (w.fromEffort && w.fromEffort !== w.toEffort) await update($, chat, (c): ChatModel => ({ ...c, effort: w.fromEffort }))
 }
 
 // Turns routing on or off in the global or the project routing.json, keeping the rest of the file as written.
@@ -1094,7 +1124,7 @@ export const register: Register = on => {
   const s: State = {
     cfg: BUILTIN, home: '', root: '', project: 'unknown', sources: 'built-in only', lastClass: null, lastHintModel: null,
     hasClassified: false, hadClass: false, skipEffortThisTurn: false, headless: false, agentEffort: new Map(), defs: new Map(),
-    prev: NO_PREV, lastContext: 0, mainSteps: 0, mainOut: 0, cleanChanges: 0, baseEffort: '', rerouted: 0, lastRerouted: '', agentType: new Map(), agentAsked: new Map(), agentSpend: new Map(), briefRun: new Map(), wastedRuns: new Set(), paneOpened: false, pasted: false, coldTimer: undefined, minuteTick: undefined, awakeSince: 0, pinging: false, gapStart: 0, doneChecked: 0, awakeStop: '', ownPrompt: false, scopeAt: 0, scopeQueued: false, openTurn: '', seg: { ctx: 0, steps: 0 },
+    prev: NO_PREV, lastContext: 0, mainSteps: 0, mainOut: 0, cleanChanges: 0, baseEffort: '', rerouted: 0, lastRerouted: '', lastSwitch: '', agentType: new Map(), agentAsked: new Map(), agentSpend: new Map(), briefRun: new Map(), wastedRuns: new Set(), paneOpened: false, pasted: false, coldTimer: undefined, minuteTick: undefined, awakeSince: 0, pinging: false, gapStart: 0, doneChecked: 0, awakeStop: '', ownPrompt: false, scopeAt: 0, scopeQueued: false, openTurn: '', seg: { ctx: 0, steps: 0 },
     session: 'session', label: '', lastLedgerTurn: '', pending: [], scheduled: false, warned: false, trimmed: false, totals: { proj: EMPTY_TALLY, since: undefined }, routeModels: true, sure: false, switchTurn: false,
     ask: undefined, stickyAsk: undefined, v: undefined, seenPrompt: false, samples: [], turnCount: 0, quietUntil: 0, declined: null, switching: false,
     briefs: new Map(), siblings: new Map(), queue: Promise.resolve(), savedAgents: NO_AGENTS, unhappy: 0,
@@ -1108,7 +1138,7 @@ export const register: Register = on => {
     await seedMix($).catch(() => undefined)
     const kept = ((await $.store.get('features').catch(() => undefined)) ?? {}) as Partial<Features>
     // only today's switches: an older version's key (0.8.1's "idle") is dropped
-    await update($, features, (): Features => ({ autoSwitch: kept.autoSwitch ?? true, sizing: kept.sizing ?? true, pastes: kept.pastes ?? true, awake: kept.awake ?? true }))
+    await update($, features, (): Features => ({ autoSwitch: kept.autoSwitch ?? true, sizing: kept.sizing ?? true, pastes: kept.pastes ?? true, awake: kept.awake ?? true, labels: kept.labels ?? false }))
     const keptUnits = await $.store.get('units').catch(() => undefined)
     await update($, units, () => (keptUnits === 'plan' ? 'plan' : 'usd'))
     void refreshPlan($, s).catch(() => undefined)
@@ -1355,6 +1385,7 @@ export const register: Register = on => {
       // with no router the main model would have done the job on its own model
       const parentNoRouter = (e.parentAgentId && s.agentAsked.get(e.parentAgentId)) || family(e.parentModel)
       if (started.agentId && b.model !== parentNoRouter) s.agentAsked.set(started.agentId, parentNoRouter)
+      if (started.agentId && b.model !== parentNoRouter) await logSwitch($, s, { who: e.subagentType, kind: 'agent', fromModel: parentNoRouter, fromEffort: '', toModel: family(b.model), toEffort: '', cls: kind, why: 'sizing', undoUsd: 0 })
       if (!started.deny) await update($, view, (v): RouterView => ({ ...v, routedAgents: v.routedAgents + 1 }))
       return started
     }
@@ -1367,8 +1398,9 @@ export const register: Register = on => {
     // a workflow may hide its script behind one placeholder prompt, so its agents are matched as siblings, never as repeats
     const hash = run ? undefined : briefHash(e.prompt)
     const before = hash ? s.briefs.get(hash) : undefined
+    const brief = inTable ? undefined : await briefClass($, s, e.prompt, e.parentModel).then(b => ({ ...b, cls: longRun(b.cls, e.prompt, s.cfg) }))
     const { model, tier } = spawnPick({
-      brief: inTable ? undefined : await briefClass($, s, e.prompt, e.parentModel).then(b => ({ ...b, cls: longRun(b.cls, e.prompt, s.cfg) })),
+      brief,
       tableTier: inTable ? agentTier(e.subagentType, s.cfg) : undefined,
       rule: inTable ? classifyByRules(e.prompt, s.cfg) : undefined,
       parentModel: e.parentModel,
@@ -1381,9 +1413,11 @@ export const register: Register = on => {
     if (started.deny) return started
     if (run) s.siblings.set(run, model)
     if (hash) s.briefs.set(hash, model)
-    if (started.agentId && tier?.effort && !def.effort && !said?.effort) s.agentEffort.set(started.agentId, tier.effort)
+    const routedEffort = tier?.effort && !def.effort && !said?.effort ? tier.effort : ''
+    if (started.agentId && routedEffort) s.agentEffort.set(started.agentId, routedEffort)
     // with no router a nested agent's parent would itself be on its own no-router model (audit 2026-11-19)
     const parentNoRouter = (e.parentAgentId && s.agentAsked.get(e.parentAgentId)) || family(e.parentModel)
+    if (started.agentId && (moved || routedEffort)) await logSwitch($, s, { who: e.subagentType, kind: 'agent', fromModel: parentNoRouter, fromEffort: '', toModel: moved ? model : family(e.parentModel), toEffort: routedEffort, cls: brief?.cls ?? tier?.class ?? '', why: tier?.why ?? '', undoUsd: 0 })
     if (started.agentId && (moved ? model : family(e.parentModel)) !== parentNoRouter) s.agentAsked.set(started.agentId, parentNoRouter)
     if (started.agentId && hash) {
       // the same brief again: with no router one run would have done, so the replaced run saved nothing
@@ -1459,6 +1493,18 @@ export const register: Register = on => {
       s.agentSpend.set(e.agentId, { usd: a.usd + usd, base: a.base + baseUsd, extra: a.extra + Math.max(0, usd - baseUsd), model: family(u.model) })
     }
     const sent = String(effort ?? '')
+    // training data: the main chat's switch away from no router, once per new from-to (the same state over turns logs once)
+    if (isMain && !nudge) {
+      const from = { model: family(noRouter.model), effort: String(noRouter.effort ?? '') }
+      const to = { model: family(u.model), effort: sent }
+      const key = `${from.model}:${from.effort}>${to.model}:${to.effort}`
+      if (from.model === to.model && from.effort === to.effort) s.lastSwitch = ''
+      else if (key !== s.lastSwitch) {
+        s.lastSwitch = key
+        const kind = from.model === to.model ? 'effort' : model !== base ? 'quick' : 'pick'
+        await logSwitch($, s, { who: 'main', kind, fromModel: from.model, fromEffort: from.effort, toModel: to.model, toEffort: to.effort, cls: s.lastClass ?? 'default', why: kind === 'effort' ? why : kind, undoUsd: kind === 'pick' ? rebuildUsd(from.model, s.lastContext) : 0 })
+      }
+    }
     // one log row per main-loop turn or subagent run, its steps summed
     const id = e.agentId ?? e.turnId
     const usd = costUsd(u.model, u, longCache)
@@ -1548,7 +1594,7 @@ export const register: Register = on => {
     const open = await read($, panel)
     const tip = await read($, hint)
     const isHint = tip !== null && !(await read($, isHidden)) && f.v.isOn
-    const flip = (p: 'stats' | 'settings') => () => update($, panel, x => (x === p ? 'none' : p))
+    const flip = (p: 'stats' | 'settings' | 'switches') => () => update($, panel, x => (x === p ? 'none' : p))
     const board = () => openBoard($, s).catch(() => $.ui.toast('router: could not open the board'))
     const picked = await read($, chat)
     const undo = () => update($, chat, (c): ChatModel => ({ ...c, model: null, by: 'you', routed: false, from: null })) // back to the default; auto stays off for this chat
@@ -1566,6 +1612,7 @@ export const register: Register = on => {
         {!f.v.isOn && <Text dimColor wrap="truncate-end">off {f.where}</Text>}
         {open !== 'settings' && Object.values((await read($, tools))?.tools ?? {}).some(x => x.isBehind) && <Button key="router-update-tip" plain label="Update available" onPress={flip('settings')} />}
         <Box flexGrow={1} />
+        {f.feats.labels && <Button key="router-switches" plain label={open === 'switches' ? 'Hide switches' : 'Switches'} onPress={flip('switches')} />}
         <Button key="router-board" plain label="Board" onPress={board} />
         <Button key="router-stats" plain label={open === 'stats' ? 'Hide stats' : 'Stats'} onPress={flip('stats')} />
         <Button key="router-settings" plain label={open === 'settings' ? 'Done' : 'Settings'} onPress={flip('settings')} />
@@ -1613,7 +1660,26 @@ export const register: Register = on => {
       : null
     const extra = offerRow ?? coldRow ?? keptRow
     const head = extra ? <Box key="router-head" flexDirection="column" width={e.props.bodyColumns}>{row}{extra}</Box> : row
-    if (open === 'none') return stack(head)
+    if (open === 'none' || (open === 'switches' && !f.feats.labels)) return stack(head)
+
+    if (open === 'switches') {
+      // newest first; a labelled one shows its label, the rest 👍 👎 (Settings > Training)
+      const list = [...(await read($, switches))].reverse()
+      const side = (m: string, eff: string) => `${pretty(m)}${eff ? ` ${eff}` : ''}`
+      const rows = list.map(w => (
+        <Box key={`router-sw-${w.id}`} flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2}>
+          <Text wrap="truncate-end"><Text dimColor>{new Date(w.at).toTimeString().slice(0, 5)} {w.who === 'main' ? 'chat' : w.who}</Text> {side(w.fromModel, w.fromEffort)} → {side(w.toModel, w.toEffort)}<Text dimColor>{w.cls ? ` · ${w.cls}` : ''}</Text></Text>
+          {w.label
+            ? <Text dimColor>{w.label === 'good' ? '👍 kept' : w.kind === 'pick' || w.kind === 'effort' ? '👎 went back' : '👎 noted'}</Text>
+            : [
+                <Button key={`router-sw-up-${w.id}`} plain label="👍" onPress={() => rateSwitch($, s, w.id, 'good')} />,
+                <Button key={`router-sw-down-${w.id}`} plain label="👎" onPress={() => rateSwitch($, s, w.id, 'bad')} />,
+              ]}
+        </Box>
+      ))
+      const empty = <Text key="router-sw-none" dimColor wrap="wrap">No switches in this chat yet. Each model or effort change the router makes shows here, to rate.</Text>
+      return stack(<Box flexDirection="column" gap={1} width={e.props.bodyColumns}>{head}{rows.length ? rows : empty}</Box>)
+    }
 
     if (open === 'stats') {
       // the cache clock counts down: redraw once a minute while the card is open
@@ -1735,7 +1801,9 @@ export const register: Register = on => {
           note('router-f-pastes-note', 'A message over about 10K tokens goes to a file, and a cheaper model reads it first. Write "raw" to skip.'),
           feat('awake', 'Keep awake'),
           field('router-awake-hours', 'Keep it for', choices('router-awake-hours', AWAKE_HOURS.map(h => [String(h), `${h}h`] as [string, string]), String(f.hours), v => setAwakeHours($, Number(v)))),
-          note('router-f-awake-note', `A hidden nudge every 50 minutes keeps an idle chat's cache warm${s.lastContext >= 1000 ? ` (${about(f.sheet.ping)} each, against ${money(f.sheet.reset)} to re-read it)` : ''}. After ${f.hours} hours it compacts the chat into a handoff${s.lastContext >= 1000 ? ` (${about(f.sheet.compact)})` : ''} and stops. Off: the band offers to compact once the cache lapses.`))}
+          note('router-f-awake-note', `A hidden nudge every 50 minutes keeps an idle chat's cache warm${s.lastContext >= 1000 ? ` (${about(f.sheet.ping)} each, against ${money(f.sheet.reset)} to re-read it)` : ''}. After ${f.hours} hours it compacts the chat into a handoff${s.lastContext >= 1000 ? ` (${about(f.sheet.compact)})` : ''} and stops. Off: the band offers to compact once the cache lapses.`),
+          feat('labels', 'Training'),
+          note('router-f-labels-note', 'Logs each model or effort switch on this machine (no prompt text), for a future local router. Switches in the band lists them to rate: 👎 goes back.'))}
         {group('router-g-scope',
           field('router-scope', 'Routing', [
             <Text key="router-global-l">Everywhere</Text>,
