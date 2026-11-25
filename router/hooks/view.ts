@@ -27,7 +27,15 @@ export const savedUsd = (t: Tally) => Math.max(0, net(t) + t.extraUsd)
 export const netPct = (t: Tally) => (t.baselineUsd > 0 ? Math.round((Math.abs(net(t)) / t.baselineUsd) * 100) : 0)
 export const isExtra = (t: Tally) => net(t) <= -0.005
 // The band's few words: "saved $0.40", or "$0.52 extra" when it spent more than running with no router would have.
-export const netWords = (t: Tally) => (isExtra(t) ? `${money(-net(t))} extra` : `saved ${money(net(t))}`)
+export const netWords = (t: Tally, fmt: (usd: number) => string = money) => (isExtra(t) ? `${fmt(-net(t))} extra` : `saved ${fmt(net(t))}`)
+// Units: % of the plan's weekly limit, from the API-price dollars that moved it one point on this machine (planRate).
+// shortcut: one blended rate for every model (Anthropic publishes no per-model weights); learn one per model if they drift.
+export const PLAN_MIN = 3 // points and dollars of this week before the rate is trusted
+export const planRate = (spentUsd: number, pct: number) => (pct >= PLAN_MIN && spentUsd >= PLAN_MIN ? spentUsd / pct : undefined)
+export const planFmt = (rate: number) => (usd: number) => {
+  const p = Math.abs(usd) / rate
+  return `≈${p < 0.1 ? p.toFixed(2) : p.toFixed(1)}% of week`
+}
 
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 // Cut to max characters with "…", never inside a number: "rebuild $2.…" reads as another amount, so the cut steps

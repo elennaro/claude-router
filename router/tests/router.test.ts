@@ -3,7 +3,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import {
   BUILTIN, CLASS_LABELS, adviseSwitch, effortRank, rank, agentTier, autoModel, needsSecondSample, briefHash, briefTier, stepUp, classifyByRules, costUsd, firstModel, isCacheBreak, isContinuation, merge, parseJev, parseSessionCheck, parseMood, raiseEffort, moodPrompt, longRun, readLabel, spawnPick, turnEffort, withoutRouter, rebuildUsd, stepUsd, switchMath, remainingSteps, quickPays, type Life, sessionCheckSystem, briefPaths, sizeOf, bucket, estTokens, keepsRaw, pasteModel, pasteSystem, offloaded, cacheSheet, coldMath, awakeNext, AWAKE_TEXT, returnCurve, nudgePays, backAtAll, writeOverRead, parseDone, type Gap, isNudgeReply, compactStepUsd, cheapestPoint, compactPoints, compactLook, compactsPer100,
 } from '../hooks/policy'
-import { addWhy, cacheClock, minutesLeft, whoWords, whyWords, boardHtml, cacheStrength, cardLayout, hitPct, svgSize, switchCost, netWords, savedUsd, shade, statsSvg, withMode } from '../hooks/view'
+import { addWhy, cacheClock, minutesLeft, whoWords, whyWords, boardHtml, cacheStrength, cardLayout, hitPct, svgSize, switchCost, netWords, planFmt, planRate, savedUsd, shade, statsSvg, withMode } from '../hooks/view'
 import { RUNNER, type Step, bucketsOf, labelOf, livesOf } from '../hooks/db'
 import { shield } from '../hooks/guard'
 
@@ -291,7 +291,7 @@ async function end($: any) {
   await $.session.end({ reason: 'other', sessionId: 'sess-1', resume: { sessionId: 'sess-1' } })
 }
 
-function wire(on: any, opts: { batches?: Array<Array<Step>>; runFails?: boolean; store?: Map<string, unknown>; haiku?: string | ((e: { system?: string }) => string); tokens?: number; model?: string; messages?: Array<unknown>; ownClock?: boolean; sent: Array<unknown>; asked?: { n: number }; lines?: Array<string | undefined>; opened?: Array<unknown>; surfaces?: Array<string>; files?: Record<string, string>; models?: Array<string>; read?: number; write?: number; select?: (sql: string) => Array<unknown>; argv?: Array<Array<string>>; nudges?: Array<{ text: string }>; window?: number; engineAt?: number }) {
+function wire(on: any, opts: { batches?: Array<Array<Step>>; runFails?: boolean; store?: Map<string, unknown>; haiku?: string | ((e: { system?: string }) => string); tokens?: number; model?: string; messages?: Array<unknown>; ownClock?: boolean; sent: Array<unknown>; asked?: { n: number }; lines?: Array<string | undefined>; opened?: Array<unknown>; surfaces?: Array<string>; files?: Record<string, string>; models?: Array<string>; read?: number; write?: number; select?: (sql: string) => Array<unknown>; argv?: Array<Array<string>>; nudges?: Array<{ text: string }>; window?: number; engineAt?: number; rateLimits?: Array<{ kind: string; percentUsed: number; resetsAt?: string }> }) {
   on('env.get', (_: unknown, e: { name: string }) => ({ value: e.name === 'USERPROFILE' ? '/home' : undefined }))
   on('session.root', () => ({ value: '/proj' }))
   on('session.id', () => ({ value: 'sess-1' }))
@@ -335,7 +335,7 @@ function wire(on: any, opts: { batches?: Array<Array<Step>>; runFails?: boolean;
   on('prompt.submit', (_: unknown, e: { text: string; origin?: { kind: string } }) => { if (e.origin?.kind === 'plugin') opts.nudges?.push(e); return { text: e.text } })
   on('model.complete', (_: unknown, e: { system?: string }) => { opts.asked && opts.asked.n++; return { value: { isAnswered: true, text: (typeof opts.haiku === 'function' ? opts.haiku(e) : opts.haiku) ?? 'default 0.9', usage: USAGE } } })
   // tokens set = a chat already under way (no first-prompt pick); unset = a new chat
-  on('session.usage', () => ({ value: { startedAt: 0, context: { window: opts.window ?? 200_000, ...(opts.engineAt ? { breakdown: { autoCompactThreshold: opts.engineAt, rawMaxTokens: opts.window, autocompactSource: 'settings' } } : {}), ...(opts.tokens === undefined ? {} : { tokens: opts.tokens }) }, rateLimits: [] } }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: opts.window ?? 200_000, ...(opts.engineAt ? { breakdown: { autoCompactThreshold: opts.engineAt, rawMaxTokens: opts.window, autocompactSource: 'settings' } } : {}), ...(opts.tokens === undefined ? {} : { tokens: opts.tokens }) }, rateLimits: opts.rateLimits ?? [] } }))
   on('turn.step', async function* (_: unknown, e: { effort?: unknown; model: string; turnId: string; index: number }) {
     opts.sent.push(e.effort)
     opts.models?.push(e.model)
@@ -1274,6 +1274,35 @@ test('keep awake stops when, by past gaps, a return is too unlikely to pay; "Sto
   await band.press({ key: 'router-away-stop' })
   await clock.advance(3_000_000)
   expect(nudges.length).toBe(1)
+  await band.unmount()
+})
+
+test('units: % of the plan comes from this week\'s spend over its percent, and only once both are big enough to trust', () => {
+  expect(planRate(40, 10)).toBe(4) // $40 moved the week 10 points: $4 a point
+  expect(planRate(40, 2)).toBe(undefined) // too few points to trust
+  expect(planRate(2, 10)).toBe(undefined)
+  expect(planFmt(4)(1)).toBe('≈0.3% of week')
+  expect(planFmt(40)(1)).toBe('≈0.03% of week') // small shares keep two decimals
+  expect(planFmt(4)(12)).toBe('≈3.0% of week')
+  expect(netWords({ actualUsd: 10, baselineUsd: 14, extraUsd: 0 }, planFmt(4))).toBe('saved ≈1.0% of week')
+})
+
+test('units: the plan\'s real usage shows in Stats, and Plan % turns the band\'s saving into a share of the week (owner ask 2026-11-25)', async (engine, on) => {
+  const $ = engine as any
+  const reset = new Date(2026, 10, 30, 10, 0).toISOString()
+  wire(on, { sent: [], files: {}, rateLimits: [{ kind: 'seven_day', percentUsed: 20, resetsAt: reset }, { kind: 'five_hour', percentUsed: 7 }], select: sql => (/SUM\(usd\)/.test(sql) ? [{ usd: 80 }] : []) })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await step($, 'medium')
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await band.press({ key: 'router-stats' })
+  const card = await band.find({ type: 'Svg' })
+  expect(card?.props.alt).toMatch(/Plan week 20%/)
+  expect(card?.props.alt).toMatch(/5h 7% · 1% ≈ \$4\.00/) // $80 this week over 20 points
+  await band.press({ key: 'router-settings' })
+  await band.press({ key: 'router-units-plan' })
+  expect(await band.find({ type: 'Text', text: /% of week/ })).toBeTruthy()
+  await band.press({ key: 'router-units-usd' })
+  expect(await band.find({ type: 'Text', text: /% of week/ })).toBeFalsy()
   await band.unmount()
 })
 

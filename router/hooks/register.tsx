@@ -1,8 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionMessage } from 'claude-code'
 
-import type { Advice, Away, Bucket, Cache, ChatModel, Cold, Features, Hint, Mix, Tally, RouterView, TurnLog, Why } from '../types'
-import { BOARD, SWEEP, livesQuery, livesOf, type Step, type Totals, IMPORTED, addCache, bucketsOf, dayRow, isAlreadyImported, labelOf, legacySteps, run, sessionRow, spawnRow, totalsOf, totalsQuery, usageRow } from './db'
+import type { Advice, Away, Bucket, Cache, ChatModel, Cold, Features, Hint, Mix, Plan, Tally, RouterView, TurnLog, Why } from '../types'
+import { BOARD, SWEEP, livesQuery, livesOf, type Step, type Totals, IMPORTED, addCache, bucketsOf, dayRow, isAlreadyImported, labelOf, legacySteps, run, sessionRow, spawnRow, spendOf, spendSinceQuery, totalsOf, totalsQuery, usageRow } from './db'
 import { shield } from './guard'
 import { claudeFamily } from './latest'
 import {
@@ -17,7 +17,7 @@ import {
   type CompactLook, cheapestPoint, compactLook, compactPoints, compactsPer100, compactStepUsd,
   SIZED, briefPaths, bucket, sizeOf, cacheSheet, PASTE_MIN, estTokens, keepsRaw, pasteModel, pasteSystem, pastePrompt, offloaded,
 } from './policy'
-import { type Cell, NAMES, TOOL_NAMES, about, addWhy, awayWords, cacheClock, minutesLeft, coldWords, whyWords, barsSvg, boardHtml, cardLayout, hitPct, switchCost, svgSize, isExtra, modelColor, money, shade, net, netPct, netWords, savedUsd, statsSvg, withMode } from './view'
+import { type Cell, NAMES, TOOL_NAMES, about, addWhy, awayWords, cacheClock, minutesLeft, coldWords, whyWords, barsSvg, boardHtml, cardLayout, hitPct, switchCost, svgSize, isExtra, modelColor, money, shade, net, netPct, netWords, planFmt, planRate, savedUsd, statsSvg, withMode } from './view'
 
 const PANE = 'router'
 const hint = atom({ plugin: 'router', key: 'hint' } as const, null)
@@ -43,6 +43,31 @@ const away = atom({ plugin: 'router', key: 'away' } as const, null as Away | nul
 const awakeHours = atom({ plugin: 'router', key: 'awakeHours' } as const, AWAKE_DEFAULT_HOURS)
 const compactAt = atom({ plugin: 'router', key: 'compactAt' } as const, null as number | null)
 const chatAwake = atom({ plugin: 'router', key: 'chatAwake' } as const, true)
+const plan = atom({ plugin: 'router', key: 'plan' } as const, null as Plan | null)
+const units = atom({ plugin: 'router', key: 'units' } as const, 'usd' as 'usd' | 'plan')
+
+// The plan's usage windows as Claude Code reports them (nothing on an API key), and how many API-price dollars this
+// machine spent per weekly point: this week's ledger spend (from the window's start day) over the week's percent.
+// shortcut: spend elsewhere (claude.ai, another machine) moves the percent but not the ledger, so the % reads high there.
+type RateWindow = { kind: string; percentUsed: number; resetsAt?: string }
+async function refreshPlan($: EngineInterface, s: State, limits?: ReadonlyArray<RateWindow>) {
+  const got = limits ?? (await $.session.usage().catch(() => undefined))?.rateLimits
+  const win = (k: string) => { const w = got?.find(x => x.kind === k); return w ? { pct: w.percentUsed, resetsAt: w.resetsAt } : undefined }
+  const week = win('seven_day'), five = win('five_hour')
+  if (!week && !five) return
+  let rate: number | undefined
+  const reset = week?.resetsAt ? Date.parse(week.resetsAt) : NaN
+  if (week && Number.isFinite(reset) && s.home) {
+    const rows = await run($, s.home, [spendSinceQuery(dayOf(reset - 7 * 86_400_000))]).catch(() => undefined)
+    if (rows) rate = planRate(spendOf(rows), week.pct)
+  }
+  await update($, plan, (): Plan => ({ week, five, rate }))
+}
+// How a dollar figure reads in the chosen units: dollars, or ≈% of the week once the rate is known.
+async function fmtOf($: EngineInterface): Promise<(usd: number) => string> {
+  const p = await read($, plan)
+  return (await read($, units)) === 'plan' && p?.rate ? planFmt(p.rate) : money
+}
 const TODO_TOOLS = ['TodoWrite', 'mcp__ccd_turn__update_plan'] // the task list as Claude Code and the desktop app keep it
 
 const pretty = (m: string) => NAMES[family(m)] ?? m
@@ -779,6 +804,11 @@ async function showWidget($: EngineInterface, isShown: boolean) {
 
 // How long keep-awake keeps an idle chat warm, for this session and every later one.
 // Keep awake for this chat only: off stops its nudges (the global switch and the other chats stay as they are).
+async function setUnits($: EngineInterface, u: 'usd' | 'plan') {
+  await update($, units, () => u)
+  await $.store.set('units', u)
+}
+
 async function setChatAwake($: EngineInterface, isOn: boolean) {
   await update($, chatAwake, () => isOn)
 }
@@ -905,21 +935,32 @@ async function facts($: EngineInterface, s: State) {
   const hours = await read($, awakeHours)
   const chatAwakeOn = await read($, chatAwake)
   const at = await $.clock.now()
-  return { v, turns, chat, proj, m, main, where, now, since, chatMode, cost, spend, hit, sheet, feats, chatAwake: chatAwakeOn, hours, at }
+  const fmt = await fmtOf($)
+  const planNow = await read($, plan)
+  const unitsNow = await read($, units)
+  return { v, turns, chat, proj, m, main, where, now, since, chatMode, cost, spend, hit, sheet, feats, chatAwake: chatAwakeOn, hours, at, fmt, plan: planNow, units: unitsNow }
 }
 
 function cells(s: State, f: Awaited<ReturnType<typeof facts>>): Array<Cell> {
   const picked = f.main?.picker && f.main.picker !== f.main.effort ? `you picked ${f.main.picker}` : `task: ${f.main?.cls ?? 'none yet'}`
   const swatch = f.v.isOn ? (f.main ? `${f.main.model}:${f.main.effort}` : `${s.cfg.main.model}:${s.cfg.main.effort}`) : undefined
   return [
-    { label: 'This chat', value: netWords(f.chat), isExtra: isExtra(f.chat), sub: `${money(savedUsd(f.chat))} saved, ${money(f.chat.extraUsd)} extra` },
-    { label: 'This project', value: netWords(f.proj), isExtra: isExtra(f.proj), sub: `${netPct(f.proj)}% ${isExtra(f.proj) ? 'more' : 'less'} since ${f.since}` },
+    { label: 'This chat', value: netWords(f.chat, f.fmt), isExtra: isExtra(f.chat), sub: `${f.fmt(savedUsd(f.chat))} saved, ${f.fmt(f.chat.extraUsd)} extra` },
+    { label: 'This project', value: netWords(f.proj, f.fmt), isExtra: isExtra(f.proj), sub: `${netPct(f.proj)}% ${isExtra(f.proj) ? 'more' : 'less'} since ${f.since}` },
     { label: 'Now', value: f.v.isOn ? f.now : 'Off', swatch, sub: !f.v.isOn ? `off ${f.where}` : f.chatMode === 'effort' ? 'effort only' : f.chatMode === 'models' ? 'models only' : picked },
     { label: 'Spent this chat', value: money(f.cost ?? f.chat.actualUsd), sub: f.hit === undefined ? 'cache hit not known yet' : `cache hit ${f.hit}%` },
     { label: 'Cache', value: s.lastContext >= 1000 ? `${Math.round(s.lastContext / 1000)}K tokens` : 'empty', sub: s.lastContext >= 1000 ? `${cacheClock(s.prev.at, f.at)} · rebuild ${money(f.sheet.reset)}` : 'nothing to rebuild yet' },
     { label: 'Where it went', ...whyWords(f.chat.by) },
     awakeCell(s, f),
+    ...(f.plan?.week || f.plan?.five ? [planCell(f.plan)] : []),
   ]
+}
+
+// The plan's own usage, as Claude Code reports it (no conversion), and the learned dollars per weekly point.
+function planCell(p: Plan): Cell {
+  const reset = p.week?.resetsAt ? new Date(p.week.resetsAt).toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : ''
+  const sub = [p.five ? `5h ${p.five.pct}%` : '', p.rate ? `1% ≈ ${money(p.rate)}` : reset ? `resets ${reset}` : ''].filter(Boolean).join(' · ')
+  return { label: 'Plan', value: p.week ? `week ${p.week.pct}%` : `5h ${p.five!.pct}%`, sub: sub || 'as Claude Code reports it' }
 }
 
 // Keep awake's cell: what it saved this chat, when the next nudge goes and what the nudges cost.
@@ -1039,6 +1080,9 @@ export const register: Register = on => {
     const kept = ((await $.store.get('features').catch(() => undefined)) ?? {}) as Partial<Features>
     // only today's switches: an older version's key (0.8.1's "idle") is dropped
     await update($, features, (): Features => ({ autoSwitch: kept.autoSwitch ?? true, sizing: kept.sizing ?? true, pastes: kept.pastes ?? true, awake: kept.awake ?? true }))
+    const keptUnits = await $.store.get('units').catch(() => undefined)
+    await update($, units, () => (keptUnits === 'plan' ? 'plan' : 'usd'))
+    void refreshPlan($, s).catch(() => undefined)
     const hours = Number(await $.store.get('awakeHours').catch(() => undefined))
     await update($, awakeHours, () => (AWAKE_HOURS.includes(hours) ? hours : AWAKE_DEFAULT_HOURS))
     await $.command.register({
@@ -1091,6 +1135,8 @@ export const register: Register = on => {
     if (!s.switching) $.clock.after(500, async () => { await sessionCheck($, s, 'compact') })
     return r
   }))
+  // The plan's usage windows moved (or a main turn ended): keep the Plan cell and the % units current
+  on('session.measure', async ($, e, next) => { if (e.rateLimits.length) await refreshPlan($, s, e.rateLimits).catch(() => undefined); return next(e) })
   // The main turn closes (keep-awake waits while one is open); this chat's own auto-compact point (Settings) is checked then, compacted just after.
   on('turn.complete', async ($, e, next) => shield($, e, next, async go => {
     if (e.turnId === s.openTurn) s.openTurn = ''
@@ -1480,7 +1526,7 @@ export const register: Register = on => {
         <Text><Text color={f.v.isOn ? 'success' : 'inactive'}>●</Text> Router</Text>
         {f.v.isOn && <Text wrap="truncate-end"><Text color={modelColor(f.main?.model ?? s.cfg.main.model)}>■</Text> {f.now}</Text>}
         {f.v.isOn && picked.by === 'auto' && picked.model && <Button key="router-chat-undo" plain dimColor label={`Picked ${pretty(picked.model)} for this chat · Undo`} onPress={undo} />}
-        {f.v.isOn && <Text dimColor={!isExtra(f.chat)} color={isExtra(f.chat) ? 'warning' : undefined} wrap="truncate-end">{netWords(f.chat)}</Text>}
+        {f.v.isOn && <Text dimColor={!isExtra(f.chat)} color={isExtra(f.chat) ? 'warning' : undefined} wrap="truncate-end">{netWords(f.chat, f.fmt)}</Text>}
         {f.v.isOn && f.hit !== undefined && !narrow && <Text dimColor wrap="truncate-end">cache hit {f.hit}%</Text>}
         {!f.v.isOn && <Text dimColor wrap="truncate-end">off {f.where}</Text>}
         {open !== 'settings' && Object.values((await read($, tools))?.tools ?? {}).some(x => x.isBehind) && <Button key="router-update-tip" plain label="Update available" onPress={flip('settings')} />}
@@ -1640,7 +1686,11 @@ export const register: Register = on => {
         {group('router-g-pick',
           field('router-model', 'Model', choices('router-model', [['auto', 'Auto'], ['haiku', 'Haiku'], ['sonnet', 'Sonnet'], ['opus', 'Opus'], ['fable', 'Fable']], picked.by === 'you' ? family(picked.model ?? s.cfg.main.model) : 'auto', v => pickModel($, v), v => (v === 'auto' ? undefined : modelColor(v)))),
           field('router-effort', 'Effort', choices('router-effort', [['auto', 'Auto'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra high'], ['max', 'Max']], picked.effort ?? 'auto', v => update($, chat, (c): ChatModel => ({ ...c, effort: v === 'auto' ? null : v })), v => (v === 'auto' ? undefined : shade(f.main?.model ?? s.cfg.main.model, v, 'dark')))),
-          note('router-pick-note', 'A pick locks this chat to it, and savings count against it. Auto lets the router choose per task.'))}
+          note('router-pick-note', 'A pick locks this chat to it, and savings count against it. Auto lets the router choose per task.'),
+          field('router-units', 'Units', choices('router-units', [['usd', 'Dollars'], ['plan', 'Plan %']], f.units, v => setUnits($, v === 'plan' ? 'plan' : 'usd'))),
+          note('router-units-note', !f.plan?.week ? 'No plan usage reported here (an API key, or no reply yet), so figures stay in dollars.'
+            : f.plan.rate ? `Your week is ${f.plan.week.pct}% used, as Claude Code reports it. Plan % turns dollars into it at ${money(f.plan.rate)} per point: what this machine spent this week over that percent, so it reads high if you also use Claude elsewhere.`
+            : `Your week is ${f.plan.week.pct}% used. Plan % starts once this week has 3 points and $3 of spend here; until then figures stay in dollars.`))}
         {group('router-g-save',
           feat('autoSwitch', 'Move down'),
           note('router-f-autoSwitch-note', 'Moves to a cheaper model on its own, only when rebuilding the cache pays back. Moving up is always your call.'),

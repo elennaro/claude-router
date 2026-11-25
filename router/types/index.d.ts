@@ -91,6 +91,11 @@ export type Cold = { cache: number; resume: number; extra: number; perStep: numb
 // stop: why keep-awake stopped early: the work looked finished, or a return was unlikely enough that nudges would not pay
 export type Away = { pings: number; usd: number; rebuild: number; compacted: boolean; back?: boolean; saved?: number; stop?: 'done' | 'unlikely' }
 
+// One plan usage window: how much is used (0-100) and when it resets (ISO 8601).
+export type PlanWindow = { pct: number; resetsAt?: string }
+// week: the 7-day window; five: the 5-hour one; rate: API-price dollars per weekly point, from this machine's spend this week.
+export type Plan = { week?: PlanWindow; five?: PlanWindow; rate?: number }
+
 declare module 'claude-code' {
   interface PluginState {
     router: {
@@ -112,6 +117,8 @@ declare module 'claude-code' {
       away: Away | null // keep-awake's report while you are away, until your next message
       awakeHours: number // how long keep-awake keeps an idle chat warm before compacting it (Settings, kept across sessions)
       compactAt: number | null // this chat's own auto-compact point in tokens (Settings), null: Claude Code's own window
+      plan: Plan | null // the plan's usage windows as Claude Code reports them, and the dollars per weekly point learned here
+      units: 'usd' | 'plan' // how savings and costs read (Settings, kept across sessions)
       chatAwake: boolean // keep-awake for this chat (Settings, This chat; the away report's button): off stops nudges here only
     }
   }

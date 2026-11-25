@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, 
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { BOARD, IMPORTED, SWEEP, bucketsOf, dayRow, isAlreadyImported, paths, run, sessionRow, spawnRow, totalsOf, totalsQuery, usageRow, livesOf, livesQuery } from '../hooks/db.ts'
+import { BOARD, IMPORTED, SWEEP, bucketsOf, dayRow, isAlreadyImported, paths, run, sessionRow, spawnRow, totalsOf, totalsQuery, usageRow, livesOf, livesQuery, spendOf, spendSinceQuery } from '../hooks/db.ts'
 
 const home = mkdtempSync(join(tmpdir(), 'router-db-'))
 const old = mkdtempSync(join(tmpdir(), 'router-db-0.4-'))
@@ -36,6 +36,9 @@ try {
 
   const t = totalsOf(await run($, home, totalsQuery('proj')))
   assert.deepEqual(t, { proj: { actualUsd: 1.61, baselineUsd: 3.4, extraUsd: 0.01 }, since: 50 })
+  // every session's spend since a day, for the plan's dollars per weekly point
+  assert.equal(Math.round(spendOf(await run($, home, [spendSinceQuery('2026-11-17')])) * 100), 1061)
+  assert.equal(Math.round(spendOf(await run($, home, [spendSinceQuery('2026-11-18')])) * 100), 161)
 
   const b = bucketsOf(await run($, home, BOARD)).find(x => x.session === 's1')
   assert.deepEqual(b, {

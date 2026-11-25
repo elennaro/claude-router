@@ -139,6 +139,9 @@ export const totalsQuery = (project: string): Array<Step> => [
   { sql: 'SELECT min(first) AS since FROM days', all: true },
 ]
 
+// Every session's spend on this machine since a local day (YYYY-MM-DD): the dollars behind this week's plan usage.
+export const spendSinceQuery = (day: string): Step => ({ sql: `SELECT COALESCE(SUM(usd), 0) AS usd FROM usage WHERE day >= ?`, params: [day], all: true })
+export const spendOf = (rows: Array<Array<Record<string, unknown>> | null>) => Number(rows[0]?.[0]?.usd ?? 0)
 export type Totals = { proj: Tally; since: number | undefined }
 
 export function totalsOf(rows: Array<Array<Record<string, unknown>> | null>): Totals {
