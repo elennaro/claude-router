@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, 
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { BOARD, IMPORTED, SWEEP, bucketsOf, dayRow, isAlreadyImported, paths, run, sessionRow, spawnRow, totalsOf, totalsQuery, usageRow, livesOf, livesQuery, spendOf, spendSinceQuery } from '../hooks/db.ts'
+import { BOARD, IMPORTED, SWEEP, bucketsOf, dayRow, isAlreadyImported, paths, run, sessionRow, spawnRow, totalsOf, totalsQuery, usageRow, livesOf, livesQuery, spendOf, spendSinceQuery, effortRow, cleanupSteps, EFFORTS_DAYS } from '../hooks/db.ts'
 
 const home = mkdtempSync(join(tmpdir(), 'router-db-'))
 const old = mkdtempSync(join(tmpdir(), 'router-db-0.4-'))
@@ -103,6 +103,23 @@ try {
   sweep(pastes, '', String(864e5))
   assert.deepEqual(readdirSync(pastes), ['sC-1.txt'])
   sweep(join(home, 'none'), '', '0')
+
+  // the efforts table sums steps per effort, asked effort, class and why; the cleanup trims by age
+  const E = { effort: 'high', asked: 'medium', cls: 'debug', why: 'class' }
+  await run($, home, [effortRow(day, 's1', 'main', 'opus', E, 1.4, 1, 0.4), effortRow(day, 's1', 'main', 'opus', E, 2.8, 2, 0.8), effortRow(day, 's1', 'main', 'opus', { ...E, why: 'unhappy' }, 1, 1, 0)])
+  const db = () => new DatabaseSync(paths(home).db, { readOnly: true })
+  let q = db()
+  assert.deepEqual(q.prepare(`SELECT why, steps, round(usd, 2) AS usd, round(base, 2) AS base, round(extra, 2) AS extra FROM efforts ORDER BY why`).all().map(r => ({ ...r })), [
+    { why: 'class', steps: 2, usd: 4.2, base: 3, extra: 1.2 }, { why: 'unhappy', steps: 1, usd: 1, base: 1, extra: 0 },
+  ])
+  q.close()
+  // effort detail older than 60 days goes before the rest (400): here 2026-11-18 is past the first cutoff, 2026-11-17 past both
+  await run($, home, cleanupSteps(n => (n === EFFORTS_DAYS ? '2026-11-19' : '2026-11-18')))
+  q = db()
+  assert.equal(q.prepare('SELECT count(*) AS n FROM efforts').get().n, 0)
+  assert.deepEqual(q.prepare('SELECT DISTINCT day FROM usage').all().map(r => r.day), ['2026-11-18'])
+  assert.deepEqual(q.prepare('SELECT id FROM sessions ORDER BY id').all().map(r => r.id), ['s1']) // s2 had no day left
+  q.close()
   console.log('db check: ok')
 } finally {
   rmSync(home, { recursive: true, force: true })

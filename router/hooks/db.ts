@@ -34,6 +34,9 @@ try {
 process.stdout.write(JSON.stringify(out))
 `
 
+// efforts: the same model steps by the effort they ran at, the effort they would have run at with no router (asked),
+// the task class and why the effort was set (EffortWhy), so the extra spend can be traced to the class or raise that
+// bought it. Kept EFFORTS_DAYS; usage, days and spawns are kept LEDGER_DAYS (cleanupSteps).
 // who: 'main' (the chat), 'router' (the classifier and session check: spend with no baseline) or a subagent type.
 // base: what the same steps would have cost with no router (the asked model and effort; 0 for the router's own calls).
 // extra: the part of usd above base, summed per step, so savings and extra spend stay apart (saved = base - usd + extra).
@@ -43,6 +46,7 @@ CREATE TABLE IF NOT EXISTS days (day TEXT, session TEXT, turns INTEGER NOT NULL,
 CREATE TABLE IF NOT EXISTS usage (day TEXT, session TEXT, who TEXT, model TEXT, steps INTEGER NOT NULL, usd REAL NOT NULL, base REAL NOT NULL, extra REAL NOT NULL DEFAULT 0, tin INTEGER NOT NULL DEFAULT 0, tread INTEGER NOT NULL DEFAULT 0, twrite INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (day, session, who, model)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS spawns (day TEXT, session TEXT, type TEXT, runs INTEGER NOT NULL, routed INTEGER NOT NULL, respawned INTEGER NOT NULL, PRIMARY KEY (day, session, type)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS efforts (day TEXT, session TEXT, who TEXT, model TEXT, effort TEXT, asked TEXT, cls TEXT, why TEXT, steps INTEGER NOT NULL, usd REAL NOT NULL, base REAL NOT NULL, extra REAL NOT NULL, PRIMARY KEY (day, session, who, model, effort, asked, cls, why)) WITHOUT ROWID;
 `
 
 // 0.4's ledger had no `extra`: older rows get 0 (their extra spend was never split out).
@@ -109,6 +113,26 @@ export const usageRow = (day: string, session: string, who: string, model: strin
   sql: `INSERT INTO usage (day, session, who, model, steps, usd, base, extra, tin, tread, twrite) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (day, session, who, model) DO UPDATE SET steps = steps + excluded.steps, usd = usd + excluded.usd, base = base + excluded.base, extra = extra + excluded.extra, tin = tin + excluded.tin, tread = tread + excluded.tread, twrite = twrite + excluded.twrite`,
   params: [day, session, who, model, steps, usd, base, extra, c.input, c.read, c.write],
 })
+
+// as-is: the effort the step came with (the picker's, or one the person set later); class: the task class's effort;
+// unhappy: the class's raised by unhappy replies; pick: the person's pick in Settings; asked: named in the prompt;
+// agent: a subagent's routed effort; nudge: keep-awake's low; probe: an eval's forced effort.
+export type EffortWhy = 'as-is' | 'class' | 'unhappy' | 'pick' | 'asked' | 'agent' | 'nudge' | 'probe'
+export type EffortOf = { effort: string; asked: string; cls: string; why: EffortWhy }
+export const effortRow = (day: string, session: string, who: string, model: string, d: EffortOf, usd: number, base: number, extra: number): Step => ({
+  sql: `INSERT INTO efforts VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?) ON CONFLICT (day, session, who, model, effort, asked, cls, why) DO UPDATE SET steps = steps + 1, usd = usd + excluded.usd, base = base + excluded.base, extra = extra + excluded.extra`,
+  params: [day, session, who, model, d.effort, d.asked, d.cls, d.why, usd, base, extra],
+})
+
+// The ledger stays small: per-effort detail for EFFORTS_DAYS (enough to tune routing), the rest for LEDGER_DAYS (the
+// Board's longest range is a year), and a session with no day left goes too. Run with each session's first batch.
+export const EFFORTS_DAYS = 60
+export const LEDGER_DAYS = 400
+export const cleanupSteps = (dayBefore: (days: number) => string): Array<Step> => [
+  { sql: 'DELETE FROM efforts WHERE day < ?', params: [dayBefore(EFFORTS_DAYS)] },
+  ...['usage', 'days', 'spawns'].map(t => ({ sql: `DELETE FROM ${t} WHERE day < ?`, params: [dayBefore(LEDGER_DAYS)] })),
+  { sql: 'DELETE FROM sessions WHERE id NOT IN (SELECT session FROM days)' },
+]
 
 export const NO_CACHE: Cache = { input: 0, read: 0, write: 0 }
 export const addCache = (a: Cache | undefined, b: Cache): Cache => ({ input: (a?.input ?? 0) + b.input, read: (a?.read ?? 0) + b.read, write: (a?.write ?? 0) + b.write })

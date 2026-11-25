@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionMessage } from 'claude-code'
 
 import type { Advice, Away, Bucket, Cache, ChatModel, Cold, Features, Hint, Mix, Plan, Tally, RouterView, TurnLog, Why } from '../types'
-import { BOARD, SWEEP, livesQuery, livesOf, type Step, type Totals, IMPORTED, addCache, bucketsOf, dayRow, isAlreadyImported, labelOf, legacySteps, run, sessionRow, spawnRow, spendOf, spendSinceQuery, totalsOf, totalsQuery, usageRow } from './db'
+import { BOARD, SWEEP, cleanupSteps, effortRow, type EffortOf, type EffortWhy, livesQuery, livesOf, type Step, type Totals, IMPORTED, addCache, bucketsOf, dayRow, isAlreadyImported, labelOf, legacySteps, run, sessionRow, spawnRow, spendOf, spendSinceQuery, totalsOf, totalsQuery, usageRow } from './db'
 import { shield } from './guard'
 import { claudeFamily } from './latest'
 import {
@@ -139,6 +139,7 @@ type State = {
   pending: Array<Step> // ledger rows not yet in router.db
   scheduled: boolean // a flush is on the clock
   warned: boolean // the "could not save" toast was shown
+  trimmed: boolean // this session ran the ledger cleanup (cleanupSteps)
   totals: Totals // this project across chats, from router.db's last flush
   routeModels: boolean
   ask: Ask | undefined // a model or effort named in this prompt (or kept "from now on")
@@ -312,13 +313,17 @@ function later($: EngineInterface, s: State, steps: Array<Step>) {
 function flush($: EngineInterface, s: State) {
   return serial(s, async () => {
     s.scheduled = false
-    const steps = s.pending
+    // the session's first batch also trims the ledger (cleanupSteps); after the waiting rows, so a new session keeps its own
+    const waiting = s.pending
+    const now = await $.clock.now()
+    const steps = [...waiting, ...(s.trimmed ? [] : cleanupSteps(n => dayOf(now - n * 86_400_000)))]
     s.pending = []
     try {
       const rows = await run($, s.home, [...steps, ...totalsQuery(s.project)])
+      s.trimmed = true
       s.totals = totalsOf(rows.slice(steps.length))
     } catch (err) {
-      s.pending = [...steps, ...s.pending].slice(-MAX_PENDING)
+      s.pending = [...waiting, ...s.pending].slice(-MAX_PENDING)
       if (!s.warned) $.ui.toast(`router: savings stats need Node.js 22.13 or newer on PATH; routing works without it. (${String(err).slice(0, 100)})`)
       s.warned = true
     }
@@ -365,7 +370,8 @@ function serial<T>(s: State, fn: () => Promise<T>): Promise<T> {
 // baseline, since without the router they would not run). baseline: what the step would have cost with no router.
 // longCache: a main-thread step, whose cache writes are 1-hour entries (costUsd).
 // moved: a main step on another model than with no router (else its difference came from effort).
-async function record($: EngineInterface, s: State, model: string, u: Usage, who: string, baseline: number, turnId?: string, longCache = false, moved = false) {
+// detail: the step's effort, its no-router effort, class and why, for the efforts table (model steps only).
+async function record($: EngineInterface, s: State, model: string, u: Usage, who: string, baseline: number, turnId?: string, longCache = false, moved = false, detail?: EffortOf) {
   const actual = costUsd(model, u, longCache)
   const extra = Math.max(0, actual - baseline)
   const why: Why = who === 'main' ? (moved ? 'model' : 'effort') : who === 'router' || who === 'paste' || who === 'awake' ? who : 'agents'
@@ -377,6 +383,7 @@ async function record($: EngineInterface, s: State, model: string, u: Usage, who
     sessionRow(s.session, s.project, s.label),
     dayRow(day, s.session, Number(isNewTurn), now),
     usageRow(day, s.session, who, family(model), actual, baseline, extra, 1, cacheOf(u)),
+    ...(detail ? [effortRow(day, s.session, who, family(model), detail, actual, baseline, extra)] : []),
   ])
 }
 
@@ -1088,7 +1095,7 @@ export const register: Register = on => {
     cfg: BUILTIN, home: '', root: '', project: 'unknown', sources: 'built-in only', lastClass: null, lastHintModel: null,
     hasClassified: false, hadClass: false, skipEffortThisTurn: false, headless: false, agentEffort: new Map(), defs: new Map(),
     prev: NO_PREV, lastContext: 0, mainSteps: 0, mainOut: 0, cleanChanges: 0, baseEffort: '', rerouted: 0, lastRerouted: '', agentType: new Map(), agentAsked: new Map(), agentSpend: new Map(), briefRun: new Map(), wastedRuns: new Set(), paneOpened: false, pasted: false, coldTimer: undefined, minuteTick: undefined, awakeSince: 0, pinging: false, gapStart: 0, doneChecked: 0, awakeStop: '', ownPrompt: false, scopeAt: 0, scopeQueued: false, openTurn: '', seg: { ctx: 0, steps: 0 },
-    session: 'session', label: '', lastLedgerTurn: '', pending: [], scheduled: false, warned: false, totals: { proj: EMPTY_TALLY, since: undefined }, routeModels: true, sure: false, switchTurn: false,
+    session: 'session', label: '', lastLedgerTurn: '', pending: [], scheduled: false, warned: false, trimmed: false, totals: { proj: EMPTY_TALLY, since: undefined }, routeModels: true, sure: false, switchTurn: false,
     ask: undefined, stickyAsk: undefined, v: undefined, seenPrompt: false, samples: [], turnCount: 0, quietUntil: 0, declined: null, switching: false,
     briefs: new Map(), siblings: new Map(), queue: Promise.resolve(), savedAgents: NO_AGENTS, unhappy: 0,
   }
@@ -1390,6 +1397,7 @@ export const register: Register = on => {
 
   on('turn.step', async function* ($, e, next) {
     let effort = e.effort
+    let why: EffortWhy = 'as-is' // why the step runs at its effort, for the ledger (efforts table)
     const probe = await $.env.get('ROUTER_PROBE_EFFORTS')
     const isMain = e.agentId === undefined && !probe && s.cfg.mode !== 'off' && !s.headless
     // the chat's own pick (the first prompt's, or the person's in Settings); the person's effort beats the class
@@ -1404,6 +1412,7 @@ export const register: Register = on => {
     if (e.agentId === undefined && e.effort !== undefined) {
       if (probe) {
         effort = probe as typeof effort // measurement mode (evals): force one effort on the main loop
+        why = 'probe'
       } else {
         const v = await read($, view)
         if (!s.baseEffort) {
@@ -1414,15 +1423,16 @@ export const register: Register = on => {
         const target = raiseEffort(turnEffort(s.lastClass, s.cfg, model ?? e.model) ?? s.cfg.main.effort, raiseSteps(s.unhappy))
         // the starting effort is the app picker's default and gets routed; one the person changes to later (/effort, ultrathink) is theirs
         const isDefault = String(e.effort) === s.baseEffort
-        if (s.cfg.mode !== 'off' && !s.headless && s.cfg.autoEffort && isDefault && v.perMessage !== 'unsupported' && !s.skipEffortThisTurn && target) effort = target as typeof effort
+        if (s.cfg.mode !== 'off' && !s.headless && s.cfg.autoEffort && isDefault && v.perMessage !== 'unsupported' && !s.skipEffortThisTurn && target) { effort = target as typeof effort; why = raiseSteps(s.unhappy) > 0 ? 'unhappy' : 'class' }
       }
     } else if (e.agentId && e.effort !== undefined && s.agentEffort.has(e.agentId)) {
       effort = s.agentEffort.get(e.agentId) as typeof effort
+      why = 'agent'
     }
-    if (picked?.effort && e.effort !== undefined && !s.skipEffortThisTurn) effort = picked.effort as typeof effort
-    if (ask?.effort && e.effort !== undefined) effort = ask.effort as typeof effort
+    if (picked?.effort && e.effort !== undefined && !s.skipEffortThisTurn) { effort = picked.effort as typeof effort; why = 'pick' }
+    if (ask?.effort && e.effort !== undefined) { effort = ask.effort as typeof effort; why = 'asked' }
     // the router's own keep-awake nudge: the lowest effort (the cache stays, the reply is one word), never another model
-    if (isMain && s.pinging && e.effort !== undefined && (await read($, view)).perMessage !== 'unsupported') effort = 'low' as typeof effort
+    if (isMain && s.pinging && e.effort !== undefined && (await read($, view)).perMessage !== 'unsupported') { effort = 'low' as typeof effort; why = 'nudge' }
     const changed = effort !== e.effort || model !== undefined
     const result = yield* next(changed ? { ...e, effort, ...(model ? { model } : {}) } : e)
     const u = result.usage
@@ -1441,7 +1451,8 @@ export const register: Register = on => {
     const lapsed = s.prev.at > 0 && (await $.clock.now()) - s.prev.at > CACHE_LIFE_MS
     // a nudge: with no router it would not run, so all it costs is extra
     const baseUsd = nudge || s.wastedRuns.has(e.agentId ?? "") ? 0 : withoutRouter(noRouter, { model: u.model, effort: effort as string | undefined }, u, e.agentId || lapsed ? 0 : s.lastContext, longCache)
-    await record($, s, u.model, u, who, baseUsd, e.agentId === undefined ? e.turnId : undefined, longCache, family(u.model) !== family(noRouter.model))
+    const detail: EffortOf = { effort: String(effort ?? ''), asked: String(noRouter.effort ?? ''), cls: e.agentId ? '' : (s.lastClass ?? 'default'), why }
+    await record($, s, u.model, u, who, baseUsd, e.agentId === undefined ? e.turnId : undefined, longCache, family(u.model) !== family(noRouter.model), detail)
     if (e.agentId) { // a run's totals, so a re-spawn of the same brief can take back the first run's saving
       const a = s.agentSpend.get(e.agentId) ?? { usd: 0, base: 0, extra: 0, model: family(u.model) }
       const usd = costUsd(u.model, u)

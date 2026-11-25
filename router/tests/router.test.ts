@@ -960,6 +960,31 @@ test('the ledger keeps each session per day; the classifier counts as spend with
   expect(Math.round(Number(main[6]) * 1e8)).toBe(27222) // Opus, the whole step x 1.4/0.72 for high vs low: (10 x $4 + 5 x $20) per M
   expect(Math.round(Number(main[5]) * 1e8)).toBe(350) // $0.0000035 on Haiku
   expect(main[7]).toBe(0) // cheaper than with no router: nothing extra
+  // the same steps by effort: low for the class, high with no router, why 'class'; money matches the usage rows
+  const eff = rows(batches, 'efforts')
+  expect(eff.map(r => r.slice(2, 8))).toEqual([['main', 'haiku', 'low', 'high', 'mechanical', 'class'], ['main', 'haiku', 'low', 'high', 'mechanical', 'class']])
+  expect(eff.map(r => r[8])).toEqual([Number(main[5]), Number(main[5])])
+  expect(eff.map(r => r[9])).toEqual([Number(main[6]), Number(main[6])])
+  // the session's first batch trims the ledger: effort detail after 60 days, the rest after 400, sessions with no day
+  const trim = batches.flat().filter(x => x.sql.startsWith('DELETE FROM'))
+  expect(trim.map(x => x.sql.split(' ')[2])).toEqual(['efforts', 'usage', 'days', 'spawns', 'sessions'])
+  const ago = (n: number) => { const t = new Date(1_000 - n * 86_400_000); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}` }
+  expect(trim.map(x => x.params?.[0])).toEqual([ago(60), ago(400), ago(400), ago(400), undefined])
+  // once per session, after the waiting rows
+  const first = batches.findIndex(b => b.some(x => x.sql.startsWith('DELETE FROM')))
+  expect(batches[first]!.findIndex(x => x.sql.startsWith('DELETE')) > batches[first]!.findIndex(x => x.sql.startsWith('INSERT INTO usage'))).toBe(true)
+})
+
+test('the effort ledger says why: an effort named in the prompt is booked as asked', async (engine, on) => {
+  const $ = engine as any
+  const batches: Array<Array<Step>> = []
+  wire(on, { sent: [], files: {}, batches, haiku: 'mechanical 0.95' })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: 'Swap every variable called foo for bar in the utils module, use high effort' })
+  await step($, 'medium')
+  await end($)
+  const eff = rows(batches, 'efforts').filter(r => r[2] === 'main')
+  expect(eff.at(-1)!.slice(4, 8)).toEqual(['high', 'high', 'mechanical', 'asked']) // named in the prompt: the person's, so asked too
 })
 
 test("a subagent the router moved to Haiku is measured against its parent's model", async (engine, on) => {
@@ -1418,6 +1443,7 @@ test('keep awake: a nudge every 50 minutes at low effort on the same model, book
   const u = rows(batches, 'usage').filter(r => r[2] === 'awake')
   const cents = (x: unknown) => Math.round(Number(x) * 10000) / 100
   expect(u.map(r => [cents(r[5]), cents(r[6]), cents(r[7])])).toEqual([[4.01, 0, 4.01], [4.01, 0, 4.01], [0, 156, 0]]) // two nudges as they really ran (200K read, 10 in, 5 out), then $1.60 - $0.04 avoided
+  expect(rows(batches, 'efforts').filter(r => r[2] === 'awake').map(r => [r[4], r[7]])).toEqual([['low', 'nudge'], ['low', 'nudge']]) // the avoided rebuild is no step
   await band.unmount()
 })
 
@@ -2226,7 +2252,8 @@ test('unhappy replies keep the task class; the 2nd raises effort, the 4th raises
   const sent: Array<unknown> = []
   const moods = ['same 0.9', 'unhappy 0.9', 'same 0.9', 'unhappy 0.85', 'unhappy 0.9', 'unhappy 0.9', 'new 0.9']
   const haiku = (e: { system?: string }) => (e.system?.startsWith('You read one exchange') ? moods.shift()! : 'default 0.9')
-  wire(on, { sent, haiku, tokens: 5_000, model: 'claude-sonnet-5-5', messages: EXCHANGE })
+  const batches: Array<Array<Step>> = []
+  wire(on, { sent, haiku, tokens: 5_000, model: 'claude-sonnet-5-5', messages: EXCHANGE, batches, files: {} })
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
   const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
   const turn = async (text: string) => { await $.prompt.submit({ text }); await step($, 'medium') }
@@ -2240,6 +2267,8 @@ test('unhappy replies keep the task class; the 2nd raises effort, the 4th raises
   expect(await band.find({ type: 'Text', text: /Opus fits this task better\./ })).toBeTruthy()
   await turn('Swap every variable called foo for bar in the utils module and the tests too') // a new task: calm again
   expect(sent).toEqual(['high', 'high', 'high', 'xhigh', 'xhigh', 'max', 'medium'])
+  await end($)
+  expect(rows(batches, 'efforts').filter(r => r[2] === 'main').map(r => r[7])).toEqual(['class', 'class', 'class', 'unhappy', 'unhappy', 'unhappy', 'class']) // the ledger says which steps the unhappy raises bought
   await band.unmount()
 })
 

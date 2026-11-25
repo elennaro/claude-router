@@ -142,8 +142,10 @@ What it means:
   the day two router copies ran (known limit above); per day after that, it matched within about 5%.
 - The router does not yet spend less than no router in real use. Most extra comes from raising effort on Opus main-chat
   turns (a high step costs about 1.4x a medium one). Effort raises keep the cache and buy quality in the evals, but
-  the ledger keeps no effort per row, so it cannot yet say which classes or raises the $96 bought. That is the next
-  step: live per-class statistics, anonymized, to tune which raises pay.
+  the ledger kept no effort per row, so it could not say which classes or raises the $96 bought. The owner called
+  that a bug: effort is the router's main lever. 0.9.0 adds an `efforts` table (effort, no-router effort, class, why)
+  and trims the ledger itself (effort detail 60 days, the rest 400). Next: a week of live per-class statistics,
+  anonymized, to tune which raises pay.
 - Compared with the eval's 1.21x spend, real use came out at 1.02x: closer to the baseline than the evals predicted.
 
 ## Numbers to quote (with their source)
