@@ -1,6 +1,6 @@
 // The UI rules as code: contrast, wording and number checks, and a cell-width budget for the band's rows.
 // Pure (no Node, no DOM), so the plugin tests (claude plugin test) and tests/ui.check.mjs (Node) share one copy.
-// The rules and their reasons are written up in the router-uiux skill; a change here changes the house style.
+// Each rule says why it exists; a change here changes the house style for every surface.
 
 // ---- colour ----
 const lin = (c: number) => { const v = c / 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4 }

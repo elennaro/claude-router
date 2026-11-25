@@ -42,23 +42,25 @@ if (model !== 'haiku' && !args.includes('--owner-ok')) { console.error(`judge: $
 const files = readdirSync(dir).filter(f => f.endsWith('.png') && f.includes(opt('--only', ''))).sort()
 const work = join(tmpdir(), `router-ui-judge-${process.pid}`)
 mkdirSync(work, { recursive: true })
-let usd = 0, cached = 0
+let usd = 0, cached = 0, stopped
 try {
+  // a cap or an EVAL_OFFLINE miss stops this picture only: the answers already in hand are still printed
   const rows = await pool(files, 4, async f => {
     const hash = hashOf(readFileSync(join(dir, f)))
     copyFileSync(join(dir, f), join(work, `${hash}.png`))
-    const r = await claude({ model, system: RUBRIC, prompt: promptFor(hash, f.replace(/\.png$/, '')), tools: 'Read', cwd: work, json: SCHEMA, cache: true, tag: 'ui-judge' })
-    usd += r.usd
-    if (r.cached) cached++
-    return { f, ...(r.structured ?? JSON.parse(r.text)) }
+    try {
+      const r = await claude({ model, system: RUBRIC, prompt: promptFor(hash, f.replace(/\.png$/, '')), tools: 'Read', cwd: work, json: SCHEMA, cache: true, tag: 'ui-judge' })
+      usd += r.usd
+      if (r.cached) cached++
+      return { f, ...(r.structured ?? JSON.parse(r.text)) }
+    } catch (e) { if (e instanceof CapReached) { stopped = e; return undefined } throw e }
   })
   for (const [i, r] of rows.entries()) if (r?.error) console.log(`error  ${files[i]}: ${r.error.slice(0, 200)}`)
   for (const r of rows.filter(r => r && !r.error).sort((a, b) => a.score - b.score)) {
     console.log(`${r.score}/5  ${r.f}`)
     for (const x of r.findings) console.log(`      ${x.where}: ${x.problem} → ${x.fix}`)
   }
-} catch (e) {
-  if (!(e instanceof CapReached)) throw e
-  console.error(`judge: stopped, ${e.message}`)
-} finally { rmSync(work, { recursive: true, force: true }) }
+} finally { rmSync(work, { recursive: true, force: true, maxRetries: 3 }) }
+if (stopped) console.error(`judge: some screenshots were not judged: ${stopped.message}`)
 console.log(`judge: ${files.length} screenshot(s), ${cached} from the cache, $${usd.toFixed(3)} spent (${model})`)
+process.exit(stopped ? 1 : 0)

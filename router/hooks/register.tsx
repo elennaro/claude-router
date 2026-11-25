@@ -836,7 +836,7 @@ function awakeCell(s: State, f: Awaited<ReturnType<typeof facts>>): Cell {
   const next = on && s.lastContext >= AWAKE_MIN && !s.openTurn ? minutesLeft(s.prev.at, f.at, AWAKE_PING_MS / 60_000) : undefined
   const sub = [
     next ? `nudge in ${next} min` : on && s.lastContext < AWAKE_MIN ? 'starts at 20K tokens' : on ? '' : 'off in Settings',
-    a?.extra ? `cost ${money(a.extra)}` : '', // short: the 4-column card cuts this note at about 29 characters
+    a && a.extra >= 0.005 ? `cost ${money(a.extra)}` : '', // short: the 4-column card cuts this note at about 29 characters
   ].filter(Boolean).join(' · ')
   return { label: 'Keep awake', value: a && a.saved >= 0.005 ? `saved ${money(a.saved)}` : on ? 'On' : 'Off', sub: sub || 'no nudges yet' }
 }
@@ -1507,7 +1507,7 @@ export const register: Register = on => {
       : ` Every 100 steps: ${points.map(p => `${kt(p)} compacts ${Math.round(compactsPer100(p, growth) * 10) / 10} times, ${money(100 * compactStepUsd(acModel, p, growth))}`).join('; ')}. Green is near the cheapest; red compacts so often it loses detail, or costs too much.`
     const acNote = `Now ${kt(s.lastContext)}; Claude Code itself compacts at ${kt(engineAt)}${src}.${s.lastContext >= 1000 ? ` Compacting now costs ${about(f.sheet.compact)}.` : ''} ${growth === undefined
       ? 'The cheapest point shows after a few steps.'
-      : `This chat grows about ${kt(growth)} a step; a step reads ${money(stepUsd(acModel, s.lastContext, 0))} now${shown ? `, and compacting at ${kt(shown)} averages about ${money(compactStepUsd(acModel, shown, growth))} a step` : ''}.`}${per100} A point you pick is used after the turn that passes it, for this chat only${at && at >= engineAt ? `; Claude Code compacts at ${kt(engineAt)} first, so make it your default to reach ${kt(at)}` : ''}.`
+      : `This chat grows about ${kt(growth)} a step; a step reads ${money(stepUsd(acModel, s.lastContext, 0))} now${shown ? `, and compacting at ${kt(shown)} averages ${about(compactStepUsd(acModel, shown, growth))} a step` : ''}.`}${per100} A point you pick is used after the turn that passes it, for this chat only${at && at >= engineAt ? `; Claude Code compacts at ${kt(engineAt)} first, so make it your default to reach ${kt(at)}` : ''}.`
     const LOOK_COLOR: Record<CompactLook, string> = { good: '#4f9a5c', ok: '#c9932e', bad: '#c8553d' }
     const acDot = (v: string) => (v === 'off' || growth === undefined || best === undefined ? undefined : LOOK_COLOR[compactLook(acModel, Number(v), growth, best)])
     // order: what a person changes most (this chat) first, then what to save on, then where routing is on at all
@@ -1590,7 +1590,7 @@ export const register: Register = on => {
           {line('w-saved', isExtra(f.chat) ? 'Extra this chat' : 'Saved this chat', `${money(Math.abs(net(f.chat)))} · ${netPct(f.chat)}%`)}
           {s.lastContext >= 1000 && line('w-cache', 'Cache', `${Math.round(s.lastContext / 1000)}K · losing it ${money(f.sheet.reset)}`)}
           {s.lastContext >= 1000 && line('w-switch', 'Switch costs', f.sheet.switches.map(x => `${pretty(x.model)} ${money(x.usd)}`).join(', '))}
-          {s.lastContext >= 1000 && line('w-keep', 'Keep or compact', `warm ${about(f.sheet.ping)} a nudge · compact ${money(f.sheet.compact)}`)}
+          {s.lastContext >= 1000 && line('w-keep', 'Keep or compact', `warm ${about(f.sheet.ping)} a nudge · compact ${about(f.sheet.compact)}`)}
           {Svg && f.turns.length > 1 && <Svg key="w-bars" isInteractive source={barsSvg(f.turns, 220, 24)} width={220} height={24} alt={`Cost of the last ${f.turns.length} turns against no router`} />}
         </Box>
       )

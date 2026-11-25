@@ -6,7 +6,7 @@
 //   node tests/ui.check.mjs --shots <dir>   also save a PNG of every surface, width and theme into <dir>
 //   node tests/ui.check.mjs --trees         also run the plugin tests and lay out their band and Settings trees
 //   node tests/ui.check.mjs --test          self-check of the parsers
-// Exit 1 on any finding. The rules and their reasons: the router-uiux skill; the rule code: tests/uikit.ts.
+// Exit 1 on any finding. The rule code, with a reason for each rule: tests/uikit.ts.
 import { execFile } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -43,8 +43,8 @@ const CELLS = [
   { label: 'Keep awake', value: 'saved $3.10', sub: 'nudge in 41 min · cost $0.18' },
 ]
 const DAY = 864e5
-const today = new Date(2026, 10, 25, 12)
-const iso = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+const today = new Date(Date.UTC(2026, 10, 25, 12)) // UTC: the snapshot must not depend on the machine's time zone
+const iso = d => d.toISOString().slice(0, 10)
 const BUCKETS = Array.from({ length: 14 }, (_, i) => ({
   day: iso(new Date(today.getTime() - (i % 6) * DAY)), project: ['billing-service', 'docs-site', 'a-project-with-a-very-long-folder-name'][i % 3], session: `s${i % 7}`,
   label: ['Fix the flaky retry test in the payments worker', 'Write the migration guide', 'Why does the cache miss after an hour away from the keyboard'][i % 3],
@@ -122,7 +122,8 @@ function chromePath() {
   return [...fixed, ...onPath].find(f => existsSync(f))
 }
 const run = (bin, argv) => new Promise(res => execFile(bin, argv, { timeout: 60_000, maxBuffer: 32 * 1024 * 1024, windowsHide: true }, (err, out) => res(err && !out ? '' : String(out))))
-const chromeArgs = (theme, w, h, dir) => ['--headless=new', '--disable-gpu', '--hide-scrollbars', '--no-first-run', '--no-default-browser-check', `--user-data-dir=${dir}`, `--window-size=${w},${h}`, '--force-device-scale-factor=1', '--virtual-time-budget=1500', ...(theme === 'dark' ? ['--force-dark-mode', '--blink-settings=preferredColorScheme=0'] : ['--blink-settings=preferredColorScheme=1'])]
+// --no-sandbox only as root (a Linux container), where the browser cannot start its sandbox
+const chromeArgs = (theme, w, h, dir) => ['--headless=new', ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []), '--disable-gpu', '--hide-scrollbars', '--no-first-run', '--no-default-browser-check', `--user-data-dir=${dir}`, `--window-size=${w},${h}`, '--force-device-scale-factor=1', '--virtual-time-budget=1500', ...(theme === 'dark' ? ['--force-dark-mode', '--blink-settings=preferredColorScheme=0'] : ['--blink-settings=preferredColorScheme=1'])]
 
 // Runs in the page: measures what a person would see, writes JSON into #ui-out. Kept as a string so this file has
 // no DOM types. Text boxes come from getBBox (SVG) and getBoundingClientRect (HTML), with the page's own fonts.
@@ -154,8 +155,9 @@ const MEASURE = `
   }
   const pre = document.createElement('pre'); pre.id = 'ui-out'; pre.hidden = true; pre.textContent = JSON.stringify(out); document.body.appendChild(pre)
 })()`
+// The Board's range filter counts back from now: its clock is pinned to the fixtures' day.
 const page = (s, theme) => (s.kind === 'html'
-  ? s.src.replace('<body>', `<body data-backs='[]'>`).replace('</body>', `<script>${MEASURE}</script></body>`)
+  ? s.src.replace('<head>', `<head><script>Date.now = () => ${today.getTime()}</script>`).replace('<body>', `<body data-backs='[]'>`).replace('</body>', `<script>${MEASURE}</script></body>`)
   : `<!doctype html><html><head><meta charset="utf-8"><style>body{margin:16px;background:${BACKS[theme][0]}}</style></head><body data-backs='${JSON.stringify(BACKS[theme])}'>${s.src.replace('<svg ', `<svg data-name="${s.name}" `)}<script>${MEASURE}</script></body></html>`)
 const box = (a, b) => a.x < b.x + b.w - 0.5 && b.x < a.x + a.w - 0.5 && a.y < b.y + b.h - 0.5 && b.y < a.y + a.h - 0.5
 
@@ -164,7 +166,8 @@ function judge(s, theme, m) {
   if (m.dark !== (theme === 'dark')) add(at, `the browser did not take the ${theme} theme; contrast not checked`)
   for (const v of m.svgs) {
     v.items.forEach((a, i) => {
-      if (a.x < -1.5 || a.y < -1.5 || a.x + a.w > v.W + 1.5 || a.y + a.h > v.H + 1.5) // 1.5 px: a glyph's side bearing is no clipping add(at, `"${a.t}" runs outside the card (${Math.round(a.x)}..${Math.round(a.x + a.w)} of ${v.W} px)`)
+      // 1.5 px: a glyph's side bearing is no clipping
+      if (a.x < -1.5 || a.y < -1.5 || a.x + a.w > v.W + 1.5 || a.y + a.h > v.H + 1.5) add(at, `"${a.t}" runs outside the card (${Math.round(a.x)}..${Math.round(a.x + a.w)} of ${v.W} px)`)
       for (const b of v.items.slice(i + 1)) if (box(a, b)) add(at, `"${a.t}" overlaps "${b.t}"`)
       const need = kit.isLarge(a.px, a.wt) ? kit.MIN_LARGE : kit.MIN_TEXT
       if (m.dark === (theme === 'dark') && v.worst[i] < need) add(at, `"${a.t}" contrast ${v.worst[i].toFixed(2)}:1, needs ${need}:1`)
@@ -203,7 +206,7 @@ async function browserChecks(chrome, extra = []) {
         await run(chrome, [...chromeArgs(theme, s.px, h, prof), `--screenshot=${join(shotsDir, `${s.name}-${theme}.png`)}`, pathToFileURL(file).href])
       }
     }))
-  } finally { rmSync(tmp, { recursive: true, force: true }) }
+  } finally { rmSync(tmp, { recursive: true, force: true, maxRetries: 3 }) } // retries: a browser may still hold a file on Windows
 }
 
 // ---- --trees: the band and Settings as the plugin tests draw them, laid out in a terminal-like grid ----
@@ -245,6 +248,7 @@ async function treeSurfaces() {
     seen.add(name)
     list.push({ name, kind: 'tree', px: width * 9 + 32, src: '', tree, width, judge: treeJudge })
   }
+  if (!list.length) add('--trees', 'no UI-TREE lines from "claude plugin test" (is claude on PATH?)')
   return list
 }
 function runTests() {
@@ -273,6 +277,7 @@ function selfTest() {
   if (t.join('|') !== 'A & B|Cache hit 99.4%') throw new Error(`texts: ${t.join('|')}`)
   const h = treeHtml({ type: 'Box', props: { flexDirection: 'row', width: 40, gap: 2 }, children: [{ type: 'Text', props: { wrap: 'truncate-end' }, children: ['a<b'] }, { type: 'Button', props: { label: 'Go', plain: true } }] }, 'terminal')
   if (!h.includes('width:40ch') || !h.includes('a&lt;b') || !h.includes('>Go<') || !h.includes('text-overflow:ellipsis')) throw new Error(`treeHtml: ${h}`)
+  for (const s of SURFACES) if (!page(s, 'light').includes('ui-out') || (s.kind === 'html' && !page(s, 'light').includes('Date.now = () =>'))) throw new Error(`page ${s.name}: no measuring script or pinned clock`)
   if (!box({ x: 0, y: 0, w: 10, h: 10 }, { x: 5, y: 5, w: 10, h: 10 }) || box({ x: 0, y: 0, w: 10, h: 10 }, { x: 10, y: 0, w: 5, h: 5 })) throw new Error('box overlap')
   console.log('ui.check self-test: ok')
 }
