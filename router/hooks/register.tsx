@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionMessage } from 'claude-code'
 
 import type { Advice, Bucket, Cache, ChatModel, Hint, Mix, Tally, RouterView, TurnLog } from '../types'
-import { BOARD, type Step, type Totals, IMPORTED, addCache, bucketsOf, dayRow, isAlreadyImported, labelOf, legacySteps, run, sessionRow, spawnRow, totalsOf, totalsQuery, usageRow } from './db'
+import { BOARD, livesQuery, livesOf, type Step, type Totals, IMPORTED, addCache, bucketsOf, dayRow, isAlreadyImported, labelOf, legacySteps, run, sessionRow, spawnRow, totalsOf, totalsQuery, usageRow } from './db'
 import { shield } from './guard'
 import { claudeFamily } from './latest'
 import {
@@ -12,9 +12,9 @@ import {
 import {
   type Ask, AUTO, BUILTIN, DELEGATE_ID, delegateSection, wantsDelegate, CLASS_LABELS, type Config, type Usage, type SessionWindow, adviseSwitch, agentTier, autoModel, classifierPrompt, firstModel, parseSessionCheck, sessionCheckPrompt, sessionCheckSystem, classifierSystem, classifyByRules, costUsd, explicitAsk, family,
   classifyPlan, isCacheBreak, merge, settleAnswers, readLabel, prices, rank, setPrices, turnEffort, briefHash, isHarder, needsSecondSample, spawnPick, withoutRouter,
-  type Mood, longRun, moodPrompt, moodSystem, parseMood, raiseEffort, raiseSteps, stepUp,
+  type Mood, longRun, moodPrompt, moodSystem, parseMood, raiseEffort, raiseSteps, stepUp, rebuildUsd, switchMath, FAMILIES,
 } from './policy'
-import { type Cell, NAMES, TOOL_NAMES, barsSvg, boardHtml, cardLayout, hitPct, svgSize, isExtra, modelColor, money, shade, net, netPct, netWords, savedUsd, statsSvg, withMode } from './view'
+import { type Cell, NAMES, TOOL_NAMES, barsSvg, boardHtml, cardLayout, hitPct, switchCost, svgSize, isExtra, modelColor, money, shade, net, netPct, netWords, savedUsd, statsSvg, withMode } from './view'
 
 const PANE = 'router'
 const hint = atom({ plugin: 'router', key: 'hint' } as const, null)
@@ -58,6 +58,8 @@ type State = {
   defs: Map<string, Def>
   prev: { effort: string; read: number; at: number; model: string } // main-loop cache guard
   lastContext: number // prompt tokens of the last main-loop step
+  mainSteps: number // main-loop steps in this chat: its age, for the switch-down math
+  mainOut: number // output tokens of those steps: the typical answer size
   cleanChanges: number
   baseEffort: string // the effort the session started on: the app picker's default, routed like main.effort
   rerouted: number // main-loop turns sent at another effort than the picker's
@@ -331,11 +333,17 @@ async function probeLog($: EngineInterface, path: string, line: object) {
   await $.fs.write(path, old + JSON.stringify(line) + '\n')
 }
 
+// A cache entry of the main chat lives an hour after its last read.
+const CACHE_LIFE_MS = 60 * 60 * 1000
+
+// The chat's typical answer per main step, in tokens (1,000 before the first answer).
+const typicalOut = (s: State) => (s.mainSteps ? s.mainOut / s.mainSteps : 1000)
+
 // The model this step runs on in the main chat: the class model for a sure AUTO class on the prompt's own turn,
 // only ever cheaper than the requested one, never a floor class, never on ultrathink.
 function stepModel(s: State, requested: string): string | undefined {
   if (s.cfg.mode === 'off' || s.headless || !s.routeModels || !s.switchTurn || s.skipEffortThisTurn || !s.lastClass) return undefined
-  return autoModel(s.lastClass, s.lastContext, requested, s.cfg)
+  return autoModel(s.lastClass, s.lastContext, requested, s.cfg, typicalOut(s))
 }
 
 // One Haiku label: Jev-style, a class with its confidence; an unsure answer routes nothing.
@@ -437,7 +445,22 @@ async function sessionCheck($: EngineInterface, s: State, trigger: string) {
   const a = adviseSwitch(runs.map(r => (r?.isAnswered ? parseSessionCheck(r.text) : undefined)), w.model, trigger, s.cfg, s.lastClass)
   if (!a || family(a.model) === family(w.model)) return
   s.quietUntil = s.turnCount + 10
-  await update($, advice, () => a)
+  if (a.action === 'down' && a.kind === 'compact') {
+    // the same work on a cheaper model: the router moves by itself only when the move pays back its cache rebuild
+    // (docs/PLAN-v3.md); a new topic keeps the offer, since starting fresh is the owner's call
+    const now = await $.clock.now()
+    const free = trigger === 'compact' || (s.prev.at > 0 && now - s.prev.at > CACHE_LIFE_MS)
+    const lives = await serial(s, () => run($, s.home, [livesQuery(s.session)])).then(r => livesOf(r, now)).catch(() => undefined)
+    const m = switchMath({ from: w.model, to: a.model, cache: s.lastContext, out: typicalOut(s), age: s.mainSteps, lives, free })
+    if (!m.pays) return
+    // routed + from: the no-router baseline stays on the model before the move, and the move is never undone by itself
+    await update($, chat, (c): ChatModel => ({ ...c, model: a.model, by: 'auto', routed: true, from: c.routed ? (c.from ?? null) : (c.model ?? w.model) }))
+    $.ui.toast(free
+      ? `router: ${pretty(a.model)} for the same work from the next request (the cache was rebuilt anyway, so the move costs almost nothing)`
+      : `router: ${pretty(a.model)} for the same work from the next request (re-reading the chat costs about ${money(m.rebuild)}, paid back in about ${Math.ceil(m.breakEven)} steps)`)
+    return
+  }
+  await update($, advice, () => ({ ...a, usd: rebuildUsd(a.model, s.lastContext) }))
 }
 
 // The offer's buttons. Compact first so the new model re-reads a short summary, not the whole chat; or start fresh.
@@ -448,6 +471,7 @@ async function switchChat($: EngineInterface, s: State, model: string, kind: 'co
       const r = await $.session.compact({ instructions: 'Keep the goal, the plan, open tasks, decisions made, file paths and the next step.' })
       if ('skip' in r && r.skip) { $.ui.toast(`router: compaction was skipped (${r.skip}); the model stays`); return }
       s.prev = NO_PREV // our own compaction skips our compact hook
+      s.lastContext = 0
     }
     if (kind === 'fresh') await $.command.run({ command: 'clear' })
     await update($, chat, (c): ChatModel => ({ ...c, model, by: 'you', routed: true, from: c.routed ? (c.from ?? null) : c.model }))
@@ -467,7 +491,7 @@ async function clearChat($: EngineInterface, s: State) {
   Object.assign(s, {
     session: '', label: '', lastLedgerTurn: '', stickyAsk: undefined, ask: undefined, seenPrompt: false, hasClassified: false,
     hadClass: false, lastClass: null, lastHintModel: null, switchTurn: false, sure: false, samples: [], turnCount: 0, quietUntil: 0, declined: null, unhappy: 0,
-    prev: NO_PREV, lastContext: 0, rerouted: 0, lastRerouted: '',
+    prev: NO_PREV, lastContext: 0, mainSteps: 0, mainOut: 0, rerouted: 0, lastRerouted: '',
   })
   for (const m of [s.briefs, s.siblings, s.agentEffort, s.agentType, s.agentAsked, s.agentSpend, s.briefRun, s.wastedRuns]) m.clear()
   s.savedAgents = NO_AGENTS // the old chat's memory stays in the store, for a resume of it
@@ -511,7 +535,7 @@ async function suggest($: EngineInterface, s: State, cls: string) {
   } else if ((isFirst || isShift) && rank(tier.model) > rank(current) && s.lastHintModel !== tier.model) {
     // upgrades only: one prompt's class can't judge a whole session, so it never proposes a cheaper model for the chat (owner, 2026-11-18)
     s.lastHintModel = tier.model
-    const h: Hint = { cls, model: tier.model, why: tier.why ?? '', current: family(current) }
+    const h: Hint = { cls, model: tier.model, why: tier.why ?? '', current: family(current), usd: rebuildUsd(tier.model, s.lastContext) }
     await update($, hint, () => h)
     await update($, isHidden, () => false)
   }
@@ -523,7 +547,7 @@ async function unhappyTip($: EngineInterface, s: State) {
   const up = stepUp(current)
   if (family(up) === family(current)) return
   s.lastHintModel = up
-  await update($, hint, (): Hint => ({ cls: 'this task', model: up, why: 'four answers missed', current: family(current) }))
+  await update($, hint, (): Hint => ({ cls: 'this task', model: up, why: 'four answers missed', current: family(current), usd: rebuildUsd(up, s.lastContext) }))
   await update($, isHidden, () => false)
 }
 
@@ -535,6 +559,7 @@ async function status($: EngineInterface, s: State): Promise<string> {
     `Routing: ${s.sources} · ${Object.keys(s.cfg.classes).length} classes · main ${s.cfg.main.model}/${s.cfg.main.effort}`,
     `Last class: ${v.lastClass ?? '-'} · last effort: ${v.lastEffort ?? '-'} (picker ${s.baseEffort || '-'}) · turns re-routed: ${s.rerouted} · agents routed: ${v.routedAgents}`,
     `This session (API-equivalent): spent ${money(t.actualUsd)}, about ${money(t.baselineUsd)} with no router → ${netWords(t)} (${money(savedUsd(t))} saved, ${money(t.extraUsd)} extra)`,
+    `Cache: ${Math.round(s.lastContext / 1000)}K tokens. Switching model re-reads it once: ${FAMILIES.map(m => `${pretty(m)} ${money(rebuildUsd(m, s.lastContext))}`).join(', ')}`,
   ].join('\n')
 }
 
@@ -613,7 +638,7 @@ function cells(s: State, f: Awaited<ReturnType<typeof facts>>): Array<Cell> {
     { label: 'This chat', value: netWords(f.chat), isExtra: isExtra(f.chat), sub: `${money(savedUsd(f.chat))} saved, ${money(f.chat.extraUsd)} extra` },
     { label: 'This project', value: netWords(f.proj), isExtra: isExtra(f.proj), sub: `${netPct(f.proj)}% ${isExtra(f.proj) ? 'more' : 'less'} since ${f.since}` },
     { label: 'Now', value: f.v.isOn ? f.now : 'Off', swatch, sub: !f.v.isOn ? `off ${f.where}` : f.chatMode === 'effort' ? 'effort only' : f.chatMode === 'models' ? 'models only' : picked },
-    { label: 'Spent this chat', value: money(f.cost ?? f.chat.actualUsd), sub: f.hit === undefined ? 'cache hit not known yet' : `cache hit ${f.hit}%` },
+    { label: 'Spent this chat', value: money(f.cost ?? f.chat.actualUsd), sub: f.hit === undefined ? 'cache hit not known yet' : `cache hit ${f.hit}% · ${Math.round(s.lastContext / 1000)}K cached` },
   ]
 }
 
@@ -701,7 +726,7 @@ export const register: Register = on => {
   const s: State = {
     cfg: BUILTIN, home: '', root: '', project: 'unknown', sources: 'built-in only', lastClass: null, lastHintModel: null,
     hasClassified: false, hadClass: false, skipEffortThisTurn: false, headless: false, agentEffort: new Map(), defs: new Map(),
-    prev: NO_PREV, lastContext: 0, cleanChanges: 0, baseEffort: '', rerouted: 0, lastRerouted: '', agentType: new Map(), agentAsked: new Map(), agentSpend: new Map(), briefRun: new Map(), wastedRuns: new Set(), paneOpened: false,
+    prev: NO_PREV, lastContext: 0, mainSteps: 0, mainOut: 0, cleanChanges: 0, baseEffort: '', rerouted: 0, lastRerouted: '', agentType: new Map(), agentAsked: new Map(), agentSpend: new Map(), briefRun: new Map(), wastedRuns: new Set(), paneOpened: false,
     session: 'session', label: '', lastLedgerTurn: '', pending: [], scheduled: false, warned: false, totals: { proj: EMPTY_TALLY, since: undefined }, routeModels: true, sure: false, switchTurn: false,
     ask: undefined, stickyAsk: undefined, v: undefined, seenPrompt: false, samples: [], turnCount: 0, quietUntil: 0, declined: null, switching: false,
     briefs: new Map(), siblings: new Map(), queue: Promise.resolve(), savedAgents: NO_AGENTS, unhappy: 0,
@@ -757,6 +782,7 @@ export const register: Register = on => {
     const r = await go(e)
     if (e.agentId || e.trigger === 'precompute' || ('skip' in r && r.skip)) return r
     s.prev = NO_PREV // the cache starts over: the next steps say nothing about effort
+    s.lastContext = 0 // the old size is gone; the next step tells the new one (and a moved step gets no warm-cache credit)
     if (!s.switching) $.clock.after(500, async () => { await sessionCheck($, s, 'compact') })
     return r
   }))
@@ -858,7 +884,9 @@ export const register: Register = on => {
     s.turnCount++
     if (s.turnCount % 20 === 0) $.clock.after(500, async () => { await sessionCheck($, s, 'periodic') })
     const chosen = await read($, chat)
-    const strict = chosen.by === 'auto' && Boolean(chosen.model) // the router's own cheap pick: re-check, and doubt means back to the default
+    // the router's own first-prompt pick: re-check, and doubt means back to the default. A mid-chat move (routed) paid its
+    // rebuild already: a harder task there gets the model tip, never an automatic move back up.
+    const strict = chosen.by === 'auto' && Boolean(chosen.model) && !chosen.routed
     const [found, felt] = await Promise.all([
       classify($, s, e.text, isFirst && !asked?.model && s.routeModels, strict),
       isFirst || midTurn || !(s.cfg.autoEffort || s.routeModels) ? undefined : mood($, s, e.text),
@@ -874,7 +902,7 @@ export const register: Register = on => {
     if (isFirst && !asked?.model && s.routeModels && !chosen.by) {
       const m = firstModel(s.samples, await $.session.model(), s.cfg)
       if (m) await update($, chat, (c): ChatModel => ({ ...c, model: m, by: 'auto' }))
-    } else if (chosen.by === 'auto' && chosen.model && cls !== undefined && (cls === null || rank(s.cfg.classes[cls]?.model ?? s.cfg.main.model) > rank(chosen.model))) {
+    } else if (strict && cls !== undefined && (cls === null || rank(s.cfg.classes[cls]?.model ?? s.cfg.main.model) > rank(chosen.model!))) {
       // a new task the router's own pick may be too weak for (or one it can't place): back to the default; the chat is still short
       await update($, chat, (c): ChatModel => ({ ...c, model: null, by: null }))
     }
@@ -986,7 +1014,9 @@ export const register: Register = on => {
       effort: (ask?.effort ?? picked?.effort ?? e.effort) as string | undefined,
     }
     const longCache = e.agentId === undefined
-    const baseUsd = s.wastedRuns.has(e.agentId ?? "") ? 0 : withoutRouter(noRouter, { model: u.model, effort: effort as string | undefined }, u, e.agentId ? 0 : s.lastContext, longCache)
+    // the asked model's warm cache: none for a subagent, or after an hour's pause (it lapsed); a compaction zeroes lastContext
+    const lapsed = s.prev.at > 0 && (await $.clock.now()) - s.prev.at > CACHE_LIFE_MS
+    const baseUsd = s.wastedRuns.has(e.agentId ?? "") ? 0 : withoutRouter(noRouter, { model: u.model, effort: effort as string | undefined }, u, e.agentId || lapsed ? 0 : s.lastContext, longCache)
     await record($, s, u.model, u, who, baseUsd, e.agentId === undefined ? e.turnId : undefined, longCache)
     if (e.agentId) { // a run's totals, so a re-spawn of the same brief can take back the first run's saving
       const a = s.agentSpend.get(e.agentId) ?? { usd: 0, base: 0, extra: 0, model: family(u.model) }
@@ -1011,6 +1041,8 @@ export const register: Register = on => {
     if (e.agentId === undefined) {
       const now = await $.clock.now()
       s.lastContext = u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens
+      s.mainSteps++
+      s.mainOut += u.output_tokens
       const probeFile = await $.env.get('ROUTER_PROBE_LOG')
       if (probeFile) await probeLog($, probeFile, { at: now, index: e.index, effort: sent, model: u.model, read: u.cache_read_input_tokens, write: u.cache_creation_input_tokens, input: u.input_tokens, output: u.output_tokens })
       // another model has its own prompt cache: guardCache compares only steps on the same model
@@ -1076,7 +1108,7 @@ export const register: Register = on => {
     const offerRow = offer
       ? (
           <Box key="router-offer" flexDirection="row" alignItems="center" gap={2} width={e.props.bodyColumns}>
-            <Text color="warning" wrap="wrap">{offer.action === 'up' ? `The work ahead looks harder: ${pretty(offer.model)} fits it better.` : `The work ahead looks lighter: ${pretty(offer.model)} can do it at the same quality.`}</Text>
+            <Text color="warning" wrap="wrap">{offer.action === 'up' ? `The work ahead looks harder: ${pretty(offer.model)} fits it better.` : `The work ahead looks lighter: ${pretty(offer.model)} can do it at the same quality.`}{switchCost(offer.usd, isNew)}</Text>
             <Button key="router-offer-compact" {...(offer.kind === 'compact' ? { variant: 'primary' as const } : { plain: true as const })} label={`Compact and switch to ${pretty(offer.model)}`} onPress={() => switchChat($, s, offer.model, 'compact')} />
             <Button key="router-offer-fresh" {...(offer.kind === 'fresh' ? { variant: 'primary' as const } : { plain: true as const })} label={`Fresh start on ${pretty(offer.model)}`} onPress={() => switchChat($, s, offer.model, 'fresh')} />
             <Button key="router-offer-no" plain dimColor label="Not now" onPress={() => decline($, s)} />
@@ -1085,7 +1117,7 @@ export const register: Register = on => {
       : isHint && tip
         ? (
             <Box key="router-offer" flexDirection="row" alignItems="center" gap={2} width={e.props.bodyColumns}>
-              <Text color="warning" wrap="wrap">{pretty(tip.model)} fits {tip.cls} better.</Text>
+              <Text color="warning" wrap="wrap">{pretty(tip.model)} fits {tip.cls} better.{switchCost(tip.usd, isNew)}</Text>
               <Button key="router-tip-switch" variant="primary" label={isNew ? `Switch to ${pretty(tip.model)}` : `Compact and switch to ${pretty(tip.model)}`} onPress={() => switchChat($, s, tip.model, isNew ? 'now' : 'compact')} />
               <Button key="router-hide" plain dimColor label="Dismiss" onPress={() => update($, isHidden, () => true)} />
             </Box>

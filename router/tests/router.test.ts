@@ -1,10 +1,10 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import {
-  BUILTIN, CLASS_LABELS, adviseSwitch, effortRank, rank, agentTier, autoModel, needsSecondSample, briefHash, briefTier, stepUp, classifyByRules, costUsd, firstModel, isCacheBreak, isContinuation, merge, parseJev, parseSessionCheck, parseMood, raiseEffort, moodPrompt, longRun, readLabel, spawnPick, turnEffort, withoutRouter,
+  BUILTIN, CLASS_LABELS, adviseSwitch, effortRank, rank, agentTier, autoModel, needsSecondSample, briefHash, briefTier, stepUp, classifyByRules, costUsd, firstModel, isCacheBreak, isContinuation, merge, parseJev, parseSessionCheck, parseMood, raiseEffort, moodPrompt, longRun, readLabel, spawnPick, turnEffort, withoutRouter, rebuildUsd, stepUsd, switchMath, remainingSteps, quickPays, type Life, sessionCheckSystem,
 } from '../hooks/policy'
-import { boardHtml, cacheStrength, cardLayout, hitPct, svgSize, netWords, savedUsd, shade, statsSvg, withMode } from '../hooks/view'
-import { RUNNER, type Step, labelOf } from '../hooks/db'
+import { boardHtml, cacheStrength, cardLayout, hitPct, svgSize, switchCost, netWords, savedUsd, shade, statsSvg, withMode } from '../hooks/view'
+import { RUNNER, type Step, labelOf, livesOf } from '../hooks/db'
 import { shield } from '../hooks/guard'
 
 test("the router's own error never blocks the person's work: the event passes once, one warning", async () => {
@@ -291,7 +291,7 @@ async function end($: any) {
   await $.session.end({ reason: 'other', sessionId: 'sess-1', resume: { sessionId: 'sess-1' } })
 }
 
-function wire(on: any, opts: { batches?: Array<Array<Step>>; runFails?: boolean; store?: Map<string, unknown>; haiku?: string | ((e: { system?: string }) => string); tokens?: number; model?: string; messages?: Array<unknown>; ownClock?: boolean; sent: Array<unknown>; asked?: { n: number }; lines?: Array<string | undefined>; opened?: Array<unknown>; surfaces?: Array<string>; files?: Record<string, string>; models?: Array<string>; read?: number; write?: number }) {
+function wire(on: any, opts: { batches?: Array<Array<Step>>; runFails?: boolean; store?: Map<string, unknown>; haiku?: string | ((e: { system?: string }) => string); tokens?: number; model?: string; messages?: Array<unknown>; ownClock?: boolean; sent: Array<unknown>; asked?: { n: number }; lines?: Array<string | undefined>; opened?: Array<unknown>; surfaces?: Array<string>; files?: Record<string, string>; models?: Array<string>; read?: number; write?: number; select?: (sql: string) => Array<unknown> }) {
   on('env.get', (_: unknown, e: { name: string }) => ({ value: e.name === 'USERPROFILE' ? '/home' : undefined }))
   on('session.root', () => ({ value: '/proj' }))
   on('session.id', () => ({ value: 'sess-1' }))
@@ -327,7 +327,7 @@ function wire(on: any, opts: { batches?: Array<Array<Step>>; runFails?: boolean;
     if (opts.runFails) return { value: { exitCode: 1, stdout: '', stderr: 'no node', isStdoutTruncated: false, isStderrTruncated: false } }
     const steps = (JSON.parse(e.init?.stdin ?? '{}').steps ?? []) as Array<Step>
     opts.batches?.push(steps)
-    return { value: { exitCode: 0, stdout: JSON.stringify(steps.map(x => (x.all ? [] : null))), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    return { value: { exitCode: 0, stdout: JSON.stringify(steps.map(x => (x.all ? (opts.select?.(x.sql) ?? []) : null))), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('command.register', () => ({ value: { command: 'route' } }))
   on('session.start', (_: unknown, e: { cwd: string }) => ({ cwd: e.cwd }))
@@ -1128,51 +1128,214 @@ test('session check: up on 2 of 3, down only on 3 sure of 3 and no floor at hand
   expect(adviseSwitch([v('haiku 0.9 same'), v('haiku 0.95 same'), v('haiku 0.9 same')], sonnet, 'compact', CFG)?.model).toBe('haiku')
 })
 
-test('after a compaction the band offers a lighter model; the button compacts and switches, Not now stays quiet', async (engine, on) => {
+test('cache math: rebuild cost, break-even and the survival curve decide a switch down (docs/PLAN-v3.md)', async () => {
+  const opus = 'claude-opus-5-5', sonnet = 'claude-sonnet-5-5', haiku = 'claude-haiku-5-5'
+  const c = (x: number) => Math.round(x * 1000) // tenths of a cent
+  expect(c(rebuildUsd(sonnet, 100_000))).toBe(400) // 100K at Sonnet's 1-hour write, $4/M
+  expect(c(stepUsd(opus, 100_000, 1_000))).toBe(40) // read $0.02 + answer $0.02
+  // Opus to Sonnet at 100K: $0.40 once, $0.02 saved a step -> 20 steps to break even
+  const base = { from: opus, to: sonnet, cache: 100_000, out: 1_000 }
+  const m = switchMath({ ...base, age: 19 })
+  expect(Math.round(m.breakEven)).toBe(20)
+  expect(m.pays).toBe(false) // no history: only once the chat has run break-even steps
+  expect(switchMath({ ...base, age: 20 }).pays).toBe(true)
+  expect(switchMath({ ...base, age: 1, free: true }).pays).toBe(true) // cold or just-compacted cache: staying would write it too
+  expect(switchMath({ ...base, age: 1, free: true }).rebuild).toBe(0)
+  expect(switchMath({ ...base, from: sonnet, to: opus, age: 99 }).pays).toBe(false) // never "down" to a dearer model
+  // past chats: 40 ended after 1..40 steps. At age 5, 75% of chats like it run at least 9 more steps
+  const lives: Array<Life> = Array.from({ length: 40 }, (_, i) => ({ steps: i + 1, open: false }))
+  expect(remainingSteps(lives, 5)).toBe(9)
+  expect(remainingSteps(lives, 25)).toBe(undefined) // only 16 past chats reached 25 steps: too little history
+  expect(remainingSteps([...lives, ...Array.from({ length: 20 }, () => ({ steps: 40, open: true }))], 39)).toBe(1) // most outlived every ended chat: at least to the longest
+  expect(remainingSteps(Array.from({ length: 30 }, () => ({ steps: 50, open: true })), 50)).toBe(undefined) // none ahead to judge by
+  const long: Array<Life> = Array.from({ length: 40 }, (_, i) => ({ steps: i < 20 ? 2 : 200, open: i >= 30 }))
+  expect(remainingSteps(long, 10)).toBe(190) // past the short ones, chats this old run on to 200
+  expect(switchMath({ ...base, age: 10, lives: long }).pays).toBe(true) // 190 ahead beats 20
+  expect(switchMath({ ...base, age: 3, lives }).pays).toBe(false) // short chats: 10 ahead, under 20
+  // the ledger's chats: one used within the hour may go on
+  expect(livesOf([[{ steps: 12, last: 0 }, { steps: 7, last: 9_000_000 }, { steps: 0, last: 0 }]], 10_000_000)).toEqual([{ steps: 12, open: false }, { steps: 7, open: true }])
+  // quick turns on Haiku: pay on a mid-size Opus chat, lose past Haiku's 100K price step
+  expect(quickPays(haiku, opus, 80_000, 1_000)).toBe(true)
+  expect(quickPays(haiku, opus, 130_000, 1_000)).toBe(false)
+  expect(autoModel('mechanical', 130_000, opus, CFG)).toBe(undefined)
+  expect(switchCost(1.6, false)).toMatch(/about \$1\.60 now/)
+  expect(switchCost(1.6, true)).toBe('') // a new chat has no cache to re-read
+})
+
+test('after a compaction the same work moves to a lighter model by itself: the cache was just rewritten, so the move costs almost nothing; Undo goes back', async (engine, on) => {
   const $ = engine as any // the test engine fills origin, wait and the other session-set fields
   const models: Array<string> = []
-  wire(on, { sent: [], models, haiku: 'haiku 0.95 same', tokens: 40_000, ownClock: true })
+  const toasts: Array<string> = []
+  wire(on, { sent: [], models, haiku: 'haiku 0.95 same', tokens: 40_000, write: 40_000, ownClock: true })
   const clock = mock.clock(on, { now: 1_000 })
-  let compactions = 0
-  on('session.compact', () => { compactions++; return { messages: [{ role: 'user', text: 'summary', toolUses: [] }] } })
+  on('ui.toast', (_: unknown, e: { text: string }) => { toasts.push(e.text); return { value: undefined } })
+  on('session.compact', () => ({ messages: [{ role: 'user', text: 'summary', toolUses: [] }] }))
+  on('session.messages', () => ({ value: [{ role: 'user', text: 'set up the release pipeline for the app', toolUses: [] }, { role: 'user', text: 'now just fix the typo in the README title', toolUses: [] }] }))
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await step($, 'medium') // 40K tokens cached on Opus
+  await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'summary', toolUses: [] }] })
+  await clock.advance(600)
+  expect(await band.find({ key: 'router-offer-compact' })).toBeFalsy() // no offer to press: the router moved
+  expect(await band.find({ key: 'router-chat-undo' })).toBeTruthy()
+  expect(toasts.some(t => /Sonnet for the same work/.test(t))).toBe(true) // one family down at a time
+  models.length = 0
+  await step($, 'medium')
+  expect(models).toEqual(['sonnet'])
+  await band.press({ key: 'router-chat-undo' })
+  await step($, 'medium')
+  expect(models).toEqual(['sonnet', 'claude-opus-5-5'])
+  await band.unmount()
+})
+
+test('lighter work in mid-chat stays put when the cache rebuild would not pay back, with no history of past chats', async (engine, on) => {
+  const $ = engine as any
+  const models: Array<string> = []
+  wire(on, { sent: [], models, haiku: 'haiku 0.95 same', tokens: 40_000, write: 40_000, ownClock: true })
+  const clock = mock.clock(on, { now: 1_000 })
   on('tool.call', () => ({ result: { content: 'ok' } }))
   on('session.messages', () => ({ value: [{ role: 'user', text: 'set up the release pipeline for the app', toolUses: [] }, { role: 'user', text: 'now just fix the typo in the README title', toolUses: [] }] }))
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
   const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
-
-  await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'summary', toolUses: [] }] })
+  await step($, 'medium') // one step: far fewer than break-even
+  await $.tool.call({ tool: 'ExitPlanMode', plan: 'ship it' })
   await clock.advance(600)
-  expect(await band.find({ type: 'Text', text: /looks lighter: Sonnet can do it/ })).toBeTruthy() // one family down at a time
-  await band.press({ key: 'router-offer-no' })
-  expect(await band.find({ key: 'router-offer-compact' })).toBeFalsy()
-  await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'summary', toolUses: [] }] }) // the same trigger after "Not now": quiet
-  await clock.advance(600)
-  expect(await band.find({ key: 'router-offer-compact' })).toBeFalsy()
-
-  await $.tool.call({ tool: 'ExitPlanMode', plan: 'ship it' }) // a different trigger, but within 10 turns of the last offer: quiet
-  await clock.advance(600)
-  expect(await band.find({ key: 'router-offer-compact' })).toBeFalsy()
+  expect(await band.find({ key: 'router-chat-undo' })).toBeFalsy()
+  expect(await band.find({ key: 'router-offer-compact' })).toBeFalsy() // and no offer either
   await band.unmount()
-  expect(compactions).toBe(2)
 })
 
-test('the offer button compacts, then the chat runs on the offered model', async (engine, on) => {
+test('a move at a free switch point books no extra spend: the old model would have written the chat too (review 2026-11-25)', async (engine, on) => {
+  const $ = engine as any
+  const models: Array<string> = []
+  const batches: Array<Array<Step>> = []
+  wire(on, { sent: [], models, batches, files: { '/home/.claude/routing.json': ROUTING }, haiku: (e: { system?: string }) => (e.system === sessionCheckSystem ? 'haiku 0.95 same' : 'engineering 0.95'), tokens: 40_000, write: 40_000, ownClock: true })
+  const clock = mock.clock(on, { now: 1_000 })
+  on('ui.toast', () => ({ value: undefined }))
+  on('session.compact', () => ({ messages: [{ role: 'user', text: 'summary', toolUses: [] }] }))
+  on('session.messages', () => ({ value: [{ role: 'user', text: 'set up the release pipeline for the app', toolUses: [] }, { role: 'user', text: 'now just fix the typo in the README title', toolUses: [] }] }))
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await step($, 'medium')
+  await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'summary', toolUses: [] }] })
+  await clock.advance(600)
+  models.length = 0
+  await step($, 'medium') // the first step on Sonnet, right after compaction
+  expect(models).toEqual(['sonnet'])
+  await band.unmount()
+  await end($)
+  // the move happened where Opus's cache was rebuilt anyway: no warm-cache credit, so no extra spend booked
+  const moved = rows(batches, 'usage').filter(r => r[2] === 'main' && String(r[3]).includes('sonnet'))
+  expect(moved.length).toBe(1)
+  expect(Number(moved[0]![7])).toBe(0)
+})
+
+test('after a move down in mid-chat, a harder prompt keeps the cheaper model and shows the tip: never an automatic move back up (review 2026-11-25)', async (engine, on) => {
+  const $ = engine as any
+  const models: Array<string> = []
+  wire(on, { sent: [], models, haiku: (e: { system?: string }) => (e.system === sessionCheckSystem ? 'haiku 0.95 same' : 'engineering 0.95'), tokens: 40_000, write: 40_000, ownClock: true })
+  const clock = mock.clock(on, { now: 1_000 })
+  on('ui.toast', () => ({ value: undefined }))
+  on('session.compact', () => ({ messages: [{ role: 'user', text: 'summary', toolUses: [] }] }))
+  on('session.messages', () => ({ value: [{ role: 'user', text: 'set up the release pipeline for the app', toolUses: [] }, { role: 'user', text: 'now just fix the typo in the README title', toolUses: [] }] }))
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await step($, 'medium')
+  await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'summary', toolUses: [] }] })
+  await clock.advance(600)
+  models.length = 0
+  await $.prompt.submit({ text: 'now design the next part of the system in detail for me' })
+  await step($, 'medium')
+  expect(models).toEqual(['sonnet'])
+  expect(await band.find({ key: 'router-tip-switch' })).toBeTruthy() // Opus is offered, with its cost
+  await band.unmount()
+})
+
+test("an hour's pause is a free switch point: lighter same work moves on the next check", async (engine, on) => {
+  const $ = engine as any
+  const batches: Array<Array<Step>> = []
+  wire(on, { sent: [], batches, files: { '/home/.claude/routing.json': ROUTING }, haiku: 'haiku 0.95 same', tokens: 40_000, write: 40_000, ownClock: true })
+  const clock = mock.clock(on, { now: 1_000 })
+  on('ui.toast', () => ({ value: undefined }))
+  on('tool.call', () => ({ result: { content: 'ok' } }))
+  on('session.messages', () => ({ value: [{ role: 'user', text: 'set up the release pipeline for the app', toolUses: [] }, { role: 'user', text: 'now just fix the typo in the README title', toolUses: [] }] }))
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await step($, 'medium')
+  await clock.advance(3_700_000)
+  await $.tool.call({ tool: 'ExitPlanMode', plan: 'ship it' })
+  await clock.advance(600)
+  expect(await band.find({ key: 'router-chat-undo' })).toBeTruthy()
+  await step($, 'medium') // the first step on the lighter model writes the whole chat again
+  await band.unmount()
+  await end($)
+  // Opus's cache lapsed during the pause, so without the router it would have written the chat too: no extra spend
+  const moved = rows(batches, 'usage').filter(r => r[2] === 'main' && String(r[3]).includes('sonnet'))
+  expect(moved.length).toBe(1)
+  expect(Number(moved[0]![7])).toBe(0)
+})
+
+test('with enough past chats that ran long, lighter same work moves early in a chat: the curve says it will pay back', async (engine, on) => {
+  const $ = engine as any
+  const past = Array.from({ length: 25 }, () => ({ steps: 500, last: 0 }))
+  wire(on, { sent: [], haiku: 'haiku 0.95 same', tokens: 40_000, write: 40_000, ownClock: true, files: { '/home/.claude/routing.json': ROUTING }, select: sql => (sql.includes("u.who = 'main'") ? past : []) })
+  const clock = mock.clock(on, { now: 1_000 })
+  on('ui.toast', () => ({ value: undefined }))
+  on('tool.call', () => ({ result: { content: 'ok' } }))
+  on('session.messages', () => ({ value: [{ role: 'user', text: 'set up the release pipeline for the app', toolUses: [] }, { role: 'user', text: 'now just fix the typo in the README title', toolUses: [] }] }))
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await step($, 'medium') // age 1: the classic rule alone would wait ~40 steps
+  await $.tool.call({ tool: 'ExitPlanMode', plan: 'ship it' })
+  await clock.advance(600)
+  expect(await band.find({ key: 'router-chat-undo' })).toBeTruthy()
+  await band.unmount()
+})
+
+test('lighter work on a new topic keeps the offer (starting fresh is your call); Not now keeps that trigger quiet', async (engine, on) => {
+  const $ = engine as any
+  wire(on, { sent: [], haiku: 'haiku 0.95 new', tokens: 40_000, write: 40_000, ownClock: true })
+  const clock = mock.clock(on, { now: 1_000 })
+  on('session.compact', () => ({ messages: [{ role: 'user', text: 'summary', toolUses: [] }] }))
+  on('session.messages', () => ({ value: [{ role: 'user', text: 'set up the release pipeline for the app', toolUses: [] }, { role: 'user', text: 'unrelated: what is a good name for a cat', toolUses: [] }] }))
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await step($, 'medium')
+  await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'summary', toolUses: [] }] })
+  await clock.advance(600)
+  expect(await band.find({ type: 'Text', text: /looks lighter: Sonnet can do it/ })).toBeTruthy()
+  expect(await band.find({ key: 'router-chat-undo' })).toBeFalsy()
+  await band.press({ key: 'router-offer-no' })
+  expect(await band.find({ key: 'router-offer-fresh' })).toBeFalsy()
+  await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'summary', toolUses: [] }] })
+  await clock.advance(600)
+  expect(await band.find({ key: 'router-offer-fresh' })).toBeFalsy()
+  await band.unmount()
+})
+
+test('the offer button compacts, then the chat runs on the offered model; the offer says what the switch costs', async (engine, on) => {
   const $ = engine as any // the test engine fills origin, wait and the other session-set fields
   const models: Array<string> = []
-  wire(on, { sent: [], models, haiku: 'sonnet 0.9 same', tokens: 40_000, ownClock: true })
+  wire(on, { sent: [], models, haiku: 'fable 0.9 same', tokens: 40_000, write: 100_000, ownClock: true })
   const clock = mock.clock(on, { now: 1_000 })
   let compactions = 0
   on('session.compact', () => { compactions++; return { messages: [{ role: 'user', text: 'summary', toolUses: [] }] } })
+  on('tool.call', () => ({ result: { content: 'ok' } }))
   on('session.messages', () => ({ value: [{ role: 'user', text: 'set up the release pipeline for the app', toolUses: [] }, { role: 'user', text: 'now write the changelog entries', toolUses: [] }] }))
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
   const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'summary', toolUses: [] }] })
+  await step($, 'medium') // 100K tokens cached on Opus: Fable writes them at $16/M, about $1.60
+  const said = await $.command.run({ command: 'route', args: '' })
+  expect(said.text).toMatch(/Cache: 100K tokens\. Switching model re-reads it once: .*Sonnet \$0\.40.*Fable \$1\.60/)
+  await $.tool.call({ tool: 'ExitPlanMode', plan: 'ship it' })
   await clock.advance(600)
+  expect(await band.find({ type: 'Text', text: /about \$1\.60 now, less after compacting/ })).toBeTruthy()
+  models.length = 0
   await band.press({ key: 'router-offer-compact' })
-  expect(compactions).toBe(2) // the trigger's and the button's
+  expect(compactions).toBe(1) // the button's
   expect(await band.find({ key: 'router-offer-compact' })).toBeFalsy()
   await step($, 'medium')
-  expect(models).toEqual(['sonnet'])
+  expect(models).toEqual(['fable'])
   await band.unmount()
 })
 

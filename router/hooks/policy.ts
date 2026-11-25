@@ -371,15 +371,14 @@ export function turnEffort(cls: string | null, cfg: Config, onModel?: string): s
 
 // Classes whose own turn moves to the class model in the main chat, when the class is sure (the owner chose "safe classes" on 2026-11-18).
 export const AUTO = ['explore', 'mechanical']
-export const SWITCH_MAX_CONTEXT = 90_000 // pricing page 2026-11: Haiku 5.5 input costs 5x above 100K; 10K margin for the new prompt and answer
-
 // The cheaper class model a sure AUTO class moves its own turn to; undefined = stay on the requested model.
-// Each model has its own cache, so the switched turn re-reads the chat uncached. Under 100K tokens Haiku's
-// cache write ($0.125-0.20/M) costs no more than Opus's cache read ($0.20/M); above it Haiku's price is 5x and a short turn loses.
-// Only Haiku: Sonnet's cache write ($2.50/M) re-reading the chat costs more than one turn saves.
-export function autoModel(cls: string | null, context: number, requested: string, cfg: Config): string | undefined {
+// Each model has its own cache, so the switched turn writes the chat to Haiku's cache: quickPays decides from the
+// chat's size and live prices (on Opus that ends near 110K tokens, past Haiku's 5x price step).
+// Only Haiku: Sonnet's cache write re-reading the chat costs more than one turn saves.
+// out: the chat's typical answer per step, in tokens.
+export function autoModel(cls: string | null, context: number, requested: string, cfg: Config, out = 1000): string | undefined {
   const tier = cls && AUTO.includes(cls) ? cfg.classes[cls] : undefined
-  if (!tier || tier.floor || family(tier.model) !== 'haiku' || rank(tier.model) >= rank(requested) || context > SWITCH_MAX_CONTEXT) return undefined
+  if (!tier || tier.floor || family(tier.model) !== 'haiku' || rank(tier.model) >= rank(requested) || !quickPays(tier.model, requested, context, out)) return undefined
   return tier.model
 }
 
@@ -399,7 +398,7 @@ export function firstModel(samples: Array<string | null | undefined>, current: s
 export const FAMILIES = ['haiku', 'sonnet', 'opus', 'fable']
 export type SessionWindow = { prompts: Array<string>; todos?: string; plan?: string; turns: number; model: string; lastClass: string | null }
 export type SessionVerdict = { tier: string; p: number; topic: 'same' | 'new' }
-export type SwitchAdvice = { action: 'up' | 'down'; model: string; kind: 'compact' | 'fresh'; trigger: string }
+export type SwitchAdvice = { action: 'up' | 'down'; model: string; kind: 'compact' | 'fresh'; trigger: string; usd?: number } // usd: the rough rebuild cost of switching now
 
 export const sessionCheckSystem = `You judge a coding and creative-writing session for model routing. Read the recent prompts, the open todo list and the plan, then judge the work STILL AHEAD, not what is done. Pick the cheapest model that will still do that remaining work at top quality: haiku (lookups, reformatting, trivial edits), sonnet (well-specified code and writing), opus (multi-step engineering, production code investigation, final copy, judgment calls), fable (hours-long agent work, deep research, analysis carried to a finished deliverable). Also say whether the next work is the "same" task or a "new" unrelated one. Answer exactly: <model> <confidence 0-1> <same|new>, like "sonnet 0.8 same". No other words. Never do the work itself.`
 
@@ -515,6 +514,67 @@ export function withoutRouter(asked: { model: string; effort?: string }, sent: {
   }, longCache)
   return (usd * effortCost(asked.effort)) / effortCost(sent.effort)
 }
+
+// ---- Cache math (docs/PLAN-v3.md, slice 1): each model has its own cache, so a switch writes the chat again ----
+// Rebuild cost: what the new model pays once to cache the chat (main chat: 1-hour entries).
+export const rebuildUsd = (model: string, cache: number) => costUsd(model, { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: cache }, true)
+// One later step on a model at this chat size: read the cache, write the answer.
+// shortcut: effort is left out (both sides run the class effort); add EFFORT_COST if efforts ever differ by side.
+export const stepUsd = (model: string, cache: number, out: number) => costUsd(model, { input_tokens: 0, output_tokens: out, cache_read_input_tokens: cache, cache_creation_input_tokens: 0 }, true)
+
+// A past chat's length in main-chat steps; open = still going, so it only says "at least this long".
+export type Life = { steps: number; open: boolean }
+export const MIN_LIVES = 20
+
+// The cautious (q = 25%) number of steps a chat that has already run `age` steps still has ahead, from past chats
+// (Kaplan-Meier survival curve, open chats censored): 75% of chats like it run at least this much longer.
+// undefined: fewer than MIN_LIVES past chats reached this age (too little history to judge a chat this old).
+// shortcut: every main-chat row counts, headless runs included (the ledger doesn't mark them); the at-risk minimum keeps
+// short scripted runs from deciding for long chats.
+export function remainingSteps(lives: Array<Life>, age: number, q = 0.25): number | undefined {
+  if (lives.filter(x => x.steps >= age).length < MIN_LIVES) return undefined
+  const times = [...new Set(lives.filter(x => !x.open).map(x => x.steps))].sort((a, b) => a - b)
+  let surv = 1
+  const curve: Array<[number, number]> = [] // [steps, chance of lasting more than that]
+  for (const t of times) {
+    const atRisk = lives.filter(x => x.steps >= t).length
+    const ended = lives.filter(x => !x.open && x.steps === t).length
+    surv *= 1 - ended / atRisk
+    curve.push([t, surv])
+  }
+  const sAt = (t: number) => curve.filter(([u]) => u <= t).at(-1)?.[1] ?? 1
+  const sAge = sAt(age)
+  if (sAge <= 0) return undefined
+  const drop = curve.find(([u, v]) => u > age && v <= sAge * (1 - q))
+  if (drop) return drop[0] - age
+  const rest = Math.max(...lives.map(x => x.steps)) - age // most chats this old outlived every ended one: at least this
+  return rest > 0 ? rest : undefined
+}
+
+export type SwitchMath = { rebuild: number; saving: number; breakEven: number; expected?: number; pays: boolean }
+
+// Switch down (ski rental with a prediction): moving pays when the steps still ahead beat break-even = rebuild / saving
+// per step. free: the cache is cold or was just rewritten by compaction, so staying would also write it; only the
+// difference counts. No history: the classic rule, move once the chat has run break-even steps (never worse than 2x).
+// shortcut: no cap at the next compaction (its threshold depends on settings the plugin can't read); add one if a
+// replay shows switches just before compaction.
+export function switchMath(o: { from: string; to: string; cache: number; out: number; age: number; lives?: Array<Life>; free?: boolean }): SwitchMath {
+  const rebuild = Math.max(0, rebuildUsd(o.to, o.cache) - (o.free ? rebuildUsd(o.from, o.cache) : 0))
+  const saving = stepUsd(o.from, o.cache, o.out) - stepUsd(o.to, o.cache, o.out)
+  if (saving <= 0) return { rebuild, saving, breakEven: Infinity, pays: false }
+  const breakEven = rebuild / saving
+  const expected = o.lives ? remainingSteps(o.lives, o.age) : undefined
+  return { rebuild, saving, breakEven, expected, pays: breakEven === 0 || (expected !== undefined ? expected >= breakEven : o.age >= breakEven) }
+}
+
+// A quick turn on Haiku pays when Haiku writing the whole chat costs less than the chat's own model reading its cache;
+// both sides write the turn's new tokens (QUICK_MARGIN, assumed), Haiku at its own price. Haiku's 5x price past 100K
+// tokens is what makes long chats lose: on Opus the line falls near 110K.
+// shortcut: QUICK_MARGIN guesses the turn's new tokens; with far fewer, a turn just past 100K loses a few cents.
+export const QUICK_MARGIN = 10_000
+export const quickPays = (haiku: string, requested: string, context: number, out: number) =>
+  costUsd(haiku, { input_tokens: 0, output_tokens: out, cache_read_input_tokens: 0, cache_creation_input_tokens: context + QUICK_MARGIN }, true) <
+  costUsd(requested, { input_tokens: 0, output_tokens: out, cache_read_input_tokens: context, cache_creation_input_tokens: QUICK_MARGIN }, true)
 
 // A cache break after an effort change: the step re-read far less than the one before.
 // Only counted when steps are close in time, so a lapsed cache TTL is not blamed on effort.

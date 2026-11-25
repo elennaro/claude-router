@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { BOARD, IMPORTED, bucketsOf, dayRow, isAlreadyImported, paths, run, sessionRow, spawnRow, totalsOf, totalsQuery, usageRow } from '../hooks/db.ts'
+import { BOARD, IMPORTED, bucketsOf, dayRow, isAlreadyImported, paths, run, sessionRow, spawnRow, totalsOf, totalsQuery, usageRow, livesOf, livesQuery } from '../hooks/db.ts'
 
 const home = mkdtempSync(join(tmpdir(), 'router-db-'))
 const old = mkdtempSync(join(tmpdir(), 'router-db-0.4-'))
@@ -46,6 +46,11 @@ try {
     },
     agents: { Explore: { runs: 2, routed: 1, respawned: 2, usd: 0.1, base: 0.4, extra: 0 } },
   })
+
+  // past chats' lengths: main steps summed across models, last activity, never the asking chat
+  const lives = livesOf(await run($, home, [livesQuery('s2')]), 300 + 3_599_000)
+  assert.deepEqual(lives, [{ steps: 2, open: true }]) // s1: 2 main steps, last seen at 300 (within the hour)
+  assert.deepEqual(livesOf(await run($, home, [livesQuery('none')]), 10_000_000).map(x => x.steps).sort(), [1, 2])
 
   // imported rows carry their own counts
   await run($, home, [usageRow(day, 's3', 'main', 'opus', 1, 1, 0, 5), usageRow(day, 's3', 'main', 'opus', 1, 1, 0, 5), spawnRow(day, 's3', 'Plan', 1, 0, 3), spawnRow(day, 's3', 'Plan', 0, 0, 3)])

@@ -6,8 +6,8 @@
 // baseline, saved and extra. A ledger figure far from the transcript figure means steps were missed or double counted.
 // Classifier and session-check calls never reach a transcript, so they are shown apart ("router").
 import { DatabaseSync } from 'node:sqlite'
-import { existsSync, readFileSync, readdirSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 // platform.claude.com/docs/en/about-claude/pricing, read 2026-11-19: input, 5m write, 1h write, cache read, output per MTok
@@ -31,18 +31,29 @@ export function stepUsd(model, u) {
   return ((u.input_tokens ?? 0) * i + w5m * five + w1h * hour + (u.cache_read_input_tokens ?? 0) * r + (u.output_tokens ?? 0) * o) / 1e6
 }
 
-// one transcript file -> cost; a message streams as several lines with the same id and usage, so count each id once
-export function fileUsd(path, from = 0) {
-  const seen = new Set()
+const tokens = u => (u.input_tokens ?? 0) + (u.output_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0)
+
+// a session's transcript files -> cost. A message streams as several lines with the same id, and an early line can carry
+// partial usage: keep each id's fullest line, counted once across the session's files (main chat and subagents).
+// shortcut: a resumed or forked chat's copies in another session's file still count there too; dedupe globally if that shows up.
+// Models with no price are added to `unpriced` instead of silently costing $0.
+export function sessionUsd(paths, from = 0, unpriced = new Set()) {
+  const best = new Map()
+  for (const path of paths) {
+    for (const line of readFileSync(path, 'utf8').split('\n')) {
+      if (!line.includes('"usage"')) continue
+      let o
+      try { o = JSON.parse(line) } catch { continue }
+      const m = o.message
+      if (o.type !== 'assistant' || !m?.usage || !m.id || m.model === '<synthetic>') continue
+      if (from && Date.parse(o.timestamp) < from) continue // before the ledger saw this session (installed later)
+      const prev = best.get(m.id)
+      if (!prev || tokens(m.usage) > tokens(prev.usage)) best.set(m.id, m)
+    }
+  }
   let usd = 0
-  for (const line of readFileSync(path, 'utf8').split('\n')) {
-    if (!line.includes('"usage"')) continue
-    let o
-    try { o = JSON.parse(line) } catch { continue }
-    const m = o.message
-    if (o.type !== 'assistant' || !m?.usage || !m.id || seen.has(m.id) || m.model === '<synthetic>') continue
-    if (from && Date.parse(o.timestamp) < from) continue // before the ledger saw this session (installed later)
-    seen.add(m.id)
+  for (const m of best.values()) {
+    if (!family(m.model)) unpriced.add(m.model)
     usd += stepUsd(m.model, m.usage)
   }
   return usd
@@ -70,13 +81,14 @@ function main() {
     FROM usage u LEFT JOIN sessions s ON s.id = u.session WHERE u.day >= ? GROUP BY u.session ORDER BY usd DESC`).all(since)
   const $ = x => `$${x.toFixed(2)}`
   let L = 0, T = 0, B = 0, X = 0, R = 0, U = 0, missing = 0
+  const unpriced = new Set()
   console.log(`Sessions since ${since}. ledger = what the router recorded; transcript = re-counted from Claude Code's files.\n`)
   console.log('ledger    transcript  diff    | no router  saved    extra   router | session')
   for (const r of rows) {
     const files = transcripts(r.session)
     // the later of: the first step the ledger saw in this session, local midnight of the window's first day
     const from = Math.max(Number(r.first ?? 0), new Date(`${since}T00:00:00`).getTime())
-    const t = files.reduce((a, f) => a + fileUsd(f, from), 0)
+    const t = sessionUsd(files, from, unpriced)
     const saved = r.base - (r.usd + r.router) + r.extra
     if (!files.length) missing++
     else { L += r.usd; T += t }
@@ -86,6 +98,7 @@ function main() {
   }
   console.log(`\nWith transcripts: ledger ${$(L)}, transcripts ${$(T)} (${T ? Math.round((100 * (L - T)) / T) : 0}% apart). ${missing} sessions had no transcript file.`)
   console.log(`All sessions: spent ${$(U + R)}, no router ${$(B)}, net ${$(B - U - R)} (saved ${$(B - U - R + X)}, extra ${$(X)}, of which the router's own calls ${$(R)}).`)
+  if (unpriced.size) console.log(`No price for: ${[...unpriced].join(', ')}. Their steps count as $0 here; the ledger prices them as Opus. Add them to PRICE.`)
 }
 
 function selfTest() {
@@ -96,6 +109,19 @@ function selfTest() {
   assert(near(stepUsd('claude-opus-5-5', w), 5), 'a write with no split is 5m')
   assert(near(stepUsd('claude-haiku-5-5', { input_tokens: 100_001, output_tokens: 1e6, cache_read_input_tokens: 0 }), (100_001 * 0.5) / 1e6 + 2.5), 'haiku long x5')
   assert(stepUsd('gpt-x', w) === 0, 'unknown model')
+  // two files of one session: the same message streamed (partial first line), and copied into the second file
+  const dir = mkdtempSync(join(tmpdir(), 'check-savings-'))
+  try {
+    const line = (id, model, out) => JSON.stringify({ type: 'assistant', timestamp: '2026-11-25T10:00:00Z', message: { id, model, usage: { input_tokens: 0, output_tokens: out, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } })
+    const a = join(dir, 'a.jsonl'), b = join(dir, 'b.jsonl')
+    writeFileSync(a, [line('m1', 'claude-opus-5-5', 10), line('m1', 'claude-opus-5-5', 1e6), line('m2', 'gpt-x', 5)].join('\n'))
+    writeFileSync(b, line('m1', 'claude-opus-5-5', 1e6))
+    const unpriced = new Set()
+    assert(near(sessionUsd([a, b], 0, unpriced), 20), 'fullest line per message, once per session')
+    assert(unpriced.has('gpt-x'), 'unpriced models are flagged')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
   console.log('check-savings self-test: ok')
 }
 

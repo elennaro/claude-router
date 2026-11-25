@@ -5,9 +5,9 @@
 export type ChatModel = { model: string | null; by: 'auto' | 'you' | null; effort?: string | null; routed?: boolean; from?: string | null }
 
 // A session-check offer the band shows with buttons: up or down to model, compact first or start fresh.
-export type Advice = { action: 'up' | 'down'; model: string; kind: 'compact' | 'fresh'; trigger: string }
+export type Advice = { action: 'up' | 'down'; model: string; kind: 'compact' | 'fresh'; trigger: string; usd?: number } // usd: the rough rebuild cost of switching now
 
-export type Hint = { cls: string; model: string; why: string; current: string }
+export type Hint = { cls: string; model: string; why: string; current: string; usd?: number } // usd: the rough rebuild cost of switching now
 
 // Spend against running with no router: baselineUsd is what the same steps would have cost on the asked model and
 // effort; extraUsd sums each step's cost above its baseline (stronger picks, the router's own calls), so

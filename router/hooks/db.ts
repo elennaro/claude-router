@@ -2,6 +2,7 @@
 // node:sqlite) takes a batch of statements on stdin and runs them in one transaction; every statement lives here.
 import type { EngineInterface } from 'claude-code'
 import type { AgentTally, Bucket, Cache, Tally } from '../types'
+import type { Life } from './policy'
 
 export const RUNNER = `// written by the router plugin: runs one batch of SQL statements from stdin in one transaction
 import { DatabaseSync } from 'node:sqlite'
@@ -140,6 +141,17 @@ export function totalsOf(rows: Array<Array<Record<string, unknown>> | null>): To
   const t = rows[0]?.[0] ?? {}
   const since = rows[1]?.[0]?.since
   return { proj: { actualUsd: Number(t.usd ?? 0), baselineUsd: Number(t.base ?? 0), extraUsd: Number(t.extra ?? 0) }, since: typeof since === 'number' ? since : undefined }
+}
+
+// Past chats' lengths in main-chat steps, for the switch-down math (policy.ts remainingSteps); never the chat asking.
+export const livesQuery = (session: string): Step => ({
+  sql: `SELECT u.session, sum(u.steps) AS steps, (SELECT max(d.last) FROM days d WHERE d.session = u.session) AS last FROM usage u WHERE u.who = 'main' AND u.session != ? GROUP BY u.session`,
+  params: [session],
+  all: true,
+})
+// A chat used within the cache's hour may still go on: it only says "at least this long".
+export function livesOf(rows: Array<Array<Record<string, unknown>> | null>, now: number): Array<Life> {
+  return (rows[0] ?? []).map(r => ({ steps: Number(r.steps ?? 0), open: now - Number(r.last ?? 0) < 60 * 60 * 1000 })).filter(x => x.steps > 0)
 }
 
 export const BOARD: Array<Step> = [
