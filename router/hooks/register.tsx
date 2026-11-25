@@ -119,7 +119,9 @@ type State = {
   baseEffort: string // the effort the session started on: the app picker's default, routed like main.effort
   rerouted: number // main-loop turns sent at another effort than the picker's
   lastRerouted: string // turnId last counted in rerouted
-  lastSwitch: string // the main chat's last logged switch (from and to), so the same state logs once
+  lastSwitch: string // the main chat's last logged model switch (from>to), so the same state logs once
+  lastEffortSwitch: string // the same for its effort
+  lastQuick: string // the turn whose quick move was logged (one row per turn, not per step)
   agentType: Map<string, string> // agentId -> subagent type, for the dashboard log
   agentAsked: Map<string, string> // agentId -> the model it would have run on with no router (the parent's, before any move of the parent), when that differs from what it runs on
   agentSpend: Map<string, { usd: number; base: number; extra: number; model: string }> // agentId -> the run's recorded totals
@@ -736,7 +738,7 @@ async function clearChat($: EngineInterface, s: State) {
   Object.assign(s, {
     session: '', label: '', lastLedgerTurn: '', stickyAsk: undefined, ask: undefined, seenPrompt: false, hasClassified: false,
     hadClass: false, lastClass: null, lastHintModel: null, switchTurn: false, sure: false, samples: [], turnCount: 0, quietUntil: 0, declined: null, unhappy: 0,
-    prev: NO_PREV, lastContext: 0, mainSteps: 0, mainOut: 0, rerouted: 0, lastRerouted: '', lastSwitch: '',
+    prev: NO_PREV, lastContext: 0, mainSteps: 0, mainOut: 0, rerouted: 0, lastRerouted: '', lastSwitch: '', lastEffortSwitch: '', lastQuick: '',
   })
   for (const m of [s.briefs, s.siblings, s.agentEffort, s.agentType, s.agentAsked, s.agentSpend, s.briefRun, s.wastedRuns]) m.clear()
   s.savedAgents = NO_AGENTS // the old chat's memory stays in the store, for a resume of it
@@ -896,20 +898,24 @@ async function logSwitch($: EngineInterface, s: State, w: Omit<Switch, 'id' | 'a
   later($, s, [switchRow(day, s.session, sw)])
 }
 
-// 👍 keeps the switch. 👎 also goes back where something is left to go back to: the chat's model (as Undo does) and
-// its effort (pinned, as in Settings). A quick turn or a subagent run is over already: the label is all a press records.
+// 👍 keeps the switch. 👎 also goes back where something is left to go back to: a model pick as Undo does, an effort
+// pinned back as in Settings, each only while the chat is still on the router's choice (a pick of yours since stays).
+// A quick turn or a subagent run is over already: the label is all a press records.
+// shortcut: the list lives in this process only, so after a restart or resume earlier rows can't be rated here (their
+// rows stay in router.db); keep it in the session's agent memory if that matters
 async function rateSwitch($: EngineInterface, s: State, id: string, label: 'good' | 'bad') {
   const w = (await read($, switches)).find(x => x.id === id)
   if (!w || w.label) return
   await update($, switches, (xs): Array<Switch> => xs.map(x => (x.id === id ? { ...x, label } : x)))
   later($, s, [labelRow(id, label, await $.clock.now())])
-  if (label === 'good' || w.kind === 'quick' || w.kind === 'agent') return
-  if (w.kind === 'pick') {
+  if (label === 'good') return
+  const c = await read($, chat)
+  if (w.kind === 'pick' && c.model && family(c.model) === w.toModel && (c.by !== 'you' || c.routed)) {
     const usd = rebuildUsd(w.fromModel, s.lastContext)
     if (usd > WARN_UNDO_USD) $.ui.toast(`router: back to ${pretty(w.fromModel)}; the next request re-reads this chat once, about ${money(usd)}`)
-    await update($, chat, (c): ChatModel => ({ ...c, model: null, by: 'you', routed: false, from: null }))
+    await update($, chat, (x): ChatModel => ({ ...x, model: null, by: 'you', routed: false, from: null }))
   }
-  if (w.fromEffort && w.fromEffort !== w.toEffort) await update($, chat, (c): ChatModel => ({ ...c, effort: w.fromEffort }))
+  if (w.kind === 'effort' && w.fromEffort && !c.effort) await update($, chat, (x): ChatModel => ({ ...x, effort: w.fromEffort }))
 }
 
 // Turns routing on or off in the global or the project routing.json, keeping the rest of the file as written.
@@ -1124,7 +1130,7 @@ export const register: Register = on => {
   const s: State = {
     cfg: BUILTIN, home: '', root: '', project: 'unknown', sources: 'built-in only', lastClass: null, lastHintModel: null,
     hasClassified: false, hadClass: false, skipEffortThisTurn: false, headless: false, agentEffort: new Map(), defs: new Map(),
-    prev: NO_PREV, lastContext: 0, mainSteps: 0, mainOut: 0, cleanChanges: 0, baseEffort: '', rerouted: 0, lastRerouted: '', lastSwitch: '', agentType: new Map(), agentAsked: new Map(), agentSpend: new Map(), briefRun: new Map(), wastedRuns: new Set(), paneOpened: false, pasted: false, coldTimer: undefined, minuteTick: undefined, awakeSince: 0, pinging: false, gapStart: 0, doneChecked: 0, awakeStop: '', ownPrompt: false, scopeAt: 0, scopeQueued: false, openTurn: '', seg: { ctx: 0, steps: 0 },
+    prev: NO_PREV, lastContext: 0, mainSteps: 0, mainOut: 0, cleanChanges: 0, baseEffort: '', rerouted: 0, lastRerouted: '', lastSwitch: '', lastEffortSwitch: '', lastQuick: '', agentType: new Map(), agentAsked: new Map(), agentSpend: new Map(), briefRun: new Map(), wastedRuns: new Set(), paneOpened: false, pasted: false, coldTimer: undefined, minuteTick: undefined, awakeSince: 0, pinging: false, gapStart: 0, doneChecked: 0, awakeStop: '', ownPrompt: false, scopeAt: 0, scopeQueued: false, openTurn: '', seg: { ctx: 0, steps: 0 },
     session: 'session', label: '', lastLedgerTurn: '', pending: [], scheduled: false, warned: false, trimmed: false, totals: { proj: EMPTY_TALLY, since: undefined }, routeModels: true, sure: false, switchTurn: false,
     ask: undefined, stickyAsk: undefined, v: undefined, seenPrompt: false, samples: [], turnCount: 0, quietUntil: 0, declined: null, switching: false,
     briefs: new Map(), siblings: new Map(), queue: Promise.resolve(), savedAgents: NO_AGENTS, unhappy: 0,
@@ -1417,7 +1423,8 @@ export const register: Register = on => {
     if (started.agentId && routedEffort) s.agentEffort.set(started.agentId, routedEffort)
     // with no router a nested agent's parent would itself be on its own no-router model (audit 2026-11-19)
     const parentNoRouter = (e.parentAgentId && s.agentAsked.get(e.parentAgentId)) || family(e.parentModel)
-    if (started.agentId && (moved || routedEffort)) await logSwitch($, s, { who: e.subagentType, kind: 'agent', fromModel: parentNoRouter, fromEffort: '', toModel: moved ? model : family(e.parentModel), toEffort: routedEffort, cls: brief?.cls ?? tier?.class ?? '', why: tier?.why ?? '', undoUsd: 0 })
+    const ran = moved ? model : family(e.parentModel)
+    if (started.agentId && (ran !== parentNoRouter || routedEffort)) await logSwitch($, s, { who: e.subagentType, kind: 'agent', fromModel: parentNoRouter, fromEffort: '', toModel: ran, toEffort: routedEffort, cls: brief?.cls ?? tier?.class ?? '', why: tier?.why ?? '', undoUsd: 0 })
     if (started.agentId && (moved ? model : family(e.parentModel)) !== parentNoRouter) s.agentAsked.set(started.agentId, parentNoRouter)
     if (started.agentId && hash) {
       // the same brief again: with no router one run would have done, so the replaced run saved nothing
@@ -1493,16 +1500,23 @@ export const register: Register = on => {
       s.agentSpend.set(e.agentId, { usd: a.usd + usd, base: a.base + baseUsd, extra: a.extra + Math.max(0, usd - baseUsd), model: family(u.model) })
     }
     const sent = String(effort ?? '')
-    // training data: the main chat's switch away from no router, once per new from-to (the same state over turns logs once)
+    // training data: the main chat's switches away from no router. A model named in the prompt is the person's, and so is
+    // the engine's own effort on an ultrathink turn (review 2026-11-25: both were logged as the router's)
     if (isMain && !nudge) {
-      const from = { model: family(noRouter.model), effort: String(noRouter.effort ?? '') }
+      const from = { model: family(ask?.model ?? noRouter.model), effort: String((s.skipEffortThisTurn ? e.effort : noRouter.effort) ?? '') }
       const to = { model: family(u.model), effort: sent }
-      const key = `${from.model}:${from.effort}>${to.model}:${to.effort}`
-      if (from.model === to.model && from.effort === to.effort) s.lastSwitch = ''
-      else if (key !== s.lastSwitch) {
-        s.lastSwitch = key
-        const kind = from.model === to.model ? 'effort' : model !== base ? 'quick' : 'pick'
-        await logSwitch($, s, { who: 'main', kind, fromModel: from.model, fromEffort: from.effort, toModel: to.model, toEffort: to.effort, cls: s.lastClass ?? 'default', why: kind === 'effort' ? why : kind, undoUsd: kind === 'pick' ? rebuildUsd(from.model, s.lastContext) : 0 })
+      const row = { who: 'main', fromModel: from.model, fromEffort: from.effort, toModel: to.model, toEffort: to.effort, cls: s.lastClass ?? 'default' }
+      // model and effort log apart, each once per new from-to; a quick turn logs once per turn and leaves the chat's keys alone
+      const modelKey = from.model === to.model ? '' : `${from.model}>${to.model}`
+      if (modelKey && model !== base) {
+        if (s.lastQuick !== e.turnId) await logSwitch($, s, { ...row, kind: 'quick', why: 'quick', undoUsd: 0 })
+        s.lastQuick = e.turnId
+      } else {
+        if (modelKey !== s.lastSwitch && modelKey) await logSwitch($, s, { ...row, kind: 'pick', why: 'pick', undoUsd: rebuildUsd(from.model, s.lastContext) })
+        s.lastSwitch = modelKey
+        const effortKey = from.effort === to.effort ? '' : `${from.effort}>${to.effort}`
+        if (effortKey !== s.lastEffortSwitch && effortKey) await logSwitch($, s, { ...row, kind: 'effort', why, undoUsd: 0 })
+        s.lastEffortSwitch = effortKey
       }
     }
     // one log row per main-loop turn or subagent run, its steps summed
