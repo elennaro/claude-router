@@ -2,11 +2,11 @@
 // (node 23.6+ loads the .ts directly). The plugin tests stub process.run; this checks the SQL itself.
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { BOARD, IMPORTED, bucketsOf, dayRow, isAlreadyImported, paths, run, sessionRow, spawnRow, totalsOf, totalsQuery, usageRow, livesOf, livesQuery } from '../hooks/db.ts'
+import { BOARD, IMPORTED, SWEEP, bucketsOf, dayRow, isAlreadyImported, paths, run, sessionRow, spawnRow, totalsOf, totalsQuery, usageRow, livesOf, livesQuery } from '../hooks/db.ts'
 
 const home = mkdtempSync(join(tmpdir(), 'router-db-'))
 const old = mkdtempSync(join(tmpdir(), 'router-db-0.4-'))
@@ -89,6 +89,17 @@ try {
   // the 0.7 token columns were added too; the old row reads 0
   const tok = await run($, old, [{ sql: "SELECT tin, tread, twrite FROM usage WHERE session = 'o1'", all: true }])
   assert.deepEqual({ ...tok[0][0] }, { tin: 0, tread: 0, twrite: 0 })
+  // the paste sweep: this session's files at its end, anyone's a day old at start, a missing folder is fine
+  const pastes = join(home, 'pastes')
+  mkdirSync(pastes)
+  for (const n of ['sA-1.txt', 'sA-2.txt', 'sB-1.txt', 'sC-1.txt']) writeFileSync(join(pastes, n), 'x')
+  utimesSync(join(pastes, 'sB-1.txt'), new Date(Date.now() - 2 * 864e5), new Date(Date.now() - 2 * 864e5))
+  const sweep = (...a) => assert.equal(spawnSync('node', ['-e', SWEEP, ...a]).status, 0)
+  sweep(pastes, 'sA-', '0')
+  assert.deepEqual(readdirSync(pastes).sort(), ['sB-1.txt', 'sC-1.txt'])
+  sweep(pastes, '', String(864e5))
+  assert.deepEqual(readdirSync(pastes), ['sC-1.txt'])
+  sweep(join(home, 'none'), '', '0')
   console.log('db check: ok')
 } finally {
   rmSync(home, { recursive: true, force: true })

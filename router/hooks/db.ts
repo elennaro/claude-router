@@ -4,6 +4,10 @@ import type { EngineInterface } from 'claude-code'
 import type { AgentTally, Bucket, Cache, Tally } from '../types'
 import type { Life } from './policy'
 
+// Deletes the files in a folder whose name starts with a prefix and that are at least `age` ms old; a missing folder is
+// fine. Run as: node -e SWEEP <dir> <prefix> <age>. ($.fs has no delete.)
+export const SWEEP = "const fs=require('node:fs'),p=require('node:path');const [d,pre,age]=process.argv.slice(1);for(const n of fs.existsSync(d)?fs.readdirSync(d):[]){const f=p.join(d,n);if(n.startsWith(pre)&&Date.now()-fs.statSync(f).mtimeMs>=Number(age))fs.rmSync(f,{force:true})}"
+
 export const RUNNER = `// written by the router plugin: runs one batch of SQL statements from stdin in one transaction
 import { DatabaseSync } from 'node:sqlite'
 let input = ''

@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import {
-  BUILTIN, CLASS_LABELS, adviseSwitch, effortRank, rank, agentTier, autoModel, needsSecondSample, briefHash, briefTier, stepUp, classifyByRules, costUsd, firstModel, isCacheBreak, isContinuation, merge, parseJev, parseSessionCheck, parseMood, raiseEffort, moodPrompt, longRun, readLabel, spawnPick, turnEffort, withoutRouter, rebuildUsd, stepUsd, switchMath, remainingSteps, quickPays, type Life, sessionCheckSystem, briefPaths, sizeOf, bucket,
+  BUILTIN, CLASS_LABELS, adviseSwitch, effortRank, rank, agentTier, autoModel, needsSecondSample, briefHash, briefTier, stepUp, classifyByRules, costUsd, firstModel, isCacheBreak, isContinuation, merge, parseJev, parseSessionCheck, parseMood, raiseEffort, moodPrompt, longRun, readLabel, spawnPick, turnEffort, withoutRouter, rebuildUsd, stepUsd, switchMath, remainingSteps, quickPays, type Life, sessionCheckSystem, briefPaths, sizeOf, bucket, estTokens, keepsRaw, pasteModel, pasteSystem, offloaded,
 } from '../hooks/policy'
 import { boardHtml, cacheStrength, cardLayout, hitPct, svgSize, switchCost, netWords, savedUsd, shade, statsSvg, withMode } from '../hooks/view'
 import { RUNNER, type Step, labelOf, livesOf } from '../hooks/db'
@@ -291,7 +291,7 @@ async function end($: any) {
   await $.session.end({ reason: 'other', sessionId: 'sess-1', resume: { sessionId: 'sess-1' } })
 }
 
-function wire(on: any, opts: { batches?: Array<Array<Step>>; runFails?: boolean; store?: Map<string, unknown>; haiku?: string | ((e: { system?: string }) => string); tokens?: number; model?: string; messages?: Array<unknown>; ownClock?: boolean; sent: Array<unknown>; asked?: { n: number }; lines?: Array<string | undefined>; opened?: Array<unknown>; surfaces?: Array<string>; files?: Record<string, string>; models?: Array<string>; read?: number; write?: number; select?: (sql: string) => Array<unknown> }) {
+function wire(on: any, opts: { batches?: Array<Array<Step>>; runFails?: boolean; store?: Map<string, unknown>; haiku?: string | ((e: { system?: string }) => string); tokens?: number; model?: string; messages?: Array<unknown>; ownClock?: boolean; sent: Array<unknown>; asked?: { n: number }; lines?: Array<string | undefined>; opened?: Array<unknown>; surfaces?: Array<string>; files?: Record<string, string>; models?: Array<string>; read?: number; write?: number; select?: (sql: string) => Array<unknown>; argv?: Array<Array<string>> }) {
   on('env.get', (_: unknown, e: { name: string }) => ({ value: e.name === 'USERPROFILE' ? '/home' : undefined }))
   on('session.root', () => ({ value: '/proj' }))
   on('session.id', () => ({ value: 'sess-1' }))
@@ -324,6 +324,7 @@ function wire(on: any, opts: { batches?: Array<Array<Step>>; runFails?: boolean;
   // router.db: each batch the runner would get; selects answer empty
   on('session.end', (_: unknown, e: { sessionId: string }) => ({ sessionId: e.sessionId }))
   on('process.run', (_: unknown, e: { argv: Array<string>; init?: { stdin?: string } }) => {
+    opts.argv?.push(e.argv)
     if (opts.runFails) return { value: { exitCode: 1, stdout: '', stderr: 'no node', isStdoutTruncated: false, isStderrTruncated: false } }
     const steps = (JSON.parse(e.init?.stdin ?? '{}').steps ?? []) as Array<Step>
     opts.batches?.push(steps)
@@ -479,6 +480,67 @@ test('generic subagents go by their brief: sure and cheap moves, unsure gets the
   expect(Number(back![6])).toBe(-Number(sub1![6]))
   expect(Number(back![7])).toBe(Number(sub1![5]) - Number(sub1![7]))
   expect(JSON.stringify(batches)).not.toContain('Swap every variable')
+})
+
+test('paste size: tokens counted per character kind, the skip words, and which model reads it (docs/PLAN-v3.md, slice 3)', () => {
+  expect([estTokens('a'.repeat(40_000)), estTokens('a'.repeat(40_001)), estTokens('я'.repeat(20_000)), estTokens('я'.repeat(20_000) + 'a')]).toEqual([10_000, 10_001, 10_000, 10_001])
+  const log = 'line of the build log\n'.repeat(2_000) // about 11K tokens
+  expect(keepsRaw(`keep it as is please\n${log}`)).toBe(true)
+  expect(keepsRaw(`${log}\nraw: what fails here?`)).toBe(true)
+  expect(keepsRaw(`${log.slice(0, 20_000)} raw ${log}`)).toBe(false) // a word inside the paste is not the person's
+  expect(pasteModel(`Find the first error\n${log}`)).toBe('haiku')
+  expect(pasteModel(`Review this log and recommend a fix\n${log}`)).toBe('sonnet')
+  expect(pasteModel(`Find the first error\n${log.repeat(5)}`)).toBe('sonnet') // over 50K tokens
+  const out = offloaded(`Find the first error\n${log}`, '/home/.claude/router/pastes/s-1.txt', 'haiku', 'Request: "Find the first error"\nAnalysis: none found')
+  expect(out).toMatch(/^\[router: your message was about 11K tokens, so Haiku read it first\. The full text is saved at \/home\/\.claude\/router\/pastes\/s-1\.txt/)
+  expect(out).toContain('Find the first error')
+  expect(out).toContain('Analysis: none found')
+  expect(out.length < 2_000).toBe(true)
+})
+
+test('a big paste is saved to a file and the chat gets a cheaper model\'s analysis; "raw" and failures pass it unchanged', async (engine, on) => {
+  const $ = engine as any
+  const files: Record<string, string> = { '/home/.claude/routing.json': ROUTING }
+  const batches: Array<Array<Step>> = []
+  const argv: Array<Array<string>> = []
+  const asked: Array<string> = []
+  let analysis: string | undefined = 'Request: "Find why the build fails"\nAnalysis: line 812, error TS2345'
+  wire(on, { sent: [], files, batches, argv, tokens: 5_000, ownClock: true, haiku: (e: any) => (e.system === pasteSystem ? (asked.push(e.model), analysis ?? '') : 'engineering 0.95') })
+  mock.clock(on, { now: 7_000 })
+  const toasts: Array<string> = []
+  on('ui.toast', (_: unknown, e: { text?: string; message?: string }) => { toasts.push(String(e.text ?? e.message ?? '')); return { value: undefined } })
+  on('tool.call', () => ({ result: { content: 'ok' } }))
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const log = 'step 1234 compiled ok\n'.repeat(2_000)
+  const big = `Find why the build fails in this log:\n${log}`
+  const sendIt = async (text: string, more = {}) => (await $.prompt.submit({ text, origin: { kind: 'composer' }, wait: false, ...more })).text as string
+
+  const got = await sendIt(big)
+  const path = '/home/.claude/router/pastes/sess-1-7000.txt'
+  expect(files[path]).toBe(big) // the whole message, kept for a later Read
+  expect(asked).toEqual(['haiku'])
+  expect(got).toContain('line 812, error TS2345')
+  expect(got).toContain(path)
+  expect(got).toContain('Find why the build fails in this log:')
+  expect(got.length < 3_000).toBe(true)
+  expect(await sendIt(`raw\n${log}`)).toBe(`raw\n${log}`)
+  expect(await sendIt(big, { origin: { kind: 'task-notification' } })).toBe(big) // not the person's own message
+  expect(await sendIt(log.slice(0, 40_000))).toBe(log.slice(0, 40_000)) // 10K tokens exactly: not over the line
+  analysis = undefined // the reader failed: the message goes through as typed, with a note
+  expect(await sendIt(`What is wrong here?\n${log}`)).toBe(`What is wrong here?\n${log}`)
+  expect(toasts.some(t => /sent as typed/.test(t))).toBe(true)
+  expect(asked.length).toBe(2)
+
+  // the main model reading the saved file means the analysis fell short: that paste saved nothing
+  await $.tool.call({ tool: 'Read', file_path: 'C:\\home\\.claude\\router\\pastes\\sess-1-7000.txt' })
+  await $.tool.call({ tool: 'Read', file_path: path }) // counted once
+  await end($)
+  const paste = rows(batches, 'usage').filter(r => r[2] === 'paste')
+  expect(paste.length).toBe(2)
+  expect(Number(paste[0]![6]) > Number(paste[0]![5])).toBe(true) // Opus writing 11K tokens once costs more than Haiku reading them
+  expect(Number(paste[1]![6])).toBe(-Number(paste[0]![6]))
+  // the session's saved pastes are deleted at its end
+  expect(argv.some(a => a[0] === 'node' && a.includes('/home/.claude/router/pastes') && a.includes('sess-1-'))).toBe(true)
 })
 
 test('size buckets: what the brief names sets the model and budget of the router\'s own agents (docs/PLAN-v3.md, slice 2)', () => {

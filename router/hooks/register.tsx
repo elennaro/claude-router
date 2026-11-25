@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionMessage } from 'claude-code'
 
 import type { Advice, Bucket, Cache, ChatModel, Hint, Mix, Tally, RouterView, TurnLog } from '../types'
-import { BOARD, livesQuery, livesOf, type Step, type Totals, IMPORTED, addCache, bucketsOf, dayRow, isAlreadyImported, labelOf, legacySteps, run, sessionRow, spawnRow, totalsOf, totalsQuery, usageRow } from './db'
+import { BOARD, SWEEP, livesQuery, livesOf, type Step, type Totals, IMPORTED, addCache, bucketsOf, dayRow, isAlreadyImported, labelOf, legacySteps, run, sessionRow, spawnRow, totalsOf, totalsQuery, usageRow } from './db'
 import { shield } from './guard'
 import { claudeFamily } from './latest'
 import {
@@ -13,7 +13,7 @@ import {
   type Ask, AUTO, BUILTIN, DELEGATE_ID, delegateSection, wantsDelegate, CLASS_LABELS, type Config, type Usage, type SessionWindow, adviseSwitch, agentTier, autoModel, classifierPrompt, firstModel, parseSessionCheck, sessionCheckPrompt, sessionCheckSystem, classifierSystem, classifyByRules, costUsd, explicitAsk, family,
   classifyPlan, isCacheBreak, merge, settleAnswers, readLabel, prices, rank, setPrices, turnEffort, briefHash, isHarder, needsSecondSample, spawnPick, withoutRouter,
   type Mood, longRun, moodPrompt, moodSystem, parseMood, raiseEffort, raiseSteps, stepUp, rebuildUsd, switchMath, FAMILIES,
-  SIZED, briefPaths, bucket, sizeOf,
+  SIZED, briefPaths, bucket, sizeOf, PASTE_MIN, estTokens, keepsRaw, pasteModel, pasteSystem, pastePrompt, offloaded,
 } from './policy'
 import { type Cell, NAMES, TOOL_NAMES, barsSvg, boardHtml, cardLayout, hitPct, switchCost, svgSize, isExtra, modelColor, money, shade, net, netPct, netWords, savedUsd, statsSvg, withMode } from './view'
 
@@ -68,6 +68,7 @@ type State = {
   agentType: Map<string, string> // agentId -> subagent type, for the dashboard log
   agentAsked: Map<string, string> // agentId -> the model it would have run on with no router (the parent's, before any move of the parent), when that differs from what it runs on
   agentSpend: Map<string, { usd: number; base: number; extra: number; model: string }> // agentId -> the run's recorded totals
+  pasted: boolean // a big paste was saved this session (its file is deleted at the end)
   briefRun: Map<string, string> // brief hash -> the agentId of its latest run
   wastedRuns: Set<string> // runs a re-spawn replaced: no saving counts for them
   paneOpened: boolean
@@ -336,6 +337,37 @@ async function probeLog($: EngineInterface, path: string, line: object) {
 
 // A cache entry of the main chat lives an hour after its last read.
 const CACHE_LIFE_MS = 60 * 60 * 1000
+
+// Big pastes are saved here, one file per paste, named by session; deleted at the session's end, and a day later by a
+// sweep at start for a session that ended without its hook. $.fs has no delete, so node does it (no shell).
+const pasteDir = (s: State) => `${s.home}/.claude/router/pastes`
+const sweep = ($: EngineInterface, s: State, prefix: string, ageMs: number) =>
+  $.process.run(['node', '-e', SWEEP, pasteDir(s), prefix, String(ageMs)], {}).catch(() => undefined)
+const normPath = (p: string) => p.replace(/\\/g, '/').replace(/^[A-Za-z]:/, '').toLowerCase()
+
+// A prompt over PASTE_MIN tokens: save it, have a cheaper model read it, and send the chat the analysis instead
+// (docs/PLAN-v3.md, slice 3). undefined: send the prompt as typed (small, "raw", or anything failed: fail open).
+async function offload($: EngineInterface, s: State, text: string): Promise<string | undefined> {
+  if (estTokens(text) <= PASTE_MIN || keepsRaw(text)) return undefined
+  const model = pasteModel(text)
+  const tokens = estTokens(text)
+  const fail = (why: string) => { $.ui.toast(`router: couldn't read your paste first (${why}); sent as typed.`); return undefined }
+  const path = `${pasteDir(s)}/${s.session}-${await $.clock.now()}.txt`
+  try { await $.fs.write(path, text) } catch (err) { return fail(`saving it: ${String(err).slice(0, 80)}`) }
+  s.pasted = true
+  $.ui.toast(`router: your message is about ${Math.round(tokens / 1000)}K tokens; ${model} is reading it so the chat keeps only what matters. Put "raw" in it to skip this.`)
+  const r = await $.model.complete({ model, effort: 'low', maxTokens: 2000, timeoutMs: 120_000, system: pasteSystem, prompt: pastePrompt(text) }).catch(() => undefined)
+  if (!r?.isAnswered || !r.text.trim()) return fail('no answer from the reader')
+  if (r.usage) {
+    // with no router the chat's model would have written the paste into its cache once
+    // shortcut: later turns re-reading it are not counted, so saved is understated; count them if the Board needs it
+    const base = rebuildUsd(await $.session.model(), tokens)
+    const usd = costUsd(model, r.usage)
+    await record($, s, model, r.usage, 'paste', base)
+    s.agentSpend.set(`paste:${normPath(path)}`, { usd, base, extra: Math.max(0, usd - base), model })
+  }
+  return offloaded(text, path, model, r.text)
+}
 
 // The bytes of the files a brief names; undefined when it names none, or one is missing, a folder or unreadable.
 async function namedBytes($: EngineInterface, paths: Array<string>, cwd: string, home: string): Promise<number | undefined> {
@@ -740,7 +772,7 @@ export const register: Register = on => {
   const s: State = {
     cfg: BUILTIN, home: '', root: '', project: 'unknown', sources: 'built-in only', lastClass: null, lastHintModel: null,
     hasClassified: false, hadClass: false, skipEffortThisTurn: false, headless: false, agentEffort: new Map(), defs: new Map(),
-    prev: NO_PREV, lastContext: 0, mainSteps: 0, mainOut: 0, cleanChanges: 0, baseEffort: '', rerouted: 0, lastRerouted: '', agentType: new Map(), agentAsked: new Map(), agentSpend: new Map(), briefRun: new Map(), wastedRuns: new Set(), paneOpened: false,
+    prev: NO_PREV, lastContext: 0, mainSteps: 0, mainOut: 0, cleanChanges: 0, baseEffort: '', rerouted: 0, lastRerouted: '', agentType: new Map(), agentAsked: new Map(), agentSpend: new Map(), briefRun: new Map(), wastedRuns: new Set(), paneOpened: false, pasted: false,
     session: 'session', label: '', lastLedgerTurn: '', pending: [], scheduled: false, warned: false, totals: { proj: EMPTY_TALLY, since: undefined }, routeModels: true, sure: false, switchTurn: false,
     ask: undefined, stickyAsk: undefined, v: undefined, seenPrompt: false, samples: [], turnCount: 0, quietUntil: 0, declined: null, switching: false,
     briefs: new Map(), siblings: new Map(), queue: Promise.resolve(), savedAgents: NO_AGENTS, unhappy: 0,
@@ -775,7 +807,7 @@ export const register: Register = on => {
     }
     await seat($, s)
     // the weekly CLI check runs after the session is up, never holding the first prompt
-    $.clock.after(5_000, async () => { await refreshTools($, s) })
+    $.clock.after(5_000, async () => { await refreshTools($, s); await sweep($, s, '', 24 * 60 * 60 * 1000) })
     return next(e)
   })
 
@@ -814,8 +846,15 @@ export const register: Register = on => {
   }))
   // A /clear ends this chat with no session.start for the next: everything that belonged to it starts over.
   // The waiting rows go first: the end has one short time limit for every hook, and a save cut off there is lost.
+  // The main model reading a saved paste means the analysis fell short: that paste saved nothing.
+  on('tool.call', { tool: 'Read' }, async ($, e, next) => shield($, e, next, async go => {
+    const key = `paste:${normPath(String((e as unknown as { file_path?: string }).file_path ?? ''))}`
+    if (!e.agentId && s.agentSpend.has(key)) await takeBack($, s, 'paste', key)
+    return go(e)
+  }))
   on('session.end', async ($, e, next) => {
     await flush($, s)
+    if (s.pasted) await sweep($, s, `${s.session}-`, 0)
     const r = await next(e)
     if (e.reason === 'clear') await clearChat($, s)
     return r
@@ -883,6 +922,10 @@ export const register: Register = on => {
     // the first prompt names the session on the Board (labelOf: 60 characters, secrets masked)
     if (!e.command && !e.isMeta && !s.label) s.label = labelOf(e.text)
     if (s.cfg.mode === 'off' || s.headless || e.command || e.isMeta) { s.switchTurn = false; return go(e) }
+    // only the person's own message (typed, or from their phone) is offloaded, never a peer's or a notification
+    const own = e.origin?.kind === 'composer' || e.origin?.kind === 'bridge'
+    const short = own ? await offload($, s, e.text) : undefined
+    if (short) e = { ...e, text: short }
     // typed over a running turn, the prompt joins that turn: it may raise the turn's routing, never lower it
     const midTurn = e.turnId !== undefined
     const asked = explicitAsk(e.text)

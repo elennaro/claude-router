@@ -87,6 +87,8 @@ Tests: bucket tables, spawn-routing cases, mutations. Eval: API runs on Haiku up
 4. A later Read of the saved file counts as a miss and is subtracted from saved.
 5. Temp files go to the session scratch folder and are deleted at session end.
 
+Status 2026-11-25: shipped with deterministic tests: the size boundary (ASCII and Cyrillic, one token either side), the skip words, the person-only rule, fail-open on a failed or empty answer, the miss on a later Read, and the real delete script on temp files (`db.check.mjs`). The pastes folder is `~/.claude/router/pastes/` (a plugin can't see Claude Code's own scratch folder). Not done yet: the planted-fact eval below, which needs the API harness. The analysis model is one `$.model.complete` call, not a subagent: the paste is already in hand, so no tools are needed.
+
 Tests: the size boundary (one token either side, multibyte text), the skip words, the fail-open paths, Windows paths with spaces, cleanup. Eval: planted-fact pastes (how many questions the analysis alone answers), scored with the Jev, then Opus judge cascade (`evals/calibrate/`) on a public summary-faithfulness gold set from Hugging Face with a permissive licence, chosen and calibrated in this slice. Haiku under $5; Opus fallback verdicts need the owner's OK.
 
 ## Slice 4: ideas from the tool studies
