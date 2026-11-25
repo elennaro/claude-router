@@ -62,6 +62,9 @@ async function main() {
     log(`${c.id}: ${model}, ~${Math.round(estTokens(text) / 1000)}K tokens, ${s.found}/${s.of} facts, shape ${s.shaped ? 'ok' : 'off'}${r.cached ? ' (stored)' : ` ($${r.usd.toFixed(3)})`}`)
     return { c, model, s, usd: r.usd }
   })
+  const failed = rows.filter(x => x.error)
+  for (const [i, x] of rows.entries()) if (x.error) console.log(`${CASES[i].id}: ERROR ${x.error}`)
+  if (failed.length) { console.log(`GATE FAIL: ${failed.length} case(s) got no answer`); process.exitCode = 1; return }
   const by = m => rows.filter(x => x.model === m)
   const recall = xs => (xs.length ? xs.reduce((a, x) => a + x.s.found, 0) / xs.reduce((a, x) => a + x.s.of, 0) : 1)
   const line = m => `${m}: ${by(m).length} cases, fact recall ${(100 * recall(by(m))).toFixed(0)}%`
