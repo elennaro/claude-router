@@ -18,7 +18,7 @@ What it buys, measured on 283 real-work cases ([evals/README.md](evals/README.md
 /plugin install router@claude-router
 ```
 
-Needs Claude Code 2.1.325+. Node.js 22.13+ on PATH for the spend ledger (routing works without it). No setup: built-in rules apply until you add a `~/.claude/routing.json`. Full docs: [router/README.md](router/README.md).
+Needs Claude Code 2.1.325+. Node.js 22.13+ on PATH for the spend ledger (routing works without it). No setup: built-in rules apply until you add a `~/.claude/routing.json`. Full docs: [router/README.md](router/README.md). Short guides: [the wiki](docs/wiki/Home.md).
 
 ## What you see
 

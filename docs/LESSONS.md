@@ -85,6 +85,12 @@ Newest at the bottom. Each entry: what we did, what happened, what we learned. N
     effort quietly became "color strength" (lighter on a dark page). The owner meant darker, full stop, and had to say
     it twice. The rule could have been kept, with a light edge on the dark steps for contrast. Lesson: when a stated
     rule fails a check, keep the rule and fix what fails, or ask; don't swap in a different rule.
+23. **Summing transcript lines instead of steps.** A replay of two weeks of transcripts, used to size keep awake and
+    a smaller compaction window, came out about five times too high. Claude Code writes a step's usage again on every
+    content block of the reply, and forked or resumed sessions copy earlier lines into new files. `check-savings.mjs`
+    already deduplicated by message id across files; the quick replay script didn't. Lesson: count each model step
+    once, by its message id across every file, and cross-check any new spend figure against the existing checker
+    before it reaches a plan.
 
 ## Right moves
 
