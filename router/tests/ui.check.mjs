@@ -284,7 +284,6 @@ if (chrome) await browserChecks(chrome, trees)
 else console.log('ui.check: no Chrome or Edge found (set CHROME=<path>); layout, contrast and target checks skipped')
 // Findings seen when the kit landed and not fixed yet: a ratchet. A fix deletes its line; nothing is ever added here.
 const KNOWN = [
-  /^board-800 (light|dark): (the "Sessions \d+" table scrolls sideways|".*" runs past the right edge)$/,
 ]
 const unique = [...new Set(findings)]
 const known = unique.filter(f => KNOWN.some(k => k.test(f)))
