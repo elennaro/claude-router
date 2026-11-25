@@ -223,7 +223,7 @@ test('the Stats card: two columns in a narrow band, bars up for more and down fo
   const bars = [...svg.matchAll(/<rect class="m-opus-2" x="[\d.]+" y="([\d.]+)" width="[\d.]+" height="([\d.]+)"/g)].map(m => [Number(m[1]), Number(m[2])])
   const mid = Number(svg.match(/<line class="d" x1="44" y1="([\d.]+)"/)![1]) - 0.5
   expect(bars).toHaveLength(3)
-  expect(bars[0]![0] + bars[0]![1]).toBe(mid) // cost more: up from the no-router line
+  expect(bars[0]![0]! + bars[0]![1]!).toBe(mid) // cost more: up from the no-router line
   expect(bars[1]![0]).toBe(mid + 1) // cost less: down from it
   expect(bars[0]![1]).toBe(35) // the biggest difference fills its half (36 px less the line)
   expect(bars[2]![1]).toBe(3.5) // square-root scale: 1/100 of the biggest is 1/10 of its height, not a 2 px floor
@@ -717,7 +717,7 @@ const BAND = {
 
 test('the Board never runs text from a prompt, a project name or an agent type as markup', async () => {
   const evil = '</script><img src=x onerror=alert(1)>'
-  const b = { day: '2026-11-18', project: evil, session: 's', label: evil, first: 1, last: 2, turns: 1, byModel: { opus: { usd: 1, base: 2, steps: 1 } }, agents: { [evil]: { runs: 1, routed: 0, respawned: 0, usd: 0, base: 0 } } }
+  const b = { day: '2026-11-18', project: evil, session: 's', label: evil, first: 1, last: 2, turns: 1, byModel: { opus: { usd: 1, base: 2, extra: 0, steps: 1 } }, agents: { [evil]: { runs: 1, routed: 0, respawned: 0, usd: 0, base: 0, extra: 0 } } }
   const turn = { id: 't', who: evil, cls: evil, model: evil, effort: evil, picker: '', usd: 0, baseUsd: 0, steps: 1 }
   const html = boardHtml([b], [turn], 's', evil, evil, evil, null, evil)
   expect(html).not.toContain('<img')
