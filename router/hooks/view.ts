@@ -378,15 +378,15 @@ footer{margin-top:40px;color:var(--muted);font-size:13px;display:grid;gap:8px;ma
 <section class="kpis" aria-label="Totals for the chosen range">
 <div class="kpi"><span>Spent</span><b id="spent"></b></div>
 <div class="kpi"><span>Without router</span><b id="base"></b></div>
-<div class="kpi"><span>Difference</span><b id="diff"></b><small id="diff-pct"></small></div>
+<div class="kpi"><span>Net</span><b id="diff"></b><small id="diff-pct"></small></div>
 <div class="kpi"><span>Cache hit</span><b id="hit"></b><small>of prompt tokens</small></div>
 </section>
 <p class="split" id="split"></p><p class="split" id="awake"></p>
-<h2>Sessions <span class="muted" id="count"></span></h2><div class="card"><table><thead><tr><th>Session</th><th class="opt">Project</th><th class="opt">Last active</th><th class="opt">Models</th><th class="n opt">Turns</th><th class="n">Spent</th><th class="n opt opt2">Without router</th><th class="n">Difference</th></tr></thead><tbody id="sessions"></tbody></table></div>
-<h2>By project</h2><div class="card"><table><thead><tr><th>Project</th><th class="n">Spent</th><th class="n opt">Without router</th><th class="n">Difference</th><th class="opt"><span class="sr">Spent against without router</span></th></tr></thead><tbody id="projects"></tbody></table></div>
+<h2>Sessions <span class="muted" id="count"></span></h2><div class="card"><table><thead><tr><th>Session</th><th class="opt">Project</th><th class="opt">Last active</th><th class="opt">Models</th><th class="n opt">Turns</th><th class="n">Spent</th><th class="n opt opt2">Without router</th><th class="n">Net</th></tr></thead><tbody id="sessions"></tbody></table></div>
+<h2>By project</h2><div class="card"><table><thead><tr><th>Project</th><th class="n">Spent</th><th class="n opt">Without router</th><th class="n">Net</th><th class="opt"><span class="sr">Spent against without router</span></th></tr></thead><tbody id="projects"></tbody></table></div>
 <h2>Spend by model</h2><div class="card" id="mix"></div>
-<h2>Subagents</h2><div class="card"><table><thead><tr><th>Type</th><th class="n">Runs</th><th class="n opt" title="Runs moved off the parent's model">Re-routed</th><th class="n opt">Sent again</th><th class="n">Spent</th><th class="n opt">Without router</th><th class="n">Difference</th></tr></thead><tbody id="agents"></tbody></table></div>
-<section id="chat" hidden><h2>This chat, turn by turn</h2><div class="card"><table><thead><tr><th>Task</th><th>Model</th><th class="opt">Effort</th><th class="n opt">Cache hit</th><th class="n">Spent</th><th class="n opt">Without router</th><th class="n">Difference</th></tr></thead><tbody id="turns"></tbody></table></div></section>
+<h2>Subagents</h2><div class="card"><table><thead><tr><th>Type</th><th class="n">Runs</th><th class="n opt" title="Runs moved off the parent's model">Re-routed</th><th class="n opt">Sent again</th><th class="n">Spent</th><th class="n opt">Without router</th><th class="n">Net</th></tr></thead><tbody id="agents"></tbody></table></div>
+<section id="chat" hidden><h2>This chat, turn by turn</h2><div class="card"><table><thead><tr><th>Task</th><th>Model</th><th class="opt">Effort</th><th class="n opt">Cache hit</th><th class="n">Spent</th><th class="n opt">Without router</th><th class="n">Net</th></tr></thead><tbody id="turns"></tbody></table></div></section>
 <footer><span>API list prices. On a Max plan this tracks how fast you use your limits, not money.</span>
 <span>Without router means each request on the model and effort it asked for (yours, or the parent chat's for a subagent), with the same tokens. A different effort is priced by its measured cost: a high-effort step costs about 1.4 times a medium one, a low one about 0.72 times. The router's own Haiku calls count as extra.</span>
 <span>Colors: Haiku green, Sonnet teal, Opus clay, Fable ruby; a darker shade is a higher effort. Cache hit is the share of prompt tokens read from the prompt cache, recorded from version 0.7 on.</span>
@@ -400,12 +400,13 @@ const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]);
 const money = n => (n < 0 ? '\\u2212$' : '$') + Math.abs(n).toFixed(2);
 const cents = n => Math.abs(n) < 0.1 ? '$' + Math.abs(n).toFixed(3) : money(Math.abs(n));
-// Against running with no router, from the spend side: + cost more, \\u2212 cost less. The sign carries it, the color repeats it.
+// Against running with no router, in words, as the band says it: "saved $1.20" or "$0.52 extra". A bare "+$30" read as
+// a saving (owner case 2026-11-25), so the word carries it and the color repeats it.
 function diff(u, b, f) {
   f = f || money;
   const d = u - b;
   if (Math.abs(d) < (f === money ? 0.005 : 0.0005)) return '<span class="muted">same</span>';
-  return d > 0 ? '<span class="over">+' + f(d) + '</span>' : '<span class="under">\\u2212' + f(-d) + '</span>';
+  return d > 0 ? '<span class="over">' + f(d) + ' extra</span>' : '<span class="under">saved ' + f(-d) + '</span>';
 }
 const meter = (u, b, top) => '<div class="meter"><span class="ghost" style="width:' + (b / top * 100).toFixed(1) + '%"></span><span class="solid' + (u > b ? ' up' : '') + '" style="width:' + (u / top * 100).toFixed(1) + '%"></span></div>';
 const iso = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');

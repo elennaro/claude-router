@@ -182,6 +182,8 @@ function judge(s, theme, m) {
       if (e.clip) add(at, `"${e.t}" is clipped without an ellipsis`)
       if (e.hid) add(at, `"${e.t}" (${e.tag}${e.cls ? '.' + e.cls : ''}) is cut off by the box around it`)
       if (e.x + e.w > m.w + 1) add(at, `"${e.t}" runs past the right edge`)
+      // a net figure says which way in words: a bare "+$30" was read as a saving (owner case 2026-11-25)
+      if (/\b(over|under)\b/.test(e.cls) && !/^saved \$|\$[\d.,]+ extra$/.test(e.t)) add(at, `net figure "${e.t}" needs "saved" or "extra", not a sign`)
     }
     for (const t of m.targets ?? []) if (t.w < 24 || t.h < 24) add(at, `target "${t.t}" is ${Math.round(t.w)}x${Math.round(t.h)} px, under 24x24`)
   }

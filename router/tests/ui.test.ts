@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 
 declare const console: { log: (line: string) => void } // the test runner prints it; the strict config has no DOM or Node types
 
-import { type Node, cells, contrast, labelIssues, numberIssues, overfullRows, textOf, walk } from './uikit.ts'
+import { type Node, cells, contrast, labelIssues, numberIssues, overfullRows, textOf, walk } from './uikit'
 
 const ROUTING = JSON.stringify({ main: { model: 'opus', effort: 'medium' }, classes: { mechanical: { model: 'haiku', effort: 'low' } } })
 const USAGE = { model: 'claude-opus-5-5', input_tokens: 4000, output_tokens: 800, cache_read_input_tokens: 90_000, cache_creation_input_tokens: 2000 }

@@ -60,7 +60,7 @@ footer{margin-top:40px;color:var(--muted);font-size:13px;display:grid;gap:8px;ma
 </b>
 </div>
 <div class="kpi">
-<span>Difference</span>
+<span>Net</span>
 <b id="diff">
 </b>
 <small id="diff-pct">
@@ -91,7 +91,7 @@ footer{margin-top:40px;color:var(--muted);font-size:13px;display:grid;gap:8px;ma
 <th class="n opt">Turns</th>
 <th class="n">Spent</th>
 <th class="n opt opt2">Without router</th>
-<th class="n">Difference</th>
+<th class="n">Net</th>
 </tr>
 </thead>
 <tbody id="sessions">
@@ -106,7 +106,7 @@ footer{margin-top:40px;color:var(--muted);font-size:13px;display:grid;gap:8px;ma
 <th>Project</th>
 <th class="n">Spent</th>
 <th class="n opt">Without router</th>
-<th class="n">Difference</th>
+<th class="n">Net</th>
 <th class="opt">
 <span class="sr">Spent against without router</span>
 </th>
@@ -130,7 +130,7 @@ footer{margin-top:40px;color:var(--muted);font-size:13px;display:grid;gap:8px;ma
 <th class="n opt">Sent again</th>
 <th class="n">Spent</th>
 <th class="n opt">Without router</th>
-<th class="n">Difference</th>
+<th class="n">Net</th>
 </tr>
 </thead>
 <tbody id="agents">
@@ -149,7 +149,7 @@ footer{margin-top:40px;color:var(--muted);font-size:13px;display:grid;gap:8px;ma
 <th class="n opt">Cache hit</th>
 <th class="n">Spent</th>
 <th class="n opt">Without router</th>
-<th class="n">Difference</th>
+<th class="n">Net</th>
 </tr>
 </thead>
 <tbody id="turns">
@@ -174,12 +174,13 @@ const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]);
 const money = n => (n < 0 ? '\u2212$' : '$') + Math.abs(n).toFixed(2);
 const cents = n => Math.abs(n) < 0.1 ? '$' + Math.abs(n).toFixed(3) : money(Math.abs(n));
-// Against running with no router, from the spend side: + cost more, \u2212 cost less. The sign carries it, the color repeats it.
+// Against running with no router, in words, as the band says it: "saved $1.20" or "$0.52 extra". A bare "+$30" read as
+// a saving (owner case 2026-11-25), so the word carries it and the color repeats it.
 function diff(u, b, f) {
   f = f || money;
   const d = u - b;
   if (Math.abs(d) < (f === money ? 0.005 : 0.0005)) return '<span class="muted">same</span>';
-  return d > 0 ? '<span class="over">+' + f(d) + '</span>' : '<span class="under">\u2212' + f(-d) + '</span>';
+  return d > 0 ? '<span class="over">' + f(d) + ' extra</span>' : '<span class="under">saved ' + f(-d) + '</span>';
 }
 const meter = (u, b, top) => '<div class="meter">
 <span class="ghost" style="width:' + (b / top * 100).toFixed(1) + '%">
