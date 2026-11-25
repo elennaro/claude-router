@@ -57,7 +57,7 @@ function audit(tree: Node, state: string, surface: string, width: number): Array
   return [...new Set(out)].map(x => `${state} · ${surface} · ${width}: ${x}`).filter(x => !KNOWN.some(k => k.test(x)))
 }
 // Findings seen when the kit landed and not fixed yet: a ratchet. A fix deletes its line; nothing is ever added here.
-const KNOWN = [/ · (40|60): router-row: needs/, / · 40: router-offer: needs/]
+const KNOWN: Array<RegExp> = []
 
 // One session per state, the band mounted at every width on both surfaces that draw it.
 async function states($: any, on: any, routing: string, setup: ($: any) => Promise<void>, presses: Array<[string, string | undefined]>): Promise<Array<string>> {
@@ -118,4 +118,7 @@ test('the rules themselves: contrast, labels, numbers, cell widths, row budgets'
   expect(overfullRows(row(40), 40)).toEqual([])
   expect(overfullRows(row(30), 30)).toEqual([]) // 8 + 2 + 6 + 2 + "[ Settings ]" 12 = 30 cells
   expect(overfullRows(row(29), 29)).toHaveLength(1)
+  const wrapping: Node = { type: 'Box', props: { flexDirection: 'row', flexWrap: 'wrap' }, children: [{ type: 'Button', props: { label: 'Make 96K my default for every chat' } }] }
+  expect(overfullRows(wrapping, 40)).toEqual([]) // 34 + 4 cells: fits on its own line
+  expect(overfullRows(wrapping, 37)).toHaveLength(1)
 })

@@ -113,7 +113,7 @@ export function overfullRows(tree: Node, width: number, surface = 'terminal'): A
     if (typeof n === 'string') return
     const own = typeof n.props?.width === 'number' ? Math.min(n.props.width, room) : room
     const inner = own - Number(n.props?.marginLeft ?? 0) - Number(n.props?.marginRight ?? 0)
-    if (n.type === 'Box' && n.props?.flexDirection === 'row' && n.props?.flexWrap !== 'wrap') {
+    if (n.type === 'Box' && n.props?.flexDirection === 'row') { // a wrapping row needs room for its widest item
       const need = minCells({ ...n, props: { ...n.props, marginLeft: 0, marginRight: 0 } }, surface)
       if (need > inner) out.push(`${String(n.props.key ?? 'row')}: needs ${need} cells, has ${inner} (${textOf(n).slice(0, 60)})`)
     }

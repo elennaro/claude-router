@@ -131,7 +131,7 @@ const MEASURE = `
   const blend = (f, b) => { const a = f[3] ?? 1; return [0, 1, 2].map(i => f[i] * a + b[i] * (1 - a)) }
   const ratio = (f, b) => { const x = lum(blend(f, b)), y = lum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05) }
   const bgOf = el => { for (let e = el; e; e = e.parentElement) { const c = P(getComputedStyle(e).backgroundColor); if (c.length === 3 || (c.length === 4 && c[3] > 0.5)) return c.slice(0, 3) } return null }
-  const out = { dark: matchMedia('(prefers-color-scheme: dark)').matches, w: innerWidth, sw: document.documentElement.scrollWidth, h: document.documentElement.scrollHeight, svgs: [], html: [] }
+  const out = { dark: matchMedia('(prefers-color-scheme: dark)').matches, w: innerWidth, sw: document.documentElement.scrollWidth, h: document.body.getBoundingClientRect().height + 32, svgs: [], html: [] }
   const backs = JSON.parse(document.body.dataset.backs || '[]').map(h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16)))
   for (const svg of document.querySelectorAll('svg[data-name]')) {
     const W = +svg.getAttribute('width'), H = +svg.getAttribute('height')
@@ -256,7 +256,7 @@ const TREE_MEASURE = `
     if (r.right > band.right + 1) bad.push('"' + e.textContent.slice(0, 50) + '" runs past the band edge')
     if (cs.textOverflow !== 'ellipsis' && e.scrollWidth > e.clientWidth + 1 && cs.overflow !== 'visible') bad.push('"' + e.textContent.slice(0, 50) + '" is clipped')
   }
-  const pre = document.createElement('pre'); pre.id = 'ui-out'; pre.hidden = true; pre.textContent = JSON.stringify({ dark: matchMedia('(prefers-color-scheme: dark)').matches, h: document.documentElement.scrollHeight, bad }); document.body.appendChild(pre)
+  const pre = document.createElement('pre'); pre.id = 'ui-out'; pre.hidden = true; pre.textContent = JSON.stringify({ dark: matchMedia('(prefers-color-scheme: dark)').matches, h: document.body.getBoundingClientRect().height + 32, bad }); document.body.appendChild(pre)
 })()`
 for (const t of ['dark', 'light']) TERM[t].css = Object.entries(TERM[t]).filter(([k]) => k !== 'css').map(([k, v]) => `--${k}:${v}`).join(';')
 const treePage = s => `<!doctype html><html><head><meta charset="utf-8"><style>:root{${TERM.light.css}}@media (prefers-color-scheme:dark){:root{${TERM.dark.css}}}body{margin:16px;background:var(--bg);color:var(--fg);font:14px/1.25 Consolas,'Cascadia Mono',Menlo,'DejaVu Sans Mono',monospace}#band{width:${s.width}ch;outline:1px dashed color-mix(in srgb,var(--fg) 25%,transparent)}</style></head><body>${`<div id="band">${treeHtml(s.tree, 'terminal')}</div>`}<script>${TREE_MEASURE}</script></body></html>`

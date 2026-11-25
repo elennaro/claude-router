@@ -1364,14 +1364,17 @@ export const register: Register = on => {
     const board = () => openBoard($, s).catch(() => $.ui.toast('router: could not open the board'))
     const picked = await read($, chat)
     const undo = () => update($, chat, (c): ChatModel => ({ ...c, model: null, by: 'you', routed: false, from: null })) // back to the default; auto stays off for this chat
+    // under 72 cells the row keeps 1-cell gaps and leaves the cache hit to Stats; narrower still, the buttons wrap
+    // onto a second line instead of running off the edge (checked at 40-120 cells by tests/ui.test.ts)
+    const narrow = e.props.bodyColumns < 72
 
     const row = (
-      <Box key="router-row" flexDirection="row" alignItems="center" gap={2} width={e.props.bodyColumns}>
+      <Box key="router-row" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={narrow ? 1 : 2} width={e.props.bodyColumns}>
         <Text><Text color={f.v.isOn ? 'success' : 'inactive'}>●</Text> Router</Text>
         {f.v.isOn && <Text wrap="truncate-end"><Text color={modelColor(f.main?.model ?? s.cfg.main.model)}>■</Text> {f.now}</Text>}
         {f.v.isOn && picked.by === 'auto' && picked.model && <Button key="router-chat-undo" plain dimColor label={`Picked ${pretty(picked.model)} for this chat · Undo`} onPress={undo} />}
         {f.v.isOn && <Text dimColor={!isExtra(f.chat)} color={isExtra(f.chat) ? 'warning' : undefined} wrap="truncate-end">{netWords(f.chat)}</Text>}
-        {f.v.isOn && f.hit !== undefined && <Text dimColor wrap="truncate-end">cache hit {f.hit}%</Text>}
+        {f.v.isOn && f.hit !== undefined && !narrow && <Text dimColor wrap="truncate-end">cache hit {f.hit}%</Text>}
         {!f.v.isOn && <Text dimColor wrap="truncate-end">off {f.where}</Text>}
         {open !== 'settings' && Object.values((await read($, tools))?.tools ?? {}).some(x => x.isBehind) && <Button key="router-update-tip" plain label="Update available" onPress={flip('settings')} />}
         <Box flexGrow={1} />
@@ -1385,7 +1388,7 @@ export const register: Register = on => {
     const isNew = (await $.session.usage().catch(() => undefined))?.context.tokens === undefined // nothing answered yet: no cache to lose
     const offerRow = offer
       ? (
-          <Box key="router-offer" flexDirection="row" alignItems="center" gap={2} width={e.props.bodyColumns}>
+          <Box key="router-offer" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} width={e.props.bodyColumns}>
             <Text color="warning" wrap="wrap">{offer.action === 'up' ? `The work ahead looks harder: ${pretty(offer.model)} fits it better.` : `The work ahead looks lighter: ${pretty(offer.model)} can do it at the same quality.`}{switchCost(offer.usd, isNew)}</Text>
             <Button key="router-offer-compact" {...(offer.kind === 'compact' ? { variant: 'primary' as const } : { plain: true as const })} label={`Compact and switch to ${pretty(offer.model)}`} onPress={() => switchChat($, s, offer.model, 'compact')} />
             <Button key="router-offer-fresh" {...(offer.kind === 'fresh' ? { variant: 'primary' as const } : { plain: true as const })} label={`Fresh start on ${pretty(offer.model)}`} onPress={() => switchChat($, s, offer.model, 'fresh')} />
@@ -1394,7 +1397,7 @@ export const register: Register = on => {
         )
       : isHint && tip
         ? (
-            <Box key="router-offer" flexDirection="row" alignItems="center" gap={2} width={e.props.bodyColumns}>
+            <Box key="router-offer" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} width={e.props.bodyColumns}>
               <Text color="warning" wrap="wrap">{pretty(tip.model)} fits {tip.cls} better.{switchCost(tip.usd, isNew)}</Text>
               <Button key="router-tip-switch" variant="primary" label={isNew ? `Switch to ${pretty(tip.model)}` : `Compact and switch to ${pretty(tip.model)}`} onPress={() => switchChat($, s, tip.model, isNew ? 'now' : 'compact')} />
               <Button key="router-hide" plain dimColor label="Dismiss" onPress={() => update($, isHidden, () => true)} />
@@ -1404,7 +1407,7 @@ export const register: Register = on => {
     const lapsed = f.v.isOn && !offerRow ? await read($, cold) : null
     const coldRow = lapsed
       ? (
-          <Box key="router-cold" flexDirection="row" alignItems="center" gap={2} width={e.props.bodyColumns}>
+          <Box key="router-cold" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} width={e.props.bodyColumns}>
             <Text color="warning" wrap="wrap">{coldWords(lapsed)}</Text>
             <Button key="router-cold-compact" variant="primary" label="Compact first" onPress={() => compactFirst($, s)} />
             <Button key="router-cold-keep" plain dimColor label="Keep it all" onPress={() => update($, cold, () => null)} />
