@@ -13,7 +13,7 @@ import {
   type Ask, AUTO, BUILTIN, DELEGATE_ID, delegateSection, wantsDelegate, CLASS_LABELS, type Config, type Usage, type SessionWindow, adviseSwitch, agentTier, autoModel, classifierPrompt, firstModel, parseSessionCheck, sessionCheckPrompt, sessionCheckSystem, classifierSystem, classifyByRules, costUsd, explicitAsk, family,
   classifyPlan, isCacheBreak, merge, settleAnswers, readLabel, prices, rank, setPrices, turnEffort, briefHash, isHarder, needsSecondSample, spawnPick, withoutRouter,
   type Mood, longRun, moodPrompt, moodSystem, parseMood, raiseEffort, raiseSteps, stepUp, rebuildUsd, stepUsd, switchMath, FAMILIES, coldMath,
-  AWAKE_DEFAULT_HOURS, AWAKE_HOURS, AWAKE_PING_MS, AWAKE_TEXT, AWAY_COMPACT, awakeNext,
+  AWAKE_DEFAULT_HOURS, AWAKE_HOURS, AWAKE_PING_MS, AWAKE_TEXT, AWAY_COMPACT, awakeNext, isNudgeReply,
   SIZED, briefPaths, bucket, sizeOf, cacheSheet, PASTE_MIN, estTokens, keepsRaw, pasteModel, pasteSystem, pastePrompt, offloaded,
 } from './policy'
 import { type Cell, NAMES, TOOL_NAMES, addWhy, awayWords, coldWords, whyWords, barsSvg, boardHtml, cardLayout, hitPct, switchCost, svgSize, isExtra, modelColor, money, shade, net, netPct, netWords, savedUsd, statsSvg, withMode } from './view'
@@ -78,6 +78,7 @@ type State = {
   coldTimer: { cancel: () => void } | undefined // keep-awake: fires 50 minutes after the main chat's last step
   awakeSince: number // the main chat's last step that was not a keep-awake nudge: the away window starts there
   pinging: boolean // the turn running now is the router's own keep-awake nudge
+  openTurn: string // the main chat's turn still running ('' when idle): keep-awake waits while one is open
   briefRun: Map<string, string> // brief hash -> the agentId of its latest run
   wastedRuns: Set<string> // runs a re-spawn replaced: no saving counts for them
   paneOpened: boolean
@@ -545,7 +546,8 @@ function arm($: EngineInterface, s: State, model: string) {
   s.coldTimer = $.clock.after(AWAKE_PING_MS, () => { void tick($, s, model) })
 }
 async function tick($: EngineInterface, s: State, model: string) {
-  if (s.switching || s.cfg.mode === 'off' || s.headless) return
+  // a turn still open (a question or a permission waiting on you): a nudge would only queue behind it; its next step re-arms
+  if (s.switching || s.cfg.mode === 'off' || s.headless || s.openTurn) return
   const now = await $.clock.now()
   const next = awakeNext({ on: (await read($, features)).awake, now, lastStep: s.prev.at, since: s.awakeSince, hours: await read($, awakeHours), cache: s.lastContext })
   if (next === 'cold') {
@@ -879,7 +881,7 @@ export const register: Register = on => {
   const s: State = {
     cfg: BUILTIN, home: '', root: '', project: 'unknown', sources: 'built-in only', lastClass: null, lastHintModel: null,
     hasClassified: false, hadClass: false, skipEffortThisTurn: false, headless: false, agentEffort: new Map(), defs: new Map(),
-    prev: NO_PREV, lastContext: 0, mainSteps: 0, mainOut: 0, cleanChanges: 0, baseEffort: '', rerouted: 0, lastRerouted: '', agentType: new Map(), agentAsked: new Map(), agentSpend: new Map(), briefRun: new Map(), wastedRuns: new Set(), paneOpened: false, pasted: false, coldTimer: undefined, awakeSince: 0, pinging: false,
+    prev: NO_PREV, lastContext: 0, mainSteps: 0, mainOut: 0, cleanChanges: 0, baseEffort: '', rerouted: 0, lastRerouted: '', agentType: new Map(), agentAsked: new Map(), agentSpend: new Map(), briefRun: new Map(), wastedRuns: new Set(), paneOpened: false, pasted: false, coldTimer: undefined, awakeSince: 0, pinging: false, openTurn: '',
     session: 'session', label: '', lastLedgerTurn: '', pending: [], scheduled: false, warned: false, totals: { proj: EMPTY_TALLY, since: undefined }, routeModels: true, sure: false, switchTurn: false,
     ask: undefined, stickyAsk: undefined, v: undefined, seenPrompt: false, samples: [], turnCount: 0, quietUntil: 0, declined: null, switching: false,
     briefs: new Map(), siblings: new Map(), queue: Promise.resolve(), savedAgents: NO_AGENTS, unhappy: 0,
@@ -1047,6 +1049,7 @@ export const register: Register = on => {
     // only the person's own message (typed, or from their phone) is offloaded, never a peer's or a notification
     const own = e.origin?.kind === 'composer' || e.origin?.kind === 'bridge'
     if (own && (await read($, cold))) await update($, cold, () => null) // the message re-reads the chat: the offer is moot
+    if (own && (await read($, away))?.back) await update($, away, () => null) // you have seen the report
     const short = own && (await read($, features)).pastes ? await offload($, s, e.text) : undefined
     if (short) e = { ...e, text: short }
     // typed over a running turn, the prompt joins that turn: it may raise the turn's routing, never lower it
@@ -1248,12 +1251,15 @@ export const register: Register = on => {
         const a = await read($, away)
         // back after the cache would have lapsed with no router: that step would have written the whole chat again
         // shortcut: after the window's compaction no saving is booked (the compaction's own cost isn't measured); book it once it is
-        if (a?.pings && !a.compacted && now - s.awakeSince > CACHE_LIFE_MS) {
+        let saved = 0
+        if (a?.pings && !a.back && !a.compacted && now - s.awakeSince > CACHE_LIFE_MS) {
           const r = u.cache_read_input_tokens
-          await bookSaving($, s, noRouter.model, rebuildUsd(noRouter.model, r) - stepUsd(noRouter.model, r, 0))
+          saved = rebuildUsd(noRouter.model, r) - stepUsd(noRouter.model, r, 0)
+          await bookSaving($, s, noRouter.model, saved)
         }
         s.awakeSince = now
-        if (a) await update($, away, () => null)
+        // the report stays through your first turn back, with what it saved; your next message clears it
+        if (a && !a.back) await update($, away, (x): Away | null => (x ? { ...x, back: true, saved } : null))
       }
       s.mainSteps++
       s.mainOut += u.output_tokens
@@ -1461,6 +1467,22 @@ export const register: Register = on => {
   }).catch((_, e, next) => next(e))
 
   // The widget: a glance in the session rail (clicks may not reach it there); expanded, the Stats card.
+  // keep-awake's nudge and its one-phrase reply draw nothing (ctrl+o still shows the nudge); the band reports them
+  on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
+    if (e.props.origin.kind !== 'plugin' || e.props.text !== AWAKE_TEXT || e.props.isExpanded) return next(e)
+    const { Box } = $.ui.resolve(e)
+    return <Box />
+  })
+  on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
+    if (!isNudgeReply(e.props.text)) return next(e)
+    const { Box } = $.ui.resolve(e)
+    return <Box />
+  })
+
+  // the main chat's open turn: a question or permission dialog waiting on you keeps it open
+  on('turn.start', async (_, e, next) => { if (e.agentId === undefined) s.openTurn = e.turnId; return next(e) })
+  on('turn.complete', async (_, e, next) => { if (e.turnId === s.openTurn) s.openTurn = ''; return next(e) })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const el = $.ui.resolve(e)
     const { Box, Button, Text } = el

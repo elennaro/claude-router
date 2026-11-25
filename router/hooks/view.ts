@@ -8,8 +8,10 @@ export const money = (n: number) => (n <= -0.005 ? `-$${(-n).toFixed(2)}` : `$${
 export const coldWords = (c: { cache: number; resume: number; extra: number; perStep: number; payback: number }) =>
   `You were away over an hour, so the cache expired: your next message re-reads the whole chat (${Math.round(c.cache / 1000)}K tokens, about ${money(c.resume)}) either way. Compacting first adds about ${money(c.extra)}, then saves about ${money(c.perStep)} a step, paying back in about ${c.payback} steps. The summary keeps the goal, plan, decisions and files, but loses detail.`
 // Keep-awake's report while you were away: what the nudges cost against re-reading the chat, and the compaction if any.
-export const awayWords = (a: { pings: number; usd: number; rebuild: number; compacted: boolean }, hours: number) =>
-  a.compacted
+export const awayWords = (a: { pings: number; usd: number; rebuild: number; compacted: boolean; back?: boolean; saved?: number }, hours: number) =>
+  a.back && !a.compacted
+    ? `While you were away the router kept this chat's cache warm: ${a.pings} ${a.pings === 1 ? 'nudge' : 'nudges'} for ${money(a.usd)}${a.saved ? `, saving about ${money(a.saved)} of re-reading it all` : ' (back within the hour: no re-read was due)'}.`
+    : a.compacted
     ? `While you were away the router kept this chat's cache warm for ${hours} hours (${a.pings} ${a.pings === 1 ? 'nudge' : 'nudges'}, ${money(a.usd)}), then compacted it into a handoff while still warm: the summary says what it was doing, where it stopped and the next step.`
     : `While you were away the router kept this chat's cache warm: ${a.pings} ${a.pings === 1 ? 'nudge' : 'nudges'}, ${money(a.usd)} so far, against about ${money(a.rebuild)} to re-read it all on your return.`
 export const switchCost = (usd: number | undefined, isNew: boolean) => (usd && !isNew ? ` Switching re-reads the chat: about ${money(usd)} now, less after compacting.` : '')

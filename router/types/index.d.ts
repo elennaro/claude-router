@@ -86,7 +86,8 @@ export type Features = { autoSwitch: boolean; sizing: boolean; pastes: boolean; 
 export type Cold = { cache: number; resume: number; extra: number; perStep: number; payback: number }
 // While you are away: the nudges sent since your last step, what they cost, what a rebuild would have cost, and whether
 // the window ended in a compaction. Shown in the band until your next message.
-export type Away = { pings: number; usd: number; rebuild: number; compacted: boolean }
+// back: you returned (the report stays until your next message); saved: the rebuild it avoided, booked then
+export type Away = { pings: number; usd: number; rebuild: number; compacted: boolean; back?: boolean; saved?: number }
 
 declare module 'claude-code' {
   interface PluginState {

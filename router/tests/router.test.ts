@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import {
-  BUILTIN, CLASS_LABELS, adviseSwitch, effortRank, rank, agentTier, autoModel, needsSecondSample, briefHash, briefTier, stepUp, classifyByRules, costUsd, firstModel, isCacheBreak, isContinuation, merge, parseJev, parseSessionCheck, parseMood, raiseEffort, moodPrompt, longRun, readLabel, spawnPick, turnEffort, withoutRouter, rebuildUsd, stepUsd, switchMath, remainingSteps, quickPays, type Life, sessionCheckSystem, briefPaths, sizeOf, bucket, estTokens, keepsRaw, pasteModel, pasteSystem, offloaded, cacheSheet, coldMath, awakeNext, AWAKE_TEXT,
+  BUILTIN, CLASS_LABELS, adviseSwitch, effortRank, rank, agentTier, autoModel, needsSecondSample, briefHash, briefTier, stepUp, classifyByRules, costUsd, firstModel, isCacheBreak, isContinuation, merge, parseJev, parseSessionCheck, parseMood, raiseEffort, moodPrompt, longRun, readLabel, spawnPick, turnEffort, withoutRouter, rebuildUsd, stepUsd, switchMath, remainingSteps, quickPays, type Life, sessionCheckSystem, briefPaths, sizeOf, bucket, estTokens, keepsRaw, pasteModel, pasteSystem, offloaded, cacheSheet, coldMath, awakeNext, AWAKE_TEXT, isNudgeReply,
 } from '../hooks/policy'
 import { addWhy, whyWords, boardHtml, cacheStrength, cardLayout, hitPct, svgSize, switchCost, netWords, savedUsd, shade, statsSvg, withMode } from '../hooks/view'
 import { RUNNER, type Step, labelOf, livesOf } from '../hooks/db'
@@ -1207,12 +1207,38 @@ test('keep awake: a nudge every 50 minutes at low effort on the same model, book
   await $.prompt.submit({ text: 'ok, where were we', origin: { kind: 'composer' }, wait: false })
   await step($, 'medium')
   expect(sent.at(-1)).not.toBe('low')
-  expect(await band.find({ key: 'router-away' })).toBeFalsy()
+  // the report stays through your first turn back, with what it saved; your next message clears it
+  expect(await band.find({ type: 'Text', text: /2 nudges for \$0\.08, saving about \$1\.56 of re-reading it all/ })).toBeTruthy()
+  await $.prompt.submit({ text: 'next thing', origin: { kind: 'composer' }, wait: false })
+  expect(await band.find({ type: 'Text', text: /While you were away/ })).toBeFalsy() // (a key lookup never matched: it proved nothing)
   await end($)
   const u = rows(batches, 'usage').filter(r => r[2] === 'awake')
   const cents = (x: unknown) => Math.round(Number(x) * 10000) / 100
   expect(u.map(r => [cents(r[5]), cents(r[6]), cents(r[7])])).toEqual([[4.01, 0, 4.01], [4.01, 0, 4.01], [0, 156, 0]]) // two nudges as they really ran (200K read, 10 in, 5 out), then $1.60 - $0.04 avoided
   await band.unmount()
+})
+
+test('keep awake waits while a turn is open (a question waiting on you), and its nudge and reply draw nothing', async (engine, on) => {
+  const $ = engine as any
+  const nudges: Array<{ text: string }> = []
+  wire(on, { sent: [], nudges, files: {}, read: 200_000, write: 0, ownClock: true })
+  on('turn.start', (_: unknown, e: { turnId: string }) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  const clock = mock.clock(on, { now: 1_000 })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await $.turn.start({ turnId: 'q', text: 'pick one' })
+  await step($, 'medium') // the step that asked the question; the turn stays open while you are away
+  await clock.advance(3_000_000)
+  expect(nudges.length).toBe(0)
+  await $.turn.complete({ turnId: 'q', reason: 'answer', answer: '' })
+  await step($, 'medium')
+  await clock.advance(3_000_000)
+  expect(nudges.length).toBe(1)
+  const row = await $.ui.mount({ plugin: 'router', component: 'UserMessage', surface: 'desktop', props: { text: AWAKE_TEXT, origin: { kind: 'plugin', name: 'router' }, isExpanded: false } })
+  expect(await row.find({ type: 'Box' })).toBeTruthy() // our empty row, not the engine's
+  expect(await row.find({ type: 'Text' })).toBeFalsy()
+  await row.unmount()
+  expect([isNudgeReply('cache warm'), isNudgeReply(' Cache warm.\n'), isNudgeReply('the cache warm-up failed')]).toEqual([true, true, false])
 })
 
 test('keep awake ends after the hours you set: the chat is compacted while warm into a handoff, and the nudges stop', async (engine, on) => {

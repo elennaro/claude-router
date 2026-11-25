@@ -619,7 +619,9 @@ export const AWAKE_MIN = 20_000 // tokens: below this a rebuild costs cents, and
 export const AWAKE_HOURS = [2, 4, 8, 12, 24]
 export const AWAKE_DEFAULT_HOURS = 12
 // short on purpose: it stays in the chat; the guard (no work, no tools) is what keeps the model from resuming a task
-export const AWAKE_TEXT = 'router keep-alive (automatic, keeps the cache warm). Not a request: no work, no tools. Reply only: ok'
+export const AWAKE_TEXT = 'router keep-alive (automatic, keeps the cache warm). Not a request: no work, no tools. Reply only: cache warm'
+// The nudge's reply, matched to hide its row: a phrase no real answer is likely to be on its own
+export const isNudgeReply = (text: string) => /^\s*cache warm\.?\s*$/i.test(text)
 export const AWAY_COMPACT = 'The person has been away for hours and this chat is being compacted as a handoff. Write: what this chat was working on, what is done, where it stopped, what is left, open decisions, the files involved, and end with one continuation message the person can send to pick up exactly where it stopped.'
 // One nudge: read the chat from cache, write the nudge and its reply (about 150 tokens), a word out.
 export const pingUsd = (model: string, cache: number) => stepUsd(model, cache, 20) + rebuildUsd(model, 150)
