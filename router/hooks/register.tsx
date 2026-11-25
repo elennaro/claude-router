@@ -1551,7 +1551,7 @@ export const register: Register = on => {
       : isHint && tip
         ? (
             <Box key="router-offer" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} width={e.props.bodyColumns}>
-              <Text color="warning" wrap="wrap">{pretty(tip.model)} fits {tip.cls} better.{switchCost(tip.usd, isNew)}</Text>
+              <Text color="warning" wrap="wrap">{pretty(tip.model)} fits this task better{tip.cls === 'this task' ? '' : ` (${tip.cls})`}.{switchCost(tip.usd, isNew)}</Text>
               <Button key="router-tip-switch" variant="primary" label={isNew ? `Switch to ${pretty(tip.model)}` : `Compact and switch to ${pretty(tip.model)}`} onPress={() => switchChat($, s, tip.model, isNew ? 'now' : 'compact')} />
               <Button key="router-hide" plain dimColor label="Dismiss" onPress={() => update($, isHidden, () => true)} />
             </Box>
