@@ -557,7 +557,7 @@ async function clearChat($: EngineInterface, s: State) {
 
 // Settings: the person picks this chat's model (no auto moves for the chat then), or Auto gives it back to the router.
 async function pickModel($: EngineInterface, v: string) {
-  if (v === 'auto') return update($, chat, (c): ChatModel => ({ ...c, model: null, by: null, routed: false, from: null }))
+  if (v === 'auto') { await update($, chat, (c): ChatModel => ({ ...c, model: null, by: null, routed: false, from: null })); return }
   await update($, chat, (c): ChatModel => ({ ...c, model: v, by: 'you', routed: false, from: null }))
   await update($, advice, () => null)
   await update($, hint, () => null)
@@ -650,6 +650,18 @@ async function setScope($: EngineInterface, s: State, scope: 'global' | 'project
   }
   s.defs.clear()
   await load($, s)
+}
+
+// Edit rules: routing.json holds only your overrides, so an empty one gets a note on how it works, and the built-in
+// rules are written beside it to read (never copied into routing.json: a copy there would pin today's defaults).
+const RULES_NOTE = (ref: string) => `${JSON.stringify({ $help: `Your overrides of the router's rules. Anything here wins over the built-in rule of the same name; leave a key out to keep the built-in one, which updates with the plugin. The built-in rules are in ${ref} (rewritten each time you press Edit rules, so edit here, not there). Examples: "main": { "model": "opus", "effort": "high" }, "classes": { "docs": { "model": "sonnet" } }. Run /route reload after saving.` }, null, 2)}\n`
+async function editRules($: EngineInterface, s: State) {
+  const path = `${s.home}/.claude/routing.json`
+  const ref = `${s.home}/.claude/router/builtin-rules.json`
+  await $.fs.write(ref, `${JSON.stringify(BUILTIN, null, 2)}\n`)
+  const old = (await $.fs.exists(path)) ? String(await $.fs.read(path)).trim() : ''
+  if (!old || old === '{}') await $.fs.write(path, RULES_NOTE(ref))
+  await openFile($, path)
 }
 
 async function openFile($: EngineInterface, file: string) {
@@ -1312,12 +1324,12 @@ export const register: Register = on => {
           note('router-tools-note', 'The newest models need current tools.'))}
         <Box key="router-more" flexDirection="row" alignItems="center" gap={2} marginLeft={LABEL + 1}>
           <Button key="router-widget" plain label={widgetOpen ? 'Hide widget' : 'Show widget'} onPress={() => showWidget($, !widgetOpen)} />
-          <Button key="router-rules" plain label="Edit rules" onPress={() => openFile($, `${s.home}/.claude/routing.json`).catch(() => $.ui.toast('router: could not open routing.json'))} />
+          <Button key="router-rules" plain label="Edit rules" onPress={() => editRules($, s).catch(() => $.ui.toast('router: could not open routing.json'))} />
         </Box>
       </Box>
     )
     return stack(<Box flexDirection="column" gap={1} width={e.props.bodyColumns}>{head}{settings}</Box>)
-  }).catch(($, e, next) => next(e))
+  }).catch((_, e, next) => next(e))
 
   // The widget: a glance in the session rail (clicks may not reach it there); expanded, the Stats card.
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {

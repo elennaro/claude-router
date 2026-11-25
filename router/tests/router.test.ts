@@ -565,7 +565,7 @@ test('the router\'s own reader and researcher run on the model their brief\'s si
   on('fs.stat', (_: unknown, e: { path: string }) => {
     const p = e.path.replace(/\\/g, '/').replace(/^[A-Z]:/, '')
     if (!(p in sizes)) throw new Error('no such file')
-    return { value: { kind: 'file', size: sizes[p], mtimeMs: 0, isLink: false } }
+    return { value: { kind: 'file' as const, size: sizes[p]!, mtimeMs: 0, isLink: false } }
   })
   const spawned: Array<{ model?: string; prompt: string }> = []
   let n = 0
@@ -1173,6 +1173,82 @@ test('a switched-off feature stays off in the next session', async (engine, on) 
   expect(await band.find({ key: 'router-chat-undo' })).toBeFalsy() // Move down is off: no automatic move
   expect(await band.find({ key: 'router-offer-compact' })).toBeTruthy() // the offer is still made
   await band.unmount()
+})
+
+test('Edit rules never opens an empty file: an empty routing.json gets a note, the built-in rules are written beside it, your own rules are kept (owner case 2026-11-25)', async (engine, on) => {
+  const $ = engine as any
+  const files: Record<string, string> = { '/home/.claude/routing.json': '{}\n' }
+  const argv: Array<Array<string>> = []
+  wire(on, { sent: [], files, argv, tokens: 5_000 })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await band.press({ key: 'router-settings' })
+  await band.press({ key: 'router-rules' })
+  const note = JSON.parse(files['/home/.claude/routing.json']!)
+  expect(Object.keys(note)).toEqual(['$help'])
+  expect(note.$help).toContain('/home/.claude/router/builtin-rules.json')
+  expect(JSON.parse(files['/home/.claude/router/builtin-rules.json']!).classes.debugging.model).toBe('opus')
+  expect(argv.some(a => a.join(' ').includes('routing.json'))).toBe(true) // and it opens
+  files['/home/.claude/routing.json'] = '{ "mode": "on", "main": { "effort": "high" } }'
+  await band.press({ key: 'router-rules' })
+  expect(files['/home/.claude/routing.json']).toBe('{ "mode": "on", "main": { "effort": "high" } }')
+  await band.unmount()
+})
+
+test('money integrity: over every spend path, ledger rows, the chat tally, the reasons and the published prices all agree', async (engine, on) => {
+  const $ = engine as any
+  const store = new Map<string, unknown>()
+  const batches: Array<Array<Step>> = []
+  const files: Record<string, string> = { '/home/.claude/routing.json': ROUTING }
+  wire(on, {
+    sent: [], store, batches, files, tokens: 5_000, read: 20_000, write: 3_000, ownClock: true,
+    haiku: (e: any) => (e.system === pasteSystem ? 'Request: x\nAnalysis: y' : /Swap every variable/.test(String(e.prompt)) ? 'mechanical 0.95' : 'engineering 0.95'),
+  })
+  const clock = mock.clock(on, { now: 1_000 })
+  let n = 0
+  on('agent.spawn', (_: unknown, e: { model?: string }) => ({ model: e.model ?? 'inherit', agentId: `sub${++n}` }))
+  on('tool.call', () => ({ result: { content: 'ok' } }))
+  on('ui.toast', () => ({ value: undefined }))
+  const stepAs = async (model: string, effort: string, agentId?: string) => { for await (const _ of $.turn.step({ turnId: `t${n}`, index: 0, model, effort, messageCount: 1, ...(agentId ? { agentId } : {}) })) { /* drain */ } }
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+
+  await $.prompt.submit({ text: 'set up the release pipeline for the app', origin: { kind: 'composer' }, wait: false })
+  await stepAs('claude-opus-5-5', 'medium') // engineering: Opus raised to high, extra on effort
+  const brief = 'Swap every variable called foo for bar across the utils folder'
+  await $.agent.spawn({ prompt: brief, subagentType: 'general-purpose', parentModel: 'claude-opus-5-5' })
+  await stepAs('haiku', 'medium', 'sub1') // moved to Haiku: saved on subagents
+  await $.agent.spawn({ prompt: brief, subagentType: 'general-purpose', parentModel: 'claude-opus-5-5' }) // a repeat: sub1's saving goes back
+  await stepAs('sonnet', 'medium', 'sub2')
+  await $.prompt.submit({ text: `Find the error\n${'step ok\n'.repeat(6_000)}`, origin: { kind: 'composer' }, wait: false }) // a paste, read by Haiku
+  await $.tool.call({ tool: 'Read', file_path: '/home/.claude/router/pastes/sess-1-1000.txt' }) // then read whole: a miss
+  await stepAs('claude-opus-5-5', 'medium')
+  await clock.advance(2_100)
+  await end($)
+
+  const t = (store.get('agents:sess-1') as { stats: { tally: { actualUsd: number; baselineUsd: number; extraUsd: number; by: Record<string, { saved: number; extra: number }> } } }).stats.tally
+  const usage = rows(batches, 'usage')
+  const sum = (i: number) => usage.reduce((a, r) => a + Number(r[i]), 0)
+  const near = (a: number, b: number) => Math.abs(a - b) < 1e-9
+  // (a) the ledger and the tally are the same money
+  expect([near(sum(5), t.actualUsd), near(sum(6), t.baselineUsd), near(sum(7), t.extraUsd)]).toEqual([true, true, true])
+  // (b) the reasons add up to the totals, and saved minus extra is the net
+  const by = Object.values(t.by)
+  const saved = by.reduce((a, x) => a + x.saved, 0)
+  expect(near(by.reduce((a, x) => a + x.extra, 0), t.extraUsd)).toBe(true)
+  expect(near(saved - t.extraUsd, t.baselineUsd - t.actualUsd)).toBe(true)
+  expect(Object.keys(t.by).sort()).toEqual(['agents', 'effort', 'paste', 'router'])
+  expect(t.by.effort!.extra > 0 && t.by.router!.extra > 0).toBe(true)
+  // the repeat took the first run's saving back (only the Sonnet rerun saves against Opus); the paste miss saved nothing
+  const rerun = usage.find(r => r[2] === 'general-purpose' && r[3] === 'sonnet')!
+  expect(near(t.by.agents!.saved, Number(rerun[6]) - Number(rerun[5]))).toBe(true)
+  expect(Math.abs(t.by.paste!.saved) < 1e-9).toBe(true)
+  // (c) every step row's extra is what it cost over its baseline, never negative
+  for (const r of usage.filter(r => Number(r[4]) > 0)) expect(near(Number(r[7]), Math.max(0, Number(r[5]) - Number(r[6])))).toBe(true)
+  // (d) one step priced by hand from the pricing page: Opus main step, 10 in at $4, 5 out at $20, 20K read at $0.2,
+  // 3K written as 1-hour entries at $8 (per million); no router it is Opus medium, 1/1.4 of the high step
+  const opus = (10 * 4 + 5 * 20 + 20_000 * 0.2 + 3_000 * 8) / 1e6
+  const first = usage.find(r => r[2] === 'main' && r[3] === 'opus')!
+  expect([near(Number(first[5]), opus), near(Number(first[6]), opus / 1.4)]).toEqual([true, true])
 })
 
 test('ledger writes never hold a step: rows wait in memory and go out as one batch about every 2 s', async (engine, on) => {

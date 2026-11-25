@@ -92,13 +92,13 @@ test('an Antigravity role whose family the plan lacks or Google retired runs on 
   const runs: Array<Array<string>> = []
   const $ = { process: { run: async (argv: Array<string>) => { runs.push(argv); return { exitCode: 0, stdout: 'ok', stderr: '' } } } }
   const picks = newestAgy(AGY) // argon, hydrogen, flash: no neon
-  const a = await runAgy($ as any, BUILTIN.outside.antigravity.deep as any, { role: 'deep', brief: 'think' }, picks)
+  const a = await runAgy($ as any, BUILTIN.outside.antigravity!.deep as any, { role: 'deep', brief: 'think' }, picks)
   expect(a).toEqual({ text: 'ok', model: 'gemini-4-hydrogen-xhigh', effort: 'xhigh' })
-  expect('error' in await runAgy($ as any, BUILTIN.outside.antigravity.deep as any, { role: 'deep', brief: 'think' }, {})).toBe(true)
+  expect('error' in await runAgy($ as any, BUILTIN.outside.antigravity!.deep as any, { role: 'deep', brief: 'think' }, {})).toBe(true)
 })
 
 test('no Antigravity role uses a family leaving on 2026-11-30 (Argon, 3.8 Flash)', () => {
-  for (const r of Object.values(BUILTIN.outside.antigravity)) expect(['argon', 'flash']).not.toContain(r.family)
+  for (const r of Object.values(BUILTIN.outside.antigravity ?? {})) expect(['argon', 'flash']).not.toContain(r.family)
 })
 
 test('an Antigravity brief that starts with "-" cannot be read as a flag', async () => {
