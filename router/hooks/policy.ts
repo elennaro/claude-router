@@ -337,6 +337,44 @@ export function spawnPick(f: SpawnFacts, cfg: Config): { model: string; tier: Ti
   return { model, tier }
 }
 
+// The router's own agents (router/agents/*.md), sized from their brief before they start (docs/PLAN-v3.md, slice 2).
+export const SIZED: Record<string, 'reader' | 'web'> = { 'router:document-reader': 'reader', 'router:web-researcher': 'web' }
+export type Size = { tokens?: number; urls: number; judgment: boolean }
+
+// Files a brief names: quoted (spaces allowed), or bare with a folder or a 2+ letter extension. URLs are not files.
+export function briefPaths(brief: string): Array<string> {
+  const isUrl = (p: string) => /^[a-z]+:\/\//i.test(p)
+  const quoted = [...brief.matchAll(/[`"']([^`"'\n]+\.[A-Za-z0-9]{1,6})[`"']/g)].map(m => m[1]!)
+  const bare = brief.replace(/[`"'][^`"'\n]*[`"']/g, ' ').split(/\s+/).map(w => w.replace(/[),.;:!?]+$/, ''))
+    .filter(w => /[\\/]/.test(w) ? /\.[A-Za-z0-9]{1,6}$/.test(w) : /^[\w-]+(\.[\w-]+)*\.[A-Za-z][A-Za-z0-9]{1,5}$/.test(w))
+  return [...new Set([...quoted, ...bare])].filter(p => !isUrl(p))
+}
+
+// What is known before the run: the brief's own tokens plus the named files' (undefined: a file's size is unknown),
+// how many pages it names, and whether it asks for judgment rather than finding.
+// shortcut: 4 bytes a token (over-counts non-English text, so it errs toward Sonnet); use a tokenizer if buckets misfire.
+export function sizeOf(brief: string, fileBytes: number | undefined): Size {
+  return {
+    tokens: fileBytes === undefined ? undefined : Math.ceil((brief.length + fileBytes) / 4),
+    urls: (brief.match(/https?:\/\/\S+/g) ?? []).length,
+    judgment: /\b(compare|comparison|versus|evaluate|assess|recommend|pros and cons|trade-?offs?|critique|review|judge|decide)\b/i.test(brief),
+  }
+}
+
+// Size bucket -> model and budget. Haiku reads up to 50K tokens of finding work (above 100K its price is x5); judgment,
+// unknown size and many pages go to Sonnet. Budgets follow Anthropic's multi-agent write-up: a simple fact-finding
+// job needs 3-10 tool calls. shortcut: starting values, set from the Haiku eval in the Docker harness once it runs.
+const REPORT = 'Report in at most 400 words, with the file and line or the page link for each finding.'
+export function bucket(kind: 'reader' | 'web', z: Size): { model: string; cap: string } {
+  if (kind === 'reader') {
+    const small = !z.judgment && z.tokens !== undefined && z.tokens <= 50_000
+    return { model: small ? 'haiku' : 'sonnet', cap: `Budget: read only what the brief names, and search inside it rather than reading it twice. ${REPORT}` }
+  }
+  if (z.judgment || z.urls > 3) return { model: 'sonnet', cap: `Budget: at most 8 searches and 15 page fetches. ${REPORT}` }
+  if (z.urls > 0) return { model: 'haiku', cap: `Budget: fetch only the pages named, plus at most 2 more if they fall short. ${REPORT}` }
+  return { model: 'haiku', cap: `Budget: at most 4 searches and 6 page fetches. ${REPORT}` }
+}
+
 // Whether class a needs more than class b (null: the main default): a stronger model, or more effort on the same one.
 export function isHarder(a: string, b: string | null, cfg: Config): boolean {
   const ta = cfg.classes[a]

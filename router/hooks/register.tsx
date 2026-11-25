@@ -13,6 +13,7 @@ import {
   type Ask, AUTO, BUILTIN, DELEGATE_ID, delegateSection, wantsDelegate, CLASS_LABELS, type Config, type Usage, type SessionWindow, adviseSwitch, agentTier, autoModel, classifierPrompt, firstModel, parseSessionCheck, sessionCheckPrompt, sessionCheckSystem, classifierSystem, classifyByRules, costUsd, explicitAsk, family,
   classifyPlan, isCacheBreak, merge, settleAnswers, readLabel, prices, rank, setPrices, turnEffort, briefHash, isHarder, needsSecondSample, spawnPick, withoutRouter,
   type Mood, longRun, moodPrompt, moodSystem, parseMood, raiseEffort, raiseSteps, stepUp, rebuildUsd, switchMath, FAMILIES,
+  SIZED, briefPaths, bucket, sizeOf,
 } from './policy'
 import { type Cell, NAMES, TOOL_NAMES, barsSvg, boardHtml, cardLayout, hitPct, switchCost, svgSize, isExtra, modelColor, money, shade, net, netPct, netWords, savedUsd, statsSvg, withMode } from './view'
 
@@ -335,6 +336,19 @@ async function probeLog($: EngineInterface, path: string, line: object) {
 
 // A cache entry of the main chat lives an hour after its last read.
 const CACHE_LIFE_MS = 60 * 60 * 1000
+
+// The bytes of the files a brief names; undefined when it names none, or one is missing, a folder or unreadable.
+async function namedBytes($: EngineInterface, paths: Array<string>, cwd: string, home: string): Promise<number | undefined> {
+  if (!paths.length) return undefined
+  let bytes = 0
+  for (const p of paths) {
+    const full = /^([A-Za-z]:)?[\\/]/.test(p) ? p : p.startsWith('~/') ? `${home}/${p.slice(2)}` : `${cwd}/${p}`
+    const st = await $.fs.stat(full).catch(() => undefined)
+    if (st?.kind !== 'file') return undefined
+    bytes += st.size
+  }
+  return bytes
+}
 
 // The chat's typical answer per main step, in tokens (1,000 before the first answer).
 const typicalOut = (s: State) => (s.mainSteps ? s.mainOut / s.mainSteps : 1000)
@@ -931,6 +945,17 @@ export const register: Register = on => {
     // an exact version means its family: the newest model of it runs
     if (e.model) return named(claudeFamily(e.model) ? { ...e, model: claudeFamily(e.model)! } : e) // explicit model on the call wins
     if (said?.model) return named({ ...e, model: said.model }) // a model named in the brief, next
+    const kind = SIZED[e.subagentType]
+    if (kind && s.routeModels) {
+      // the router's own reader and researcher: model and budget from the brief's size (docs/PLAN-v3.md, slice 2)
+      const b = bucket(kind, sizeOf(e.prompt, await namedBytes($, briefPaths(e.prompt), e.cwd ?? s.root, s.home)))
+      const started = await named({ ...e, model: b.model, prompt: `${e.prompt}\n\n${b.cap}` }, true)
+      // with no router the main model would have done the job on its own model
+      const parentNoRouter = (e.parentAgentId && s.agentAsked.get(e.parentAgentId)) || family(e.parentModel)
+      if (started.agentId && b.model !== parentNoRouter) s.agentAsked.set(started.agentId, parentNoRouter)
+      if (!started.deny) await update($, view, (v): RouterView => ({ ...v, routedAgents: v.routedAgents + 1 }))
+      return started
+    }
     const def: Def = e.subagentType.includes(':') ? { model: 'plugin' } : await definition($, s, e.subagentType)
     if (def.model && claudeFamily(def.model)) return named({ ...e, model: claudeFamily(def.model)! }) // pinned to a version in frontmatter
     if (def.model && def.model !== 'inherit') return named(e) // pinned to a family in frontmatter

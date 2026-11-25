@@ -75,6 +75,8 @@ One paid check, with the owner's OK first: a deliberate A, B, A switch to see wh
 1. The plugin ships agent files: a web researcher (Haiku) and a document reader (Sonnet), with sharp descriptions so the main model picks them itself. The tool list stays fixed, so the cache is never broken. No per-turn reminder, no orchestrator agent: the existing spawn router handles briefs that don't use them.
 2. **Size buckets** from what is known before spawning (paste or file size in tokens, number of URLs, search vs read). Each bucket maps to a model and a cap (fetches, tokens). Unknown size: the bucket's model, no prediction.
 
+Status 2026-11-25: shipped with deterministic tests (`bucket`, `sizeOf`, `briefPaths` in `policy.ts`; the spawn branch in `register.tsx`). The budgets and the 50K line are starting values; the Haiku eval below sets them once the Docker harness exists.
+
 Tests: bucket tables, spawn-routing cases, mutations. Eval: API runs on Haiku up to $5, in the Docker harness below; any Sonnet or Opus answer or judge needs the owner's OK with its cost.
 
 ## Slice 3: big-paste offload

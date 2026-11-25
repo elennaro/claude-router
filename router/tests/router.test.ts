@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import {
-  BUILTIN, CLASS_LABELS, adviseSwitch, effortRank, rank, agentTier, autoModel, needsSecondSample, briefHash, briefTier, stepUp, classifyByRules, costUsd, firstModel, isCacheBreak, isContinuation, merge, parseJev, parseSessionCheck, parseMood, raiseEffort, moodPrompt, longRun, readLabel, spawnPick, turnEffort, withoutRouter, rebuildUsd, stepUsd, switchMath, remainingSteps, quickPays, type Life, sessionCheckSystem,
+  BUILTIN, CLASS_LABELS, adviseSwitch, effortRank, rank, agentTier, autoModel, needsSecondSample, briefHash, briefTier, stepUp, classifyByRules, costUsd, firstModel, isCacheBreak, isContinuation, merge, parseJev, parseSessionCheck, parseMood, raiseEffort, moodPrompt, longRun, readLabel, spawnPick, turnEffort, withoutRouter, rebuildUsd, stepUsd, switchMath, remainingSteps, quickPays, type Life, sessionCheckSystem, briefPaths, sizeOf, bucket,
 } from '../hooks/policy'
 import { boardHtml, cacheStrength, cardLayout, hitPct, svgSize, switchCost, netWords, savedUsd, shade, statsSvg, withMode } from '../hooks/view'
 import { RUNNER, type Step, labelOf, livesOf } from '../hooks/db'
@@ -479,6 +479,55 @@ test('generic subagents go by their brief: sure and cheap moves, unsure gets the
   expect(Number(back![6])).toBe(-Number(sub1![6]))
   expect(Number(back![7])).toBe(Number(sub1![5]) - Number(sub1![7]))
   expect(JSON.stringify(batches)).not.toContain('Swap every variable')
+})
+
+test('size buckets: what the brief names sets the model and budget of the router\'s own agents (docs/PLAN-v3.md, slice 2)', () => {
+  // paths: bare with a folder or a real extension, quoted with spaces; URLs and "e.g." are not paths
+  expect(briefPaths('Read src/app.ts and "C:/My Docs/notes.md", e.g. the intro. See https://x.dev/a.html and README.md.')).toEqual(['C:/My Docs/notes.md', 'src/app.ts', 'README.md'])
+  expect(sizeOf('summarize it https://a.dev https://b.dev', 0)).toEqual({ tokens: 10, urls: 2, judgment: false })
+  expect(sizeOf('compare the two plans', undefined)).toEqual({ tokens: undefined, urls: 0, judgment: true })
+  const reader = (tokens: number | undefined, judgment = false) => bucket('reader', { tokens, urls: 0, judgment }).model
+  expect([reader(50_000), reader(50_001), reader(undefined), reader(1_000, true)]).toEqual(['haiku', 'sonnet', 'sonnet', 'sonnet'])
+  const web = (urls: number, judgment = false) => bucket('web', { tokens: 100, urls, judgment }).model
+  expect([web(0), web(3), web(4), web(1, true)]).toEqual(['haiku', 'haiku', 'sonnet', 'sonnet'])
+  expect(bucket('web', { tokens: 100, urls: 0, judgment: false }).cap).toMatch(/at most 4 searches and 6 page fetches/)
+  expect(bucket('web', { tokens: 100, urls: 2, judgment: false }).cap).toMatch(/only the pages named/)
+})
+
+test('the router\'s own reader and researcher run on the model their brief\'s size calls for, with a budget; your model on the call wins', async (engine, on) => {
+  const $ = engine as any
+  const sent: Array<unknown> = []
+  const batches: Array<Array<Step>> = []
+  wire(on, { sent, batches, files: { '/home/.claude/routing.json': ROUTING }, tokens: 5_000 })
+  const sizes: Record<string, number> = { '/proj/logs/small.log': 40_000, '/proj/logs/big.log': 800_000 }
+  on('fs.stat', (_: unknown, e: { path: string }) => {
+    const p = e.path.replace(/\\/g, '/').replace(/^[A-Z]:/, '')
+    if (!(p in sizes)) throw new Error('no such file')
+    return { value: { kind: 'file', size: sizes[p], mtimeMs: 0, isLink: false } }
+  })
+  const spawned: Array<{ model?: string; prompt: string }> = []
+  let n = 0
+  on('agent.spawn', (_: unknown, e: { model?: string; prompt: string }) => { spawned.push({ model: e.model, prompt: e.prompt }); return { model: e.model ?? 'inherit', agentId: `sub${++n}` } })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const spawn = (subagentType: string, prompt: string, more = {}) => $.agent.spawn({ prompt, subagentType, parentModel: 'claude-opus-5-5', ...more })
+
+  await spawn('router:document-reader', 'Find every timeout error in logs/small.log and list the times')
+  for await (const _ of $.turn.step({ turnId: 't', index: 0, model: 'haiku', effort: 'medium', messageCount: 1, agentId: 'sub1' })) { /* drain */ }
+  await spawn('router:document-reader', 'Find every timeout error in logs/big.log and list the times')
+  await spawn('router:document-reader', 'Find the timeouts in logs/missing.log') // size unknown: the agent's own model
+  await spawn('router:web-researcher', 'Find the current price of the Team plan on https://example.com/pricing')
+  await spawn('router:web-researcher', 'Compare the three hosting offers and recommend one')
+  await spawn('router:web-researcher', 'Look up the release date', { model: 'opus' }) // the main model's pick wins
+
+  expect(spawned.map(x => x.model)).toEqual(['haiku', 'sonnet', 'sonnet', 'haiku', 'sonnet', 'opus'])
+  expect(spawned[0]!.prompt).toMatch(/^Find every timeout error in logs\/small\.log and list the times\n\nBudget: /)
+  expect(spawned[3]!.prompt).toMatch(/only the pages named/)
+  expect(spawned[5]!.prompt).toBe('Look up the release date')
+  await end($)
+  // with no router the main model would have run the job on its own model: the Haiku run is measured against Opus
+  const run = rows(batches, 'usage').find(r => r[2] === 'router:document-reader')!
+  expect(Number(run[6]) > Number(run[5])).toBe(true)
+  expect(rows(batches, 'spawns').filter(r => r[2] === 'router:document-reader').map(r => r[3])).toEqual([1, 1, 1])
 })
 
 test('subagents: a Haiku move needs two sure samples; rules raise a table type; unsure keeps the main default unless you chose the model', async (engine, on) => {
