@@ -59,7 +59,7 @@ const VERSIONS = { at: 0, tools: { claude: { have: '2.1.321', latest: '2.1.330',
 const WIDTHS = [500, 800, 1200] // px: a narrow window, a laptop, a wide screen
 const statsAt = px => { const l = view.cardLayout(Math.floor(px / 8)); return view.statsSvg(CELLS, TURNS, l.width, l.perRow, MIX, '5 turns, 3 agents re-routed') }
 const SURFACES = [
-  ...WIDTHS.map(px => ({ name: `stats-${px}`, kind: 'svg', px, src: statsAt(px) })),
+  ...WIDTHS.map(px => ({ name: `stats-${px}`, kind: 'svg', px: Math.max(px, view.svgSize(statsAt(px)).width + 32), src: statsAt(px) })), // the window holds the card and the page margin
   { name: 'stats-pane', kind: 'svg', px: 400, src: view.statsSvg(CELLS, TURNS, 360, 2, MIX, '5 turns, 3 agents re-routed') },
   { name: 'rail-bars', kind: 'svg', px: 260, src: view.barsSvg(TURNS, 220, 24) },
   ...WIDTHS.map(px => ({ name: `board-${px}`, kind: 'html', px, src: view.boardHtml(BUCKETS, TURNS, 's1', 'Opus', '25 Nov 2026, 12:00', '1 Oct', VERSIONS, 'checked 25 Nov') })),
@@ -101,7 +101,9 @@ function snapshots() {
     if (was === now) continue
     const [a, b] = [was.split('\n'), now.split('\n')]
     const i = a.findIndex((l, k) => l !== b[k])
-    add(`snapshot ${s.name}`, `changed at line ${i + 1}: "${(a[i] ?? '').slice(0, 90)}" → "${(b[i] ?? '').slice(0, 90)}" (run with --update if meant)`)
+    const [x, y] = [a[i] ?? '', b[i] ?? '']
+    const c = [...x].findIndex((ch, k) => ch !== y[k]), from = Math.max(0, (c < 0 ? Math.min(x.length, y.length) : c) - 30)
+    add(`snapshot ${s.name}`, `changed at line ${i + 1}: "…${x.slice(from, from + 70)}" → "…${y.slice(from, from + 70)}" (run with --update if meant)`)
   }
 }
 
@@ -147,7 +149,7 @@ const MEASURE = `
     out.targets = [...document.querySelectorAll('button, a[href], input, select')].filter(e => e.offsetParent !== null).map(e => { const r = e.getBoundingClientRect(); return { t: e.textContent.trim(), w: r.width, h: r.height } })
     out.scrollers = [...document.querySelectorAll('.card')].filter(e => e.scrollWidth > e.clientWidth + 1).map(e => e.previousElementSibling?.textContent || 'a card')
   }
-  const pre = document.createElement('pre'); pre.id = 'ui-out'; pre.textContent = JSON.stringify(out); document.body.appendChild(pre)
+  const pre = document.createElement('pre'); pre.id = 'ui-out'; pre.hidden = true; pre.textContent = JSON.stringify(out); document.body.appendChild(pre)
 })()`
 const page = (s, theme) => (s.kind === 'html'
   ? s.src.replace('<body>', `<body data-backs='[]'>`).replace('</body>', `<script>${MEASURE}</script></body>`)
@@ -187,7 +189,7 @@ async function browserChecks(chrome, extra = []) {
       writeFileSync(file, s.kind === 'tree' ? s.src : page(s, theme))
       const prof = join(tmp, `p${k}`)
       const dom = await run(chrome, [...chromeArgs(theme, s.px, 900, prof), '--dump-dom', pathToFileURL(file).href])
-      const json = dom.match(/<pre id="ui-out">([^<]*)<\/pre>/)?.[1]
+      const json = dom.match(/<pre id="ui-out"[^>]*>([^<]*)<\/pre>/)?.[1]
       if (!json) return add(`${s.name} ${theme}`, 'the browser gave no measurements')
       const m = JSON.parse(json.replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'))
       ;(s.judge ?? judge)(s, theme, m)
@@ -242,7 +244,7 @@ async function treeSurfaces() {
   return list
 }
 function runTests() {
-  return new Promise(res => execFile('claude', ['plugin', 'test', '.'], { cwd: ROOT, timeout: 600_000, maxBuffer: 256 * 1024 * 1024, windowsHide: true }, (_e, out) => res(String(out))))
+  return new Promise(res => execFile('claude', ['plugin', 'test', '.'], { cwd: ROOT, timeout: 600_000, maxBuffer: 256 * 1024 * 1024, windowsHide: true }, (_e, out, err) => res(String(out) + String(err))))
 }
 const TREE_MEASURE = `
 (() => {
@@ -254,7 +256,7 @@ const TREE_MEASURE = `
     if (r.right > band.right + 1) bad.push('"' + e.textContent.slice(0, 50) + '" runs past the band edge')
     if (cs.textOverflow !== 'ellipsis' && e.scrollWidth > e.clientWidth + 1 && cs.overflow !== 'visible') bad.push('"' + e.textContent.slice(0, 50) + '" is clipped')
   }
-  const pre = document.createElement('pre'); pre.id = 'ui-out'; pre.textContent = JSON.stringify({ dark: matchMedia('(prefers-color-scheme: dark)').matches, h: document.documentElement.scrollHeight, bad }); document.body.appendChild(pre)
+  const pre = document.createElement('pre'); pre.id = 'ui-out'; pre.hidden = true; pre.textContent = JSON.stringify({ dark: matchMedia('(prefers-color-scheme: dark)').matches, h: document.documentElement.scrollHeight, bad }); document.body.appendChild(pre)
 })()`
 for (const t of ['dark', 'light']) TERM[t].css = Object.entries(TERM[t]).filter(([k]) => k !== 'css').map(([k, v]) => `--${k}:${v}`).join(';')
 const treePage = s => `<!doctype html><html><head><meta charset="utf-8"><style>:root{${TERM.light.css}}@media (prefers-color-scheme:dark){:root{${TERM.dark.css}}}body{margin:16px;background:var(--bg);color:var(--fg);font:14px/1.25 Consolas,'Cascadia Mono',Menlo,'DejaVu Sans Mono',monospace}#band{width:${s.width}ch;outline:1px dashed color-mix(in srgb,var(--fg) 25%,transparent)}</style></head><body>${`<div id="band">${treeHtml(s.tree, 'terminal')}</div>`}<script>${TREE_MEASURE}</script></body></html>`
@@ -283,9 +285,6 @@ else console.log('ui.check: no Chrome or Edge found (set CHROME=<path>); layout,
 // Findings seen when the kit landed and not fixed yet: a ratchet. A fix deletes its line; nothing is ever added here.
 const KNOWN = [
   /^board-800 (light|dark): (the "Sessions \d+" table scrolls sideways|".*" runs past the right edge)$/,
-  /^stats-[\w]+ (light|dark): ".*extra" contrast/,
-  /^board-\d+ (light|dark): ".*" \((button|span\.now|b)\) contrast/,
-  /^stats-(800|pane): ".*\$\d\.…": money/,
 ]
 const unique = [...new Set(findings)]
 const known = unique.filter(f => KNOWN.some(k => k.test(f)))

@@ -25,14 +25,21 @@ export const isExtra = (t: Tally) => net(t) <= -0.005
 export const netWords = (t: Tally) => (isExtra(t) ? `${money(-net(t))} extra` : `saved ${money(net(t))}`)
 
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
-const fit = (s: string, max: number) => (s.length > max ? `${s.slice(0, Math.max(1, max - 1))}…` : s)
+// Cut to max characters with "…", never inside a number: "rebuild $2.…" reads as another amount, so the cut steps
+// back to the word before it.
+const fit = (s: string, max: number) => {
+  if (s.length <= max) return s
+  const cut = s.slice(0, Math.max(1, max - 1))
+  const inNumber = /[\d$][\d.,]*$/.test(cut) && /[\d.,%K]/.test(s[cut.length] ?? '')
+  return `${((inNumber && cut.replace(/\s*\S+$/, '')) || cut).trimEnd()}…`
+}
 
 const FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif"
 // Claude's own greys and accent. The image cannot read the app's theme, so it follows the system's.
 // shortcut: an app theme that differs from the system theme gets the wrong text color; pass the theme in if that bites.
 // .v.x: a value that is spend above the no-router cost; .c: a cache-hit square (its opacity is the hit);
 // .hit: an invisible column that takes the hover for its turn; .m-<model>-<effort step>: the model colors (shadeCss).
-const STYLE = `.l,.s{fill:#73726c;font:12px ${FONT}}.l,.s,.v{pointer-events:none}.v{fill:#1f1e1d;font:600 18px ${FONT}}.d{stroke:#1f1e1d;stroke-opacity:.12}.v.x{fill:#c15f3c}.c{fill:#1f1e1d}.hit{fill:transparent}@media (prefers-color-scheme:dark){.l,.s{fill:#a3a29b}.v{fill:#ecebe6}.d{stroke:#fff;stroke-opacity:.14}.v.x{fill:#e5906f}.c{fill:#ecebe6}}`
+const STYLE = `.l,.s{fill:#73726c;font:12px ${FONT}}.l,.s,.v{pointer-events:none}.v{fill:#1f1e1d;font:600 18px ${FONT}}.d{stroke:#1f1e1d;stroke-opacity:.12}.v.x{fill:#b4532c}.c{fill:#1f1e1d}.hit{fill:transparent}@media (prefers-color-scheme:dark){.l,.s{fill:#a3a29b}.v{fill:#ecebe6}.d{stroke:#fff;stroke-opacity:.14}.v.x{fill:#e5906f}.c{fill:#ecebe6}}`
 let shades: string | undefined // built on first use: the palette constants sit further down
 const css = () => STYLE + (shades ??= shadeCss((c, color) => `.${c}{fill:${color}}`, c => `.${c}{stroke:#ffffff73;stroke-width:1}`))
 
@@ -318,15 +325,15 @@ export function boardHtml(buckets: Array<Bucket>, turns: Array<TurnLog>, session
 
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Router spend</title>
 <style>
-:root{--bg:#faf9f5;--panel:#fff;--text:#141413;--muted:#73726c;--line:#e8e6dc;--accent:#d97757;--spent:#87867f;--ghost:rgba(135,134,127,.22);--over:#b4532c;--under:#3c7547;--seg:#f0eee6;color-scheme:light}
-@media (prefers-color-scheme:dark){:root{--bg:#262624;--panel:#30302e;--text:#faf9f5;--muted:#a3a29b;--line:#3e3e38;--spent:#a3a29b;--ghost:rgba(163,162,155,.25);--over:#e8946f;--under:#8cc192;--seg:#3a3a37;color-scheme:dark}}
+:root{--bg:#faf9f5;--panel:#fff;--text:#141413;--muted:#73726c;--seg-text:#6b6a64;--line:#e8e6dc;--accent:#d97757;--accent-text:#b4532c;--spent:#87867f;--ghost:rgba(135,134,127,.22);--over:#b4532c;--under:#3c7547;--seg:#f0eee6;color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--bg:#262624;--panel:#30302e;--text:#faf9f5;--muted:#a3a29b;--seg-text:#b0afa8;--accent-text:#e8946f;--line:#3e3e38;--spent:#a3a29b;--ghost:rgba(163,162,155,.25);--over:#e8946f;--under:#8cc192;--seg:#3a3a37;color-scheme:dark}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif}
 main{max-width:960px;margin:0 auto;padding:32px 24px 48px}
 header{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-end;justify-content:space-between}
 h1{font-size:22px;font-weight:600;margin:0 0 4px}h2{font-size:15px;font-weight:600;margin:28px 0 10px}
 p{margin:0;color:var(--muted)}
 .range{display:flex;flex-wrap:wrap;gap:2px;background:var(--seg);border-radius:10px;padding:3px}
-.range button{font:inherit;font-size:13px;min-height:32px;border:0;background:none;color:var(--muted);padding:0 10px;border-radius:7px;cursor:pointer}
+.range button{font:inherit;font-size:13px;min-height:32px;border:0;background:none;color:var(--seg-text);padding:0 10px;border-radius:7px;cursor:pointer}
 .range button:hover{color:var(--text)}
 .range button[aria-pressed="true"]{background:var(--panel);color:var(--text);box-shadow:0 1px 2px rgba(0,0,0,.08)}
 .range button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
@@ -338,14 +345,14 @@ table{width:100%;border-collapse:collapse}th{font-weight:500;color:var(--muted);
 .n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}th.n{text-align:right}.muted{color:var(--muted)}
 .over{color:var(--over);font-weight:600}.under{color:var(--under);font-weight:600}
 .label{max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.now{font-size:12px;color:var(--accent);margin-left:8px}
+.now{font-size:12px;color:var(--accent-text);margin-left:8px}
 .bar{width:22%;min-width:110px}.meter{position:relative;height:8px}.meter span{position:absolute;left:0;top:0;height:8px;border-radius:4px}.ghost{background:var(--ghost)}.solid{background:var(--spent)}.solid.up{background:var(--accent)}
 .mix-row{display:grid;grid-template-columns:96px 1fr 300px;gap:12px;align-items:center;padding:8px 0}.track{height:8px;border-radius:4px;background:var(--line)}.track span{display:block;height:8px;border-radius:4px}
 .band{display:flex;gap:2px;height:8px}.band span{border-radius:2px;min-width:2px}.band.big{height:12px;margin:16px 0 4px}.band.big span{border-radius:3px}.band.mini{width:96px}
 .sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:8px;vertical-align:-1px}
 ${shadeCss((c, color) => `.${c}{background:${color}}`, c => `.${c}{box-shadow:inset 0 0 0 1px #ffffff73}`)}
 .empty{padding:16px 0;color:var(--muted)}.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
-footer{margin-top:40px;color:var(--muted);font-size:13px;display:grid;gap:8px;max-width:80ch}.tools b{color:var(--accent);font-weight:600}
+footer{margin-top:40px;color:var(--muted);font-size:13px;display:grid;gap:8px;max-width:80ch}.tools b{color:var(--accent-text);font-weight:600}
 @media (max-width:720px){main{padding:32px 16px 48px}h1{font-size:20px}.kpis{grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.kpi b{font-size:24px}.opt{display:none}.label{max-width:180px}.mix-row{grid-template-columns:80px 1fr 110px}.range{width:100%;flex-wrap:nowrap}.range button{flex:1;padding:0}}
 @media (pointer:coarse){.range button{min-height:40px}}
 </style></head><body><main>
