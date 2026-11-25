@@ -12,10 +12,15 @@ export type Hint = { cls: string; model: string; why: string; current: string; u
 // Spend against running with no router: baselineUsd is what the same steps would have cost on the asked model and
 // effort; extraUsd sums each step's cost above its baseline (stronger picks, the router's own calls), so
 // saved = baselineUsd - actualUsd + extraUsd and both directions stay visible.
+// Why money was saved or spent extra: the main chat on another model, its effort, subagents, the router's own calls
+// (classifier, session check), big-paste reading.
+export type Why = 'model' | 'effort' | 'agents' | 'router' | 'paste'
+export type By = Partial<Record<Why, { saved: number; extra: number }>>
 export type Tally = {
   actualUsd: number
   baselineUsd: number
   extraUsd: number
+  by?: By // absent on tallies from before 0.8
 }
 
 // One session's spend on one local day, as the Board draws it from ~/.claude/router/router.db.
@@ -73,6 +78,11 @@ export type Tool = 'claude' | 'codex' | 'antigravity'
 export type ToolState = { have?: string; latest?: string; isBehind: boolean }
 export type Versions = { at: number; tools: Record<Tool, ToolState> }
 
+// The saving features (docs/PLAN-v3.md slices 1-3), each switchable in Settings.
+// autoSwitch: move the chat down by itself when the cache rebuild pays; sizing: size the reader and researcher;
+// pastes: read big pastes first.
+export type Features = { autoSwitch: boolean; sizing: boolean; pastes: boolean }
+
 declare module 'claude-code' {
   interface PluginState {
     router: {
@@ -89,6 +99,7 @@ declare module 'claude-code' {
       updating: Tool | null // the CLI an update button is running for
       chat: ChatModel // the chat's model: picked on its first prompt, or by the person
       advice: Advice | null // the session check's offer, until pressed or dismissed
+      features: Features // the saving features' switches (Settings), kept across sessions
     }
   }
 }

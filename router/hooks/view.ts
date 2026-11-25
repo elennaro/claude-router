@@ -1,6 +1,6 @@
 // Pure drawing helpers for the band, the widget and the board: no `$`, so tests call them directly.
 
-import type { Bucket, Cache, Mix, Tally, Tool, TurnLog, Versions } from '../types'
+import type { Bucket, By, Cache, Mix, Tally, Tool, TurnLog, Versions, Why } from '../types'
 
 export const money = (n: number) => (n <= -0.005 ? `-$${(-n).toFixed(2)}` : `$${Math.max(0, n).toFixed(2)}`) // no "-$0.00" from rounding
 // What a switch offer says it costs: the new model writes the chat to its own cache once (less after compacting).
@@ -28,7 +28,24 @@ const css = () => STYLE + (shades ??= shadeCss((c, color) => `.${c}{fill:${color
 
 // isExtra: the value reads as spend above running with no router, drawn in the accent.
 // swatch: a model and effort ("opus:high") whose color square goes before the value.
-export type Cell = { label: string; value: string; sub: string; isExtra?: boolean; swatch?: string }
+// Adds to one reason's saved and extra (a take-back passes a negative saved).
+export function addWhy(by: By | undefined, why: Why, saved: number, extra: number): By {
+  const o = by?.[why] ?? { saved: 0, extra: 0 }
+  return { ...by, [why]: { saved: o.saved + saved, extra: o.extra + extra } }
+}
+
+const WHY_WORDS: Record<Why, string> = { model: 'switching the chat model', effort: 'effort', agents: 'subagents', router: 'routing calls', paste: 'reading pastes' }
+// The Stats card's "Where it went": the biggest saving and the biggest extra by reason, in words.
+export function whyWords(by: By | undefined): { value: string; sub: string } {
+  const rows = Object.entries(by ?? {}) as Array<[Why, { saved: number; extra: number }]>
+  const top = (k: 'saved' | 'extra') => rows.filter(([, x]) => x[k] >= 0.005).sort((a, b) => b[1][k] - a[1][k])
+  const saved = top('saved'), extra = top('extra')
+  const list = (r: typeof saved, k: 'saved' | 'extra') => r.map(([w, x]) => `${money(x[k])} on ${WHY_WORDS[w]}`).join(', ')
+  if (!saved.length && !extra.length) return { value: 'Nothing moved yet', sub: 'every step ran as it would with no router' }
+  return { value: saved.length ? `saved ${list(saved.slice(0, 1), 'saved')}` : 'nothing saved', sub: extra.length ? `extra: ${list(extra, 'extra')}` : 'no extra spend' }
+}
+
+export type Cell ={ label: string; value: string; sub: string; isExtra?: boolean; swatch?: string }
 
 // Small turn costs need a third digit, or every bar's tip says $0.00.
 const cents = (n: number) => (n < 0.1 ? `$${n.toFixed(3)}` : money(n))

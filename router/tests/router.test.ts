@@ -1,9 +1,9 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import {
-  BUILTIN, CLASS_LABELS, adviseSwitch, effortRank, rank, agentTier, autoModel, needsSecondSample, briefHash, briefTier, stepUp, classifyByRules, costUsd, firstModel, isCacheBreak, isContinuation, merge, parseJev, parseSessionCheck, parseMood, raiseEffort, moodPrompt, longRun, readLabel, spawnPick, turnEffort, withoutRouter, rebuildUsd, stepUsd, switchMath, remainingSteps, quickPays, type Life, sessionCheckSystem, briefPaths, sizeOf, bucket, estTokens, keepsRaw, pasteModel, pasteSystem, offloaded,
+  BUILTIN, CLASS_LABELS, adviseSwitch, effortRank, rank, agentTier, autoModel, needsSecondSample, briefHash, briefTier, stepUp, classifyByRules, costUsd, firstModel, isCacheBreak, isContinuation, merge, parseJev, parseSessionCheck, parseMood, raiseEffort, moodPrompt, longRun, readLabel, spawnPick, turnEffort, withoutRouter, rebuildUsd, stepUsd, switchMath, remainingSteps, quickPays, type Life, sessionCheckSystem, briefPaths, sizeOf, bucket, estTokens, keepsRaw, pasteModel, pasteSystem, offloaded, cacheSheet,
 } from '../hooks/policy'
-import { boardHtml, cacheStrength, cardLayout, hitPct, svgSize, switchCost, netWords, savedUsd, shade, statsSvg, withMode } from '../hooks/view'
+import { addWhy, whyWords, boardHtml, cacheStrength, cardLayout, hitPct, svgSize, switchCost, netWords, savedUsd, shade, statsSvg, withMode } from '../hooks/view'
 import { RUNNER, type Step, labelOf, livesOf } from '../hooks/db'
 import { shield } from '../hooks/guard'
 
@@ -1095,6 +1095,100 @@ test('the widget is a glance of two rows and the bars; expanded it is the Stats 
   expect(card?.props.source).toContain('1 turn, 0 agents re-routed')
   expect(card?.props.source).toContain('class="m-haiku-0"') // the model band: this turn ran on Haiku at low effort
   await dock.unmount()
+})
+
+test('cache sheet and reasons: what losing the cache costs, and where saved and extra money went', () => {
+  const sh = cacheSheet('claude-opus-5-5', 100_000)
+  expect(sh.switches.map(x => [x.model, Math.round(x.usd * 100)])).toEqual([['haiku', 2], ['sonnet', 40], ['fable', 160]])
+  expect(Math.round(sh.reset * 100)).toBe(80) // Opus writes 100K again at $8/M
+  expect(Math.round(sh.compact * 100)).toBe(54) // reads 100K ($0.02) and writes 65K back ($0.52)
+  expect(Math.round(cacheSheet('opus', 30_000).compact * 1000)).toBe(246) // a small cache is written back whole
+  let by = addWhy(undefined, 'agents', 2, 0)
+  by = addWhy(by, 'effort', 0, 0.1)
+  by = addWhy(by, 'router', 0, 0.004) // under half a cent: not worth a word
+  expect(whyWords(by)).toEqual({ value: 'saved $2.00 on subagents', sub: 'extra: $0.10 on effort' })
+  expect(whyWords(addWhy(by, 'agents', -2, 1))).toEqual({ value: 'nothing saved', sub: 'extra: $1.00 on subagents, $0.10 on effort' }) // a take-back
+  expect(whyWords(undefined).value).toBe('Nothing moved yet')
+})
+
+test('with a real cache the widget and the Stats card show its size, what losing it costs and what each switch costs', async (engine, on) => {
+  const $ = engine as any
+  wire(on, { sent: [], haiku: 'engineering 0.95', tokens: 100_000, read: 100_000 })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: 'set up the release pipeline for the app' })
+  await step($, 'medium')
+  const widget = await $.ui.mount({ ...PANE, props: { ...PANE.props, placement: 'widget', anchoredEdges: [] }, surface: 'desktop' })
+  const texts = (await widget.findAll({ type: 'Text' })).map((x: { text: string }) => x.text)
+  expect(texts).toContain('Cache')
+  expect(texts).toContain('100K · losing it $0.80')
+  expect(texts).toContain('Haiku $0.10, Sonnet $0.40, Fable $1.60') // just over 100K: Haiku's long-prompt price, x5
+  await widget.unmount()
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await band.press({ key: 'router-stats' })
+  const card = await band.find({ type: 'Svg' })
+  expect(card?.props.alt).toContain('Cache 100K tokens, losing it costs $0.80')
+  expect(card?.props.alt).toMatch(/Where it went .*extra: \$[0-9.]+ on effort/) // engineering raised Opus to high
+  expect(await band.find({ type: 'Text', text: /Switching model writes the chat once on the new one: Haiku \$0\.10, Sonnet \$0\.40, Fable \$1\.60\. Compacting: about \$0\.54/ })).toBeTruthy()
+  await band.unmount()
+})
+
+test('Settings switches the saving features off and on; the choice is kept for later sessions', async (engine, on) => {
+  const $ = engine as any
+  const store = new Map<string, unknown>()
+  const files: Record<string, string> = { '/home/.claude/routing.json': ROUTING }
+  const spawned: Array<string | undefined> = []
+  wire(on, { sent: [], files, store, tokens: 5_000, haiku: (e: any) => (e.system === pasteSystem ? 'Request: x\nAnalysis: y' : 'engineering 0.95') })
+  on('agent.spawn', (_: unknown, e: { model?: string }) => { spawned.push(e.model); return { model: e.model ?? 'inherit', agentId: 'sub1' } })
+  on('fs.stat', () => ({ value: { kind: 'file', size: 4_000, mtimeMs: 0, isLink: false } }))
+  on('ui.toast', () => ({ value: undefined }))
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await band.press({ key: 'router-settings' })
+  await band.press({ key: 'router-f-pastes-off' })
+  await band.press({ key: 'router-f-sizing-off' })
+  const big = `Find the error\n${'step ok\n'.repeat(6_000)}`
+  expect((await $.prompt.submit({ text: big, origin: { kind: 'composer' }, wait: false })).text).toBe(big)
+  await $.agent.spawn({ prompt: 'Find the timeouts in logs/a.log', subagentType: 'router:document-reader', parentModel: 'claude-opus-5-5' })
+  expect(spawned).toEqual([undefined]) // the agent's own model, no sizing
+  expect(store.get('features')).toEqual({ autoSwitch: true, sizing: false, pastes: false })
+  await band.press({ key: 'router-f-pastes-on' })
+  expect((await $.prompt.submit({ text: big, origin: { kind: 'composer' }, wait: false })).text).not.toBe(big)
+  await band.unmount()
+})
+
+test('a switched-off feature stays off in the next session', async (engine, on) => {
+  const $ = engine as any
+  const store = new Map<string, unknown>([['features', { autoSwitch: false, sizing: true, pastes: true }]])
+  const models: Array<string> = []
+  wire(on, { sent: [], models, store, haiku: (e: { system?: string }) => (e.system === sessionCheckSystem ? 'haiku 0.95 same' : 'engineering 0.95'), tokens: 40_000, write: 40_000, ownClock: true })
+  const clock = mock.clock(on, { now: 1_000 })
+  on('ui.toast', () => ({ value: undefined }))
+  on('session.compact', () => ({ messages: [{ role: 'user', text: 'summary', toolUses: [] }] }))
+  on('session.messages', () => ({ value: [{ role: 'user', text: 'set up the release pipeline for the app', toolUses: [] }, { role: 'user', text: 'now just fix the typo in the README title', toolUses: [] }] }))
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await step($, 'medium')
+  await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'summary', toolUses: [] }] })
+  await clock.advance(600)
+  expect(await band.find({ key: 'router-chat-undo' })).toBeFalsy() // Move down is off: no automatic move
+  expect(await band.find({ key: 'router-offer-compact' })).toBeTruthy() // the offer is still made
+  await band.unmount()
+})
+
+test('ledger writes never hold a step: rows wait in memory and go out as one batch about every 2 s', async (engine, on) => {
+  const $ = engine as any
+  const batches: Array<Array<Step>> = []
+  wire(on, { sent: [], batches, files: { '/home/.claude/routing.json': ROUTING }, tokens: 5_000, ownClock: true })
+  const clock = mock.clock(on, { now: 1_000 })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const before = batches.length
+  for (let i = 0; i < 5; i++) await step($, 'medium')
+  expect(batches.length).toBe(before) // five steps, nothing written yet
+  await clock.advance(2_100)
+  const wrote = batches.slice(before).filter(b => b.some(x => x.sql.startsWith('INSERT INTO usage ')))
+  expect(wrote.length).toBe(1) // one batch for all five
+  expect(batches.length - before).toBe(1) // and no empty runs after it: one timer at a time
+  expect(wrote[0]!.filter(x => x.sql.startsWith('INSERT INTO usage ')).length).toBe(5) // a row per step; the runner sums them per key
 })
 
 // Regressions from the code audit of 2026-11-18.

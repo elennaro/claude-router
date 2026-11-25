@@ -593,6 +593,19 @@ export const rebuildUsd = (model: string, cache: number) => costUsd(model, { inp
 export const stepUsd = (model: string, cache: number, out: number) => costUsd(model, { input_tokens: 0, output_tokens: out, cache_read_input_tokens: cache, cache_creation_input_tokens: 0 }, true)
 
 // A past chat's length in main-chat steps; open = still going, so it only says "at least this long".
+// What the cache costs to lose at its size now: a switch writes it once on the new model; a reset (an hour idle, or the
+// cache dropped) writes it again on the same model; compacting reads it once and writes about 65K back (measured over
+// 552 compactions). shortcut: the summary's own output is left out; add it if compaction costs look low on the Board.
+export const COMPACT_KEEP = 65_000
+export function cacheSheet(model: string, cache: number) {
+  const fam = family(model)
+  return {
+    switches: FAMILIES.filter(m => m !== fam).map(m => ({ model: m, usd: rebuildUsd(m, cache) })),
+    reset: rebuildUsd(fam, cache),
+    compact: stepUsd(fam, cache, 0) + rebuildUsd(fam, Math.min(cache, COMPACT_KEEP)),
+  }
+}
+
 export type Life = { steps: number; open: boolean }
 export const MIN_LIVES = 20
 

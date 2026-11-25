@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionMessage } from 'claude-code'
 
-import type { Advice, Bucket, Cache, ChatModel, Hint, Mix, Tally, RouterView, TurnLog } from '../types'
+import type { Advice, Bucket, Cache, ChatModel, Features, Hint, Mix, Tally, RouterView, TurnLog, Why } from '../types'
 import { BOARD, SWEEP, livesQuery, livesOf, type Step, type Totals, IMPORTED, addCache, bucketsOf, dayRow, isAlreadyImported, labelOf, legacySteps, run, sessionRow, spawnRow, totalsOf, totalsQuery, usageRow } from './db'
 import { shield } from './guard'
 import { claudeFamily } from './latest'
@@ -13,9 +13,9 @@ import {
   type Ask, AUTO, BUILTIN, DELEGATE_ID, delegateSection, wantsDelegate, CLASS_LABELS, type Config, type Usage, type SessionWindow, adviseSwitch, agentTier, autoModel, classifierPrompt, firstModel, parseSessionCheck, sessionCheckPrompt, sessionCheckSystem, classifierSystem, classifyByRules, costUsd, explicitAsk, family,
   classifyPlan, isCacheBreak, merge, settleAnswers, readLabel, prices, rank, setPrices, turnEffort, briefHash, isHarder, needsSecondSample, spawnPick, withoutRouter,
   type Mood, longRun, moodPrompt, moodSystem, parseMood, raiseEffort, raiseSteps, stepUp, rebuildUsd, switchMath, FAMILIES,
-  SIZED, briefPaths, bucket, sizeOf, PASTE_MIN, estTokens, keepsRaw, pasteModel, pasteSystem, pastePrompt, offloaded,
+  SIZED, briefPaths, bucket, sizeOf, cacheSheet, PASTE_MIN, estTokens, keepsRaw, pasteModel, pasteSystem, pastePrompt, offloaded,
 } from './policy'
-import { type Cell, NAMES, TOOL_NAMES, barsSvg, boardHtml, cardLayout, hitPct, switchCost, svgSize, isExtra, modelColor, money, shade, net, netPct, netWords, savedUsd, statsSvg, withMode } from './view'
+import { type Cell, NAMES, TOOL_NAMES, addWhy, whyWords, barsSvg, boardHtml, cardLayout, hitPct, switchCost, svgSize, isExtra, modelColor, money, shade, net, netPct, netWords, savedUsd, statsSvg, withMode } from './view'
 
 const PANE = 'router'
 const hint = atom({ plugin: 'router', key: 'hint' } as const, null)
@@ -34,6 +34,8 @@ const tools = atom({ plugin: 'router', key: 'tools' } as const, null as Versions
 const updating = atom({ plugin: 'router', key: 'updating' } as const, null as Tool | null)
 const chat = atom({ plugin: 'router', key: 'chat' } as const, { model: null, by: null } as ChatModel) // the chat's model: picked on its first prompt, or by the person
 const advice = atom({ plugin: 'router', key: 'advice' } as const, null as Advice | null)
+const FEATURES_ON: Features = { autoSwitch: true, sizing: true, pastes: true }
+const features = atom({ plugin: 'router', key: 'features' } as const, FEATURES_ON)
 const TODO_TOOLS = ['TodoWrite', 'mcp__ccd_turn__update_plan'] // the task list as Claude Code and the desktop app keep it
 
 const pretty = (m: string) => NAMES[family(m)] ?? m
@@ -303,10 +305,12 @@ function serial<T>(s: State, fn: () => Promise<T>): Promise<T> {
 // One step's spend. who: 'main', a subagent type, or 'router' (the classifier and session check: spend with no
 // baseline, since without the router they would not run). baseline: what the step would have cost with no router.
 // longCache: a main-thread step, whose cache writes are 1-hour entries (costUsd).
-async function record($: EngineInterface, s: State, model: string, u: Usage, who: string, baseline: number, turnId?: string, longCache = false) {
+// moved: a main step on another model than with no router (else its difference came from effort).
+async function record($: EngineInterface, s: State, model: string, u: Usage, who: string, baseline: number, turnId?: string, longCache = false, moved = false) {
   const actual = costUsd(model, u, longCache)
   const extra = Math.max(0, actual - baseline)
-  await update($, tally, (t): Tally => ({ actualUsd: t.actualUsd + actual, baselineUsd: t.baselineUsd + baseline, extraUsd: t.extraUsd + extra }))
+  const why: Why = who === 'main' ? (moved ? 'model' : 'effort') : who === 'router' || who === 'paste' ? who : 'agents'
+  await update($, tally, (t): Tally => ({ actualUsd: t.actualUsd + actual, baselineUsd: t.baselineUsd + baseline, extraUsd: t.extraUsd + extra, by: addWhy(t.by, why, Math.max(0, baseline - actual), extra) }))
   const { day, now } = await stamp($, s)
   const isNewTurn = Boolean(turnId && turnId !== s.lastLedgerTurn)
   if (isNewTurn) s.lastLedgerTurn = turnId!
@@ -324,7 +328,8 @@ async function takeBack($: EngineInterface, s: State, who: string, id: string) {
   if (!a) return
   s.agentSpend.delete(id)
   const extra = a.usd - a.extra
-  await update($, tally, (t): Tally => ({ ...t, baselineUsd: t.baselineUsd - a.base, extraUsd: t.extraUsd + extra }))
+  const why: Why = who === 'paste' ? 'paste' : 'agents'
+  await update($, tally, (t): Tally => ({ ...t, baselineUsd: t.baselineUsd - a.base, extraUsd: t.extraUsd + extra, by: addWhy(t.by, why, -(a.base - a.usd + a.extra), extra) }))
   const { day } = await stamp($, s)
   later($, s, [usageRow(day, s.session, who, a.model, 0, -a.base, extra, 0)])
 }
@@ -491,7 +496,7 @@ async function sessionCheck($: EngineInterface, s: State, trigger: string) {
   const a = adviseSwitch(runs.map(r => (r?.isAnswered ? parseSessionCheck(r.text) : undefined)), w.model, trigger, s.cfg, s.lastClass)
   if (!a || family(a.model) === family(w.model)) return
   s.quietUntil = s.turnCount + 10
-  if (a.action === 'down' && a.kind === 'compact') {
+  if (a.action === 'down' && a.kind === 'compact' && (await read($, features)).autoSwitch) {
     // the same work on a cheaper model: the router moves by itself only when the move pays back its cache rebuild
     // (docs/PLAN-v3.md); a new topic keeps the offer, since starting fresh is the owner's call
     const now = await $.clock.now()
@@ -626,6 +631,13 @@ async function showWidget($: EngineInterface, isShown: boolean) {
   else await $.ui.close({ id: PANE }).catch(() => undefined)
 }
 
+// A saving feature on or off, for this session and every later one.
+async function setFeature($: EngineInterface, k: keyof Features, on: boolean) {
+  const next = { ...(await read($, features)), [k]: on }
+  await update($, features, (): Features => next)
+  await $.store.set('features', next)
+}
+
 // Turns routing on or off in the global or the project routing.json, keeping the rest of the file as written.
 async function setScope($: EngineInterface, s: State, scope: 'global' | 'project', mode: 'on' | 'off') {
   const path = scope === 'global' ? `${s.home}/.claude/routing.json` : `${s.root}/.claude/routing.json`
@@ -674,7 +686,9 @@ async function facts($: EngineInterface, s: State) {
   const cost = (await $.session.usage().catch(() => undefined))?.cost?.usd // the app's own total, /cost's, every request included
   const spend = await read($, mix)
   const hit = hitPct(Object.values(spend).reduce((a: Cache | undefined, x) => addCache(a, x.cache), undefined)) // this chat, main and subagents
-  return { v, turns, chat, proj, m, main, where, now, since, chatMode, cost, spend, hit }
+  const sheet = cacheSheet(main?.model ?? s.cfg.main.model, s.lastContext)
+  const feats = await read($, features)
+  return { v, turns, chat, proj, m, main, where, now, since, chatMode, cost, spend, hit, sheet, feats }
 }
 
 function cells(s: State, f: Awaited<ReturnType<typeof facts>>): Array<Cell> {
@@ -684,9 +698,16 @@ function cells(s: State, f: Awaited<ReturnType<typeof facts>>): Array<Cell> {
     { label: 'This chat', value: netWords(f.chat), isExtra: isExtra(f.chat), sub: `${money(savedUsd(f.chat))} saved, ${money(f.chat.extraUsd)} extra` },
     { label: 'This project', value: netWords(f.proj), isExtra: isExtra(f.proj), sub: `${netPct(f.proj)}% ${isExtra(f.proj) ? 'more' : 'less'} since ${f.since}` },
     { label: 'Now', value: f.v.isOn ? f.now : 'Off', swatch, sub: !f.v.isOn ? `off ${f.where}` : f.chatMode === 'effort' ? 'effort only' : f.chatMode === 'models' ? 'models only' : picked },
-    { label: 'Spent this chat', value: money(f.cost ?? f.chat.actualUsd), sub: f.hit === undefined ? 'cache hit not known yet' : `cache hit ${f.hit}% · ${Math.round(s.lastContext / 1000)}K cached` },
+    { label: 'Spent this chat', value: money(f.cost ?? f.chat.actualUsd), sub: f.hit === undefined ? 'cache hit not known yet' : `cache hit ${f.hit}%` },
+    { label: 'Cache', value: s.lastContext >= 1000 ? `${Math.round(s.lastContext / 1000)}K tokens` : 'empty', sub: s.lastContext >= 1000 ? `losing it costs ${money(f.sheet.reset)}` : 'nothing to rebuild yet' },
+    { label: 'Where it went', ...whyWords(f.chat.by) },
   ]
 }
+
+// The cache sheet in one line: what a model switch, a reset and compacting would cost right now.
+const sheetLine = (s: State, f: Awaited<ReturnType<typeof facts>>) => s.lastContext < 1000
+  ? ''
+  : `Switching model writes the chat once on the new one: ${f.sheet.switches.map(x => `${pretty(x.model)} ${money(x.usd)}`).join(', ')}. Compacting: about ${money(f.sheet.compact)}. After an hour idle the cache is gone anyway, so switching then costs only the difference.`
 
 // The note at the end of the Stats card's model band header.
 const reroutedNote = (v: RouterView) => `${v.rerouted} ${v.rerouted === 1 ? 'turn' : 'turns'}, ${v.routedAgents} ${v.routedAgents === 1 ? 'agent' : 'agents'} re-routed`
@@ -783,6 +804,8 @@ export const register: Register = on => {
     await load($, s)
     await restoreAgents($, s)
     await seedMix($).catch(() => undefined)
+    const kept = ((await $.store.get('features').catch(() => undefined)) ?? {}) as Partial<Features>
+    await update($, features, (): Features => ({ ...FEATURES_ON, ...kept }))
     await $.command.register({
       name: 'route',
       description: 'Router mode: on | off | status | board | widget | effort on|off|retest | models on|off|refresh | update claude|codex|antigravity | reload',
@@ -924,7 +947,7 @@ export const register: Register = on => {
     if (s.cfg.mode === 'off' || s.headless || e.command || e.isMeta) { s.switchTurn = false; return go(e) }
     // only the person's own message (typed, or from their phone) is offloaded, never a peer's or a notification
     const own = e.origin?.kind === 'composer' || e.origin?.kind === 'bridge'
-    const short = own ? await offload($, s, e.text) : undefined
+    const short = own && (await read($, features)).pastes ? await offload($, s, e.text) : undefined
     if (short) e = { ...e, text: short }
     // typed over a running turn, the prompt joins that turn: it may raise the turn's routing, never lower it
     const midTurn = e.turnId !== undefined
@@ -989,7 +1012,7 @@ export const register: Register = on => {
     if (e.model) return named(claudeFamily(e.model) ? { ...e, model: claudeFamily(e.model)! } : e) // explicit model on the call wins
     if (said?.model) return named({ ...e, model: said.model }) // a model named in the brief, next
     const kind = SIZED[e.subagentType]
-    if (kind && s.routeModels) {
+    if (kind && s.routeModels && (await read($, features)).sizing) {
       // the router's own reader and researcher: model and budget from the brief's size (docs/PLAN-v3.md, slice 2)
       const b = bucket(kind, sizeOf(e.prompt, await namedBytes($, briefPaths(e.prompt), e.cwd ?? s.root, s.home)))
       const started = await named({ ...e, model: b.model, prompt: `${e.prompt}\n\n${b.cap}` }, true)
@@ -1085,7 +1108,7 @@ export const register: Register = on => {
     // the asked model's warm cache: none for a subagent, or after an hour's pause (it lapsed); a compaction zeroes lastContext
     const lapsed = s.prev.at > 0 && (await $.clock.now()) - s.prev.at > CACHE_LIFE_MS
     const baseUsd = s.wastedRuns.has(e.agentId ?? "") ? 0 : withoutRouter(noRouter, { model: u.model, effort: effort as string | undefined }, u, e.agentId || lapsed ? 0 : s.lastContext, longCache)
-    await record($, s, u.model, u, who, baseUsd, e.agentId === undefined ? e.turnId : undefined, longCache)
+    await record($, s, u.model, u, who, baseUsd, e.agentId === undefined ? e.turnId : undefined, longCache, family(u.model) !== family(noRouter.model))
     if (e.agentId) { // a run's totals, so a re-spawn of the same brief can take back the first run's saving
       const a = s.agentSpend.get(e.agentId) ?? { usd: 0, base: 0, extra: 0, model: family(u.model) }
       const usd = costUsd(u.model, u)
@@ -1211,7 +1234,8 @@ export const register: Register = on => {
               ))}
             </Box>
           )
-      return stack(<Box flexDirection="column" gap={1} width={e.props.bodyColumns}>{head}{card}</Box>)
+      const line = sheetLine(s, f)
+      return stack(<Box flexDirection="column" gap={1} width={e.props.bodyColumns}>{head}{card}{line && <Text key="router-sheet" dimColor wrap="wrap">{line}</Text>}</Box>)
     }
 
     // Settings: a label column so every control starts at the same place, each group's note right under it, and a
@@ -1258,8 +1282,24 @@ export const register: Register = on => {
         </Box>
       )
     }
+    const feat = (k: keyof Features, label: string) => field(`router-f-${k}`, label, choices(`router-f-${k}`, ONOFF, f.feats[k] ? 'on' : 'off', v => setFeature($, k, v === 'on')))
+    // order: what a person changes most (this chat) first, then what to save on, then where routing is on at all
     const settings = (
       <Box key="router-settings-box" flexDirection="column" rowGap="md">
+        {group('router-g-chat',
+          field('router-chat', 'This chat', choices('router-chat', [['off', 'Off'], ['effort', 'Effort'], ['models', 'Models'], ['both', 'Both']], f.chatMode, v => setChat($, s, v))),
+          note('router-chat-note', 'Effort follows each task. Models picks subagent models and suggests a chat switch. Lasts until the session ends.'))}
+        {group('router-g-pick',
+          field('router-model', 'Model', choices('router-model', [['auto', 'Auto'], ['haiku', 'Haiku'], ['sonnet', 'Sonnet'], ['opus', 'Opus'], ['fable', 'Fable']], picked.by === 'you' ? family(picked.model ?? s.cfg.main.model) : 'auto', v => pickModel($, v), v => (v === 'auto' ? undefined : modelColor(v)))),
+          field('router-effort', 'Effort', choices('router-effort', [['auto', 'Auto'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra high'], ['max', 'Max']], picked.effort ?? 'auto', v => update($, chat, (c): ChatModel => ({ ...c, effort: v === 'auto' ? null : v })), v => (v === 'auto' ? undefined : shade(f.main?.model ?? s.cfg.main.model, v, 'dark')))),
+          note('router-pick-note', 'A pick here locks this chat to it: the router stops moving the chat, and savings are counted against your pick. Auto lets the router choose per task again.'))}
+        {group('router-g-save',
+          feat('autoSwitch', 'Move down'),
+          note('router-f-autoSwitch-note', 'Moves the chat to a cheaper model by itself, only when rebuilding the cache pays back (right after compacting, after an hour idle, or in a chat that will run long). Moving up is always your call.'),
+          feat('sizing', 'Helpers'),
+          note('router-f-sizing-note', 'Runs the reader and researcher on Haiku or Sonnet by the size of the job, with a budget.'),
+          feat('pastes', 'Big pastes'),
+          note('router-f-pastes-note', 'A message over about 10K tokens is saved to a file and a cheaper model reads it first. Put "raw" in a message to skip this.'))}
         {group('router-g-scope',
           field('router-scope', 'Routing', [
             <Text key="router-global-l">Everywhere</Text>,
@@ -1267,13 +1307,6 @@ export const register: Register = on => {
             ...(f.m.isProject ? [<Box key="router-scope-gap" width={2} />, <Text key="router-project-l">In {s.project}</Text>, ...choices('router-project', ONOFF, projectOn ? 'on' : 'off', v => setScope($, s, 'project', v))] : []),
           ]),
           note('router-scope-note', f.m.isProject ? `The ${s.project} switch wins over Everywhere. Both are saved in routing.json.` : 'Saved in ~/.claude/routing.json.'))}
-        {group('router-g-chat',
-          field('router-chat', 'This chat', choices('router-chat', [['off', 'Off'], ['effort', 'Effort'], ['models', 'Models'], ['both', 'Both']], f.chatMode, v => setChat($, s, v))),
-          note('router-chat-note', 'Effort follows each task. Models picks subagent models and suggests a chat switch. Lasts until the session ends.'))}
-        {group('router-g-pick',
-          field('router-model', 'Model', choices('router-model', [['auto', 'Auto'], ['haiku', 'Haiku'], ['sonnet', 'Sonnet'], ['opus', 'Opus'], ['fable', 'Fable']], picked.by === 'you' ? family(picked.model ?? s.cfg.main.model) : 'auto', v => pickModel($, v), v => (v === 'auto' ? undefined : modelColor(v)))),
-          field('router-effort', 'Effort', choices('router-effort', [['auto', 'Auto'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra high'], ['max', 'Max']], picked.effort ?? 'auto', v => update($, chat, (c): ChatModel => ({ ...c, effort: v === 'auto' ? null : v })), v => (v === 'auto' ? undefined : shade(f.main?.model ?? s.cfg.main.model, v, 'dark')))),
-          note('router-pick-note', 'A pick here wins for this chat. Auto gives it back to the router.'))}
         {group('router-g-tools',
           field('router-clis', 'Tools', [cli('claude'), cli('codex'), cli('antigravity'), <Button key="router-recheck" plain dimColor label="Re-check" onPress={recheck} />], true),
           note('router-tools-note', 'The newest models need current tools.'))}
@@ -1303,6 +1336,8 @@ export const register: Register = on => {
         <Box flexDirection="column" gap={1}>
           {line('w-now', 'Routing', f.v.isOn ? f.now : `off ${f.where}`)}
           {line('w-saved', isExtra(f.chat) ? 'Extra this chat' : 'Saved this chat', `${money(Math.abs(net(f.chat)))} · ${netPct(f.chat)}%`)}
+          {s.lastContext >= 1000 && line('w-cache', 'Cache', `${Math.round(s.lastContext / 1000)}K · losing it ${money(f.sheet.reset)}`)}
+          {s.lastContext >= 1000 && line('w-switch', 'Switch costs', f.sheet.switches.map(x => `${pretty(x.model)} ${money(x.usd)}`).join(', '))}
           {Svg && f.turns.length > 1 && <Svg key="w-bars" isInteractive source={barsSvg(f.turns, 220, 24)} width={220} height={24} alt={`Cost of the last ${f.turns.length} turns against no router`} />}
         </Box>
       )
@@ -1313,6 +1348,7 @@ export const register: Register = on => {
         {Svg
           ? <Svg key="p-card" isInteractive source={statsSvg(c, f.turns, 360, 2, f.spend, reroutedNote(f.v))} width={360} alt={c.map(x => `${x.label} ${x.value}, ${x.sub}`).join('; ')} />
           : c.map(x => line(`p-${x.label}`, x.label, `${x.value} · ${x.sub}`))}
+        {sheetLine(s, f) && <Text key="p-sheet" dimColor wrap="wrap">{sheetLine(s, f)}</Text>}
         <Box flexDirection="row" gap={2}>
           <Button key="p-board" plain label="Open board" onPress={() => openBoard($, s).catch(() => $.ui.toast('router: could not open the board'))} />
         </Box>
