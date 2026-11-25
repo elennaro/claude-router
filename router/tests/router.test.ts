@@ -1219,6 +1219,35 @@ test('keep awake: a nudge every 50 minutes at low effort on the same model, book
   await band.unmount()
 })
 
+test('keep awake: a turn after the nudge that no prompt of yours started (a notification) is not booked as a nudge (owner case 2026-11-25: "1 nudge, $1.03")', async (engine, on) => {
+  const $ = engine as any
+  const batches: Array<Array<Step>> = []
+  const nudges: Array<{ text: string }> = []
+  wire(on, { sent: [], batches, nudges, files: {}, read: 200_000, write: 0, ownClock: true })
+  on('turn.start', (_: unknown, e: { turnId: string }) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  const clock = mock.clock(on, { now: 1_000 })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await step($, 'medium')
+  await clock.advance(3_000_000)
+  expect(nudges.length).toBe(1)
+  await $.turn.start({ turnId: 'n', text: AWAKE_TEXT })
+  await step($, 'medium') // the nudge's own step
+  await $.turn.complete({ turnId: 'n', reason: 'answer', answer: 'cache warm' })
+  // a background task's notification starts a turn: a meta prompt, which returns before the prompt hook's bookkeeping
+  await $.prompt.submit({ text: '<task-notification>done</task-notification>', isMeta: true, wait: false })
+  await $.turn.start({ turnId: 'm', text: '' })
+  await step($, 'medium')
+  await step($, 'medium')
+  await $.turn.complete({ turnId: 'm', reason: 'answer', answer: '' })
+  await end($)
+  const who = rows(batches, 'usage').map(r => r[2])
+  expect(who.filter(w => w === 'awake').length).toBe(1) // the nudge's step only
+  expect(await band.find({ type: 'Text', text: /1 nudge(?!s)/ })).toBeTruthy()
+  await band.unmount()
+})
+
 test('keep awake waits while a turn is open (a question waiting on you), and its nudge and reply draw nothing', async (engine, on) => {
   const $ = engine as any
   const nudges: Array<{ text: string }> = []

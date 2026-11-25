@@ -999,6 +999,8 @@ export const register: Register = on => {
   // The main turn closes (keep-awake waits while one is open); this chat's own auto-compact point (Settings) is checked then, compacted just after.
   on('turn.complete', async ($, e, next) => shield($, e, next, async go => {
     if (e.turnId === s.openTurn) s.openTurn = ''
+    // the nudge's turn is over: a later turn no prompt hook sees (a notification, a meta prompt) is not a nudge
+    if (e.agentId === undefined) s.pinging = false
     const r = await go(e)
     if (e.agentId === undefined && s.cfg.mode !== 'off' && !s.headless) $.clock.after(500, async () => { await autoCompact($, s) })
     return r
