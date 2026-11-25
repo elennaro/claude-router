@@ -855,7 +855,7 @@ test('the band is one row; Stats opens the card; Settings turns routing off for 
   const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
   expect(await band.find({ type: 'Text', text: 'Haiku low (auto)' })).toBeTruthy()
   expect(await band.find({ type: 'Text', text: 'saved $0.00' })).toBeTruthy()
-  expect(await band.find({ type: 'Text', text: /fits mechanical better/ })).toBeFalsy() // the turn moved by itself: no tip
+  expect(await band.find({ type: 'Text', text: /fits this task better/ })).toBeFalsy() // the turn moved by itself: no tip
   expect(await band.find({ type: 'Svg' })).toBeFalsy()
 
   await band.press({ key: 'router-stats' })
@@ -889,9 +889,9 @@ test('one prompt never proposes a cheaper model for the chat; a stronger one is 
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
   const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
   await $.prompt.submit({ text: 'The billing build finished, check it and fix the failing test' }) // scoped-code -> Sonnet, below the Opus chat
-  expect(await band.find({ type: 'Text', text: /fits scoped-code better/ })).toBeFalsy()
+  expect(await band.find({ type: 'Text', text: /fits this task better/ })).toBeFalsy()
   await $.prompt.submit({ text: 'Plan the migration of the whole billing service to the new ledger' }) // rare-hard -> Fable, above it
-  expect(await band.find({ type: 'Text', text: /Fable fits rare-hard better/ })).toBeTruthy()
+  expect(await band.find({ type: 'Text', text: /Fable fits this task better \(rare-hard\)/ })).toBeTruthy()
   await band.unmount()
 })
 
@@ -2033,9 +2033,9 @@ test('unhappy replies keep the task class; the 2nd raises effort, the 4th raises
   await turn('I meant the refunds table, not the payments one') // a clarification: no change
   await turn('no, it is still not there after your change, look again') // 2nd: one step up
   await turn('still nothing in the ledger') // 3rd: no change
-  expect(await band.find({ type: 'Text', text: /fits this task better/ })).toBeFalsy()
+  expect(await band.find({ type: 'Text', text: /fits this task better\./ })).toBeFalsy()
   await turn('it is the same as before, this is not working') // 4th: a second step and the tip
-  expect(await band.find({ type: 'Text', text: /Opus fits this task better/ })).toBeTruthy()
+  expect(await band.find({ type: 'Text', text: /Opus fits this task better\./ })).toBeTruthy()
   await turn('Swap every variable called foo for bar in the utils module and the tests too') // a new task: calm again
   expect(sent).toEqual(['high', 'high', 'high', 'xhigh', 'xhigh', 'max', 'medium'])
   await band.unmount()
@@ -2052,7 +2052,7 @@ test('unhappy on Opus raises effort but never offers Fable', async (engine, on) 
     await step($, 'medium')
   }
   expect(sent).toEqual(['medium', 'high', 'high', 'xhigh'])
-  expect(await band.find({ type: 'Text', text: /fits this task better/ })).toBeFalsy()
+  expect(await band.find({ type: 'Text', text: /fits this task better\./ })).toBeFalsy()
   await band.unmount()
 })
 
