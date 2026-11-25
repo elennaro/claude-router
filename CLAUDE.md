@@ -20,7 +20,7 @@ A Claude Code plugin (a "mod": a TypeScript hooks module the engine loads) that 
 - `node tests/db.check.mjs`: the ledger SQL against real SQLite (Node 22.13+). Must pass.
 - `claude plugin validate .`: manifest and hooks as the engine reads them.
 - `node tests/typecheck.mjs`: strict TypeScript check of hooks, types and tests (`router/tsconfig.json`: strict, no unchecked index access, no unused locals or parameters). Takes the plugin API types Claude Code wrote (beside the plugin after a session loaded it, or from the plugin-authoring skill). Needs `npm install -g typescript`. Must pass; the pre-commit hook runs it.
-- Eval scoring checks (from `evals/`, free, no model calls): `node toolloop/checks.test.mjs` and `node store.test.mjs`. Must pass. The suites themselves cost money: see `evals/README.md`.
+- Eval scoring checks (from `evals/`, free, no model calls): `node toolloop/checks.test.mjs`, `node store.test.mjs`, `node paste/run.mjs --test` and `node docker.mjs --self-test`. Must pass. `node docker.mjs --check` runs all the checks in a clean Linux container (needs Docker). The suites themselves cost money: see `evals/README.md`.
 - Router tuning loop (from `evals/`, free): `node fast.mjs` replays every suite from the store (`work/eval.db`) with no model calls and prints every gate. Use it for any change to the table, rules or thresholds; pay for a fresh run only when the classifier's words or labels change.
 - Install your working copy: `claude plugin marketplace update claude-router`, then `claude plugin update router@claude-router` (bump `router/.claude-plugin/plugin.json` version first). Restart Claude Code to load it.
 

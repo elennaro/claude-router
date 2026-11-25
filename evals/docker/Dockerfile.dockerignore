@@ -1,0 +1,5 @@
+.git
+**/node_modules
+router/.claude-plugin/types
+evals/work
+evals/results

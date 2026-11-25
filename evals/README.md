@@ -8,6 +8,9 @@ Four suites test the router's decisions against labeled cases, through `claude -
 | Session check | offer a switch up or down mid-session | `session/cases/` (64 cases, 10 sequences) | `node session/run.mjs`, `node session/report.mjs` |
 | Subagents | a subagent's model and effort from its type or brief | `subagents/cases.jsonl` (40 briefs) | `node subagents/run.mjs`, `node subagents/report.mjs` |
 | Tool loop | whether Haiku can do its jobs: find, count, run and report, and a tiny self-contained edit | `toolloop/tasks.mjs` (12 tasks on a seeded synthetic repo, real tools, exact checks, no judge) | `node toolloop/checks.test.mjs`, `node toolloop/run.mjs`, `node toolloop/report.mjs` |
+| Big pastes | whether the cheaper model's analysis alone carries what the request needs (the plugin's own paste prompt and model choice) | `paste/run.mjs` (6 synthetic pastes, 12K to 70K tokens, facts planted at seeded places, exact string checks, no judge). Gate: 90% of facts kept on each model, every analysis keeps its headings | `node paste/run.mjs --test`, then `node docker.mjs paste/run.mjs` |
+
+**Docker runs.** `node docker.mjs --check` (free) builds a clean Linux image (`docker/Dockerfile`: Node 22, Claude Code, the repo, nothing from your machine) and runs the engine tests, validate, the db check, the eval self-checks and the offline replay, each in a fresh container. `node docker.mjs <suite.mjs>` runs a paid suite the same way, billed to `ANTHROPIC_API_KEY` from your shell (passed by name, never written to the image or a log), not the subscription. Only `evals/work` is mounted, so the store still pays each answer once. The cap is `EVAL_CAP_USD` (default $10 here, refused above $50).
 
 Haiku writes code only as a self-contained edit of about 10 lines that nothing else uses (a private helper, a one-off script). Renames and any change that reaches other files are `scoped-code`. The tool-loop suite keeps one such change (`rename`) as a control.
 
