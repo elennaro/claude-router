@@ -108,6 +108,7 @@ declare module 'claude-code' {
       cold: Cold | null // the compact-first offer after the cache lapsed, until a prompt or a press
       away: Away | null // keep-awake's report while you are away, until your next message
       awakeHours: number // how long keep-awake keeps an idle chat warm before compacting it (Settings, kept across sessions)
+      compactAt: number | null // this chat's own auto-compact point in tokens (Settings), null: Claude Code's own window
     }
   }
 }

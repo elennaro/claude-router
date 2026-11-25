@@ -14,6 +14,7 @@ import {
   classifyPlan, isCacheBreak, merge, settleAnswers, readLabel, prices, rank, setPrices, turnEffort, briefHash, isHarder, needsSecondSample, spawnPick, withoutRouter,
   type Mood, longRun, moodPrompt, moodSystem, parseMood, raiseEffort, raiseSteps, stepUp, rebuildUsd, stepUsd, switchMath, FAMILIES, coldMath,
   AWAKE_DEFAULT_HOURS, AWAKE_HOURS, AWAKE_PING_MS, AWAKE_TEXT, AWAY_COMPACT, awakeNext,
+  COMPACT_POINTS, cheapestPoint, compactStepUsd,
   SIZED, briefPaths, bucket, sizeOf, cacheSheet, PASTE_MIN, estTokens, keepsRaw, pasteModel, pasteSystem, pastePrompt, offloaded,
 } from './policy'
 import { type Cell, NAMES, TOOL_NAMES, addWhy, awayWords, coldWords, whyWords, barsSvg, boardHtml, cardLayout, hitPct, switchCost, svgSize, isExtra, modelColor, money, shade, net, netPct, netWords, savedUsd, statsSvg, withMode } from './view'
@@ -40,6 +41,7 @@ const features = atom({ plugin: 'router', key: 'features' } as const, FEATURES_O
 const cold = atom({ plugin: 'router', key: 'cold' } as const, null as Cold | null)
 const away = atom({ plugin: 'router', key: 'away' } as const, null as Away | null)
 const awakeHours = atom({ plugin: 'router', key: 'awakeHours' } as const, AWAKE_DEFAULT_HOURS)
+const compactAt = atom({ plugin: 'router', key: 'compactAt' } as const, null as number | null)
 const TODO_TOOLS = ['TodoWrite', 'mcp__ccd_turn__update_plan'] // the task list as Claude Code and the desktop app keep it
 
 const pretty = (m: string) => NAMES[family(m)] ?? m
@@ -78,6 +80,7 @@ type State = {
   coldTimer: { cancel: () => void } | undefined // keep-awake: fires 50 minutes after the main chat's last step
   awakeSince: number // the main chat's last step that was not a keep-awake nudge: the away window starts there
   pinging: boolean // the turn running now is the router's own keep-awake nudge
+  seg: { ctx: number; steps: number } // where the chat stood at its first step since the last compaction or clear: its growth per step
   briefRun: Map<string, string> // brief hash -> the agentId of its latest run
   wastedRuns: Set<string> // runs a re-spawn replaced: no saving counts for them
   paneOpened: boolean
@@ -534,6 +537,7 @@ async function compactChat($: EngineInterface, s: State, skipped: string, instru
   if ('skip' in r && r.skip) { $.ui.toast(`router: compaction was skipped (${r.skip})${skipped}`); return false }
   s.prev = NO_PREV
   s.lastContext = 0
+  s.seg = { ctx: 0, steps: 0 }
   return true
 }
 
@@ -611,6 +615,8 @@ async function clearChat($: EngineInterface, s: State) {
   s.coldTimer?.cancel()
   s.awakeSince = 0
   s.pinging = false
+  s.seg = { ctx: 0, steps: 0 }
+  await update($, compactAt, () => null)
   await update($, cold, () => null)
   await update($, away, () => null)
   if (!s.switching) await update($, chat, (c): ChatModel => ({ ...c, model: null, by: null, effort: null }))
@@ -702,6 +708,34 @@ async function showWidget($: EngineInterface, isShown: boolean) {
 async function setAwakeHours($: EngineInterface, h: number) {
   await update($, awakeHours, () => h)
   await $.store.set('awakeHours', h)
+}
+
+// This chat's growth per main step since its last compaction or clear; unknown until a few steps have run.
+const chatGrowth = (s: State) => (s.seg.ctx && s.mainSteps - s.seg.steps >= 3 ? (s.lastContext - s.seg.ctx) / (s.mainSteps - s.seg.steps) : undefined)
+
+// The chat passed its own auto-compact point: compact between turns (the engine refuses while one runs).
+async function autoCompact($: EngineInterface, s: State) {
+  const at = await read($, compactAt)
+  if (!at || s.lastContext <= at || s.switching) return
+  const was = s.lastContext
+  s.switching = true
+  try {
+    if (await compactChat($, s, '')) $.ui.toast(`router: compacted this chat at ${Math.round(was / 1000)}K (your point: ${at / 1000}K)`)
+  } catch { /* a turn started meanwhile: the next turn's end tries again */ } finally { s.switching = false }
+}
+
+// Claude Code's own window for every chat: autoCompactWindow in ~/.claude/settings.json; null removes it (its default).
+// The plugin API reads settings but has no write, so the file is edited here, every other key kept.
+async function setDefaultWindow($: EngineInterface, s: State, at: number | null) {
+  const path = `${s.home}/.claude/settings.json`
+  let cfg: Record<string, unknown> = {}
+  try {
+    if (await $.fs.exists(path)) cfg = JSON.parse(String(await $.fs.read(path)))
+  } catch { $.ui.toast(`router: ${path} is not valid JSON, so it was left as it is`); return }
+  if (at) cfg.autoCompactWindow = at
+  else delete cfg.autoCompactWindow
+  await $.fs.write(path, `${JSON.stringify(cfg, null, 2)}\n`)
+  $.ui.toast(at ? `router: Claude Code now compacts every chat at ${at / 1000}K (settings.json; new sessions pick it up)` : 'router: Claude Code is back on its own compaction window (settings.json)')
 }
 
 // A saving feature on or off, for this session and every later one.
@@ -879,7 +913,7 @@ export const register: Register = on => {
   const s: State = {
     cfg: BUILTIN, home: '', root: '', project: 'unknown', sources: 'built-in only', lastClass: null, lastHintModel: null,
     hasClassified: false, hadClass: false, skipEffortThisTurn: false, headless: false, agentEffort: new Map(), defs: new Map(),
-    prev: NO_PREV, lastContext: 0, mainSteps: 0, mainOut: 0, cleanChanges: 0, baseEffort: '', rerouted: 0, lastRerouted: '', agentType: new Map(), agentAsked: new Map(), agentSpend: new Map(), briefRun: new Map(), wastedRuns: new Set(), paneOpened: false, pasted: false, coldTimer: undefined, awakeSince: 0, pinging: false,
+    prev: NO_PREV, lastContext: 0, mainSteps: 0, mainOut: 0, cleanChanges: 0, baseEffort: '', rerouted: 0, lastRerouted: '', agentType: new Map(), agentAsked: new Map(), agentSpend: new Map(), briefRun: new Map(), wastedRuns: new Set(), paneOpened: false, pasted: false, coldTimer: undefined, awakeSince: 0, pinging: false, seg: { ctx: 0, steps: 0 },
     session: 'session', label: '', lastLedgerTurn: '', pending: [], scheduled: false, warned: false, totals: { proj: EMPTY_TALLY, since: undefined }, routeModels: true, sure: false, switchTurn: false,
     ask: undefined, stickyAsk: undefined, v: undefined, seenPrompt: false, samples: [], turnCount: 0, quietUntil: 0, declined: null, switching: false,
     briefs: new Map(), siblings: new Map(), queue: Promise.resolve(), savedAgents: NO_AGENTS, unhappy: 0,
@@ -941,7 +975,14 @@ export const register: Register = on => {
     if (e.agentId || e.trigger === 'precompute' || ('skip' in r && r.skip)) return r
     s.prev = NO_PREV // the cache starts over: the next steps say nothing about effort
     s.lastContext = 0 // the old size is gone; the next step tells the new one (and a moved step gets no warm-cache credit)
+    s.seg = { ctx: 0, steps: 0 }
     if (!s.switching) $.clock.after(500, async () => { await sessionCheck($, s, 'compact') })
+    return r
+  }))
+  // This chat's own auto-compact point (Settings): checked when a main turn ends, compacted just after it.
+  on('turn.complete', async ($, e, next) => shield($, e, next, async go => {
+    const r = await go(e)
+    if (e.agentId === undefined && s.cfg.mode !== 'off' && !s.headless) $.clock.after(500, async () => { await autoCompact($, s) })
     return r
   }))
   on('tool.call', { tool: new RegExp(`^(${TODO_TOOLS.join('|')})$`) }, async ($, e, next) => shield($, e, next, async go => {
@@ -1236,6 +1277,7 @@ export const register: Register = on => {
     if (e.agentId === undefined) {
       const now = await $.clock.now()
       s.lastContext = u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens
+      if (!s.seg.ctx) s.seg = { ctx: s.lastContext, steps: s.mainSteps + 1 } // counted as after this step
       if (!probe && !s.headless && s.cfg.mode !== 'off') arm($, s, u.model)
       if (nudge) {
         // a nudge that found the cache gone (a 5-minute cache, as API keys get): nudges can't keep it, so they stop
@@ -1421,12 +1463,33 @@ export const register: Register = on => {
       )
     }
     const feat = (k: keyof Features, label: string) => field(`router-f-${k}`, label, choices(`router-f-${k}`, ONOFF, f.feats[k] ? 'on' : 'off', v => setFeature($, k, v === 'on')))
+    // Auto-compact: this chat's own point (the router compacts it between turns), or Claude Code's window for every chat
+    const usage = await $.session.usage({ breakdown: 'summary' }).catch(() => undefined)
+    const bd = usage?.context.breakdown
+    const engineAt = bd?.autoCompactThreshold ?? bd?.rawMaxTokens ?? usage?.context.window ?? 1_000_000
+    const at = await read($, compactAt)
+    const acModel = f.main?.model ?? s.cfg.main.model
+    const growth = chatGrowth(s)
+    const best = growth === undefined ? undefined : cheapestPoint(acModel, growth, engineAt)
+    const kt = (n: number) => `${Math.round(n / 1000)}K`
+    const src = bd?.autocompactSource === 'env' ? ' (set by CLAUDE_CODE_AUTO_COMPACT_WINDOW, which beats settings.json)' : bd?.autocompactSource === 'settings' ? ' (your settings.json)' : ''
+    const shown = at ?? best
+    const acNote = `Now ${kt(s.lastContext)}; Claude Code itself compacts at ${kt(engineAt)}${src}.${s.lastContext >= 1000 ? ` Compacting now costs about ${money(f.sheet.compact)}.` : ''} ${growth === undefined
+      ? 'The cheapest point shows after a few steps.'
+      : `This chat grows about ${kt(growth)} a step; a step reads ${money(stepUsd(acModel, s.lastContext, 0))} now${shown ? `, and compacting at ${kt(shown)} averages about ${money(compactStepUsd(acModel, shown, growth))} a step` : ''}.`} A point you pick is used after the turn that passes it, for this chat only.`
     // order: what a person changes most (this chat) first, then what to save on, then where routing is on at all
     const settings = (
       <Box key="router-settings-box" flexDirection="column" rowGap="md">
         {group('router-g-chat',
           field('router-chat', 'This chat', choices('router-chat', [['off', 'Off'], ['effort', 'Effort'], ['models', 'Models'], ['both', 'Both']], f.chatMode, v => setChat($, s, v))),
-          note('router-chat-note', 'Effort follows each task. Models picks subagent models and suggests a chat switch. Lasts until the session ends.'))}
+          note('router-chat-note', 'Effort follows each task. Models picks subagent models and suggests a chat switch. Lasts until the session ends.'),
+          field('router-compact', 'Compact at', choices('router-compact', [['off', 'Claude Code'] as [string, string], ...COMPACT_POINTS.filter(p => p < engineAt).map(p => [String(p), p === best ? `${kt(p)}, cheapest` : kt(p)] as [string, string])], at ? String(at) : 'off', v => update($, compactAt, () => (v === 'off' ? null : Number(v)))), true),
+          note('router-compact-note', acNote),
+          <Box key="router-compact-default" marginLeft={LABEL + 1}>
+            {at
+              ? <Button key="router-compact-default-set" plain label={`Make ${kt(at)} my default (every chat, in settings.json)`} onPress={() => setDefaultWindow($, s, at)} />
+              : bd?.autocompactSource === 'settings' && <Button key="router-compact-default-clear" plain label="Back to Claude Code's own window (settings.json)" onPress={() => setDefaultWindow($, s, null)} />}
+          </Box>)}
         {group('router-g-pick',
           field('router-model', 'Model', choices('router-model', [['auto', 'Auto'], ['haiku', 'Haiku'], ['sonnet', 'Sonnet'], ['opus', 'Opus'], ['fable', 'Fable']], picked.by === 'you' ? family(picked.model ?? s.cfg.main.model) : 'auto', v => pickModel($, v), v => (v === 'auto' ? undefined : modelColor(v)))),
           field('router-effort', 'Effort', choices('router-effort', [['auto', 'Auto'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra high'], ['max', 'Max']], picked.effort ?? 'auto', v => update($, chat, (c): ChatModel => ({ ...c, effort: v === 'auto' ? null : v })), v => (v === 'auto' ? undefined : shade(f.main?.model ?? s.cfg.main.model, v, 'dark')))),
