@@ -105,8 +105,6 @@ per tier are the expensive part.
 
 ## Smaller items
 
-- **Spend cap overshoot**: the cap blocks new calls but calls already in flight still finish (a $5 cap recorded
-  $6.25). Reserve the expected cost of a call before it starts, or lower concurrency near the cap.
 - **Parquet**: the store is SQLite (`work/eval.db`, built into Node, no dependency). Add a Parquet export only if
   the data is wanted in outside tools.
 - `calibrate/run.mjs` writes "Spend this run $0.00" when replayed without `EVAL_OFFLINE`; harmless.

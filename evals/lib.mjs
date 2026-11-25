@@ -32,6 +32,23 @@ let total = 0 // this run only, so EVAL_CAP_USD=1 means one more dollar
 
 export class CapReached extends Error {} // stops a run: no more paid calls
 
+// Calls in flight also finish past the cap ($5 once recorded $6.25), so each call reserves its expected cost first:
+// the mean of this model's finished calls this run (unknown before the first one, so that one is never held back).
+export function capGate(cap) {
+  let reserved = 0
+  const seen = {}
+  return {
+    admit(model, spentSoFar) {
+      const s = seen[model]
+      const est = s ? s.usd / s.n : 0
+      if (spentSoFar + reserved + est > cap || spentSoFar >= cap) return undefined
+      reserved += est
+      return usd => { reserved -= est; const c = seen[model]; seen[model] = { n: (c?.n ?? 0) + 1, usd: (c?.usd ?? 0) + usd } }
+    },
+  }
+}
+const gate = capGate(CAP_USD)
+
 // cache: true keeps the result on disk under a hash of everything the model sees, so the same question is paid once
 // (judges: a re-run of the same judge on the same pair is free; a changed prompt is a new key).
 // The store: one SQLite file with every model output an eval has paid for (answers, judge verdicts, Jev and Haiku
@@ -65,7 +82,8 @@ export function claude(o) {
   return run(o).then(r => { cachePut(key, 'claude', r); return r })
 }
 function run({ model, effort, system, prompt, tools = '', cwd = EMPTY, tag = 'run', timeoutMs = 600_000, json }) {
-  if (total >= CAP_USD) return Promise.reject(new CapReached(`spend cap $${CAP_USD} reached ($${total.toFixed(2)})`))
+  const done = gate.admit(model, total)
+  if (!done) return Promise.reject(new CapReached(`spend cap $${CAP_USD} reached ($${total.toFixed(2)} spent, more in flight)`))
   const args = ['-p', '--model', model, '--output-format', 'json', '--no-session-persistence', '--disable-slash-commands',
     '--strict-mcp-config', '--setting-sources', 'project', '--tools', tools]
   if (effort) args.push('--effort', effort)
@@ -78,6 +96,7 @@ function run({ model, effort, system, prompt, tools = '', cwd = EMPTY, tag = 'ru
       try { r = JSON.parse(stdout); if (Array.isArray(r)) r = r.find(x => x.type === 'result') } catch { /* below */ }
       const usd = r?.total_cost_usd ?? 0
       total += usd
+      done(usd)
       appendJsonl(SPEND, { at: new Date().toISOString(), tag, model, effort, usd })
       if (!r) return reject(new Error(`claude -p gave no JSON (${err?.message ?? 'no error'}): ${String(stdout).slice(0, 300)}`))
       if (r.is_error) return reject(new Error(`claude -p error: ${String(r.result).slice(0, 300)}`))
