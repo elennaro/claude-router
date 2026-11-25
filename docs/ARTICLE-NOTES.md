@@ -41,6 +41,13 @@ real usage. Per-move detail is in [LESSONS.md](LESSONS.md); the numbers come fro
    does nothing, the second raises effort a step, the fourth raises again and offers the next model up; and the label
    became "clearly and strongly unsatisfied", with "sorry / my bad / I mean" never counting. Result ($0.04): 94% of
    complaints caught, 10.6% of calm replies misread, so about 1% of tasks get a raise they didn't need (right move 20).
+9. **Cache-aware token economy (0.8.0 to 0.8.4).** The owner reframed the goal: not the cheapest model, but the
+   cheapest path once the prompt cache is counted. Effort changes keep the cache, a model switch rebuilds it, and an
+   hour idle loses it. So the router now changes effort freely and moves the model only when the rebuild pays back.
+   New features came from one replay of two weeks of transcripts: big pastes read first by a cheaper model, sized
+   reader and researcher subagents, keep awake (a hidden nudge every 50 minutes; resumes after an hour idle were about
+   a fifth of all spend), and a per-chat *Compact at* point (a 300K window would have cut main-chat spend by about 7%).
+   The first replay overstated everything about five times (wrong move 23).
 
 ## How the savings are measured
 
@@ -104,6 +111,6 @@ What the numbers can and cannot say:
 
 - Evals: 283 cases; answers +15.6% better than always Opus medium at 1.21x its spend (`evals/results/report.md`).
 - Acceptance: Opus medium 85% accepted, Sonnet medium 80%, same 75 cases; per class in `evals/results/accept-report.md`.
-- Ledger before the fixes, 2026-11-19: $255 spent, $254 without router, net -$0.64 (the router had just started
-  moving work off Opus).
-- Eval spend for the whole project: about $530 at API prices (`evals/work/spend.jsonl`).
+- Ledger before the fixes, 2026-11-19: spend and the no-router figure within 0.3% of each other (the router had
+  just started moving work off Opus).
+- Eval spend for the whole project: a few hundred dollars at API prices (`evals/work/spend.jsonl`).
