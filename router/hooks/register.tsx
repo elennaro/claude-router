@@ -14,7 +14,7 @@ import {
   classifyPlan, isCacheBreak, merge, settleAnswers, readLabel, prices, rank, setPrices, turnEffort, briefHash, isHarder, needsSecondSample, spawnPick, withoutRouter,
   type Mood, longRun, moodPrompt, moodSystem, parseMood, raiseEffort, raiseSteps, stepUp, rebuildUsd, stepUsd, switchMath, FAMILIES, coldMath,
   AWAKE_DEFAULT_HOURS, AWAKE_HOURS, AWAKE_MIN, AWAKE_PING_MS, AWAKE_TEXT, AWAY_COMPACT, awakeNext, isNudgeReply,
-  COMPACT_POINTS, cheapestPoint, compactStepUsd,
+  type CompactLook, cheapestPoint, compactLook, compactPoints, compactsPer100, compactStepUsd,
   SIZED, briefPaths, bucket, sizeOf, cacheSheet, PASTE_MIN, estTokens, keepsRaw, pasteModel, pasteSystem, pastePrompt, offloaded,
 } from './policy'
 import { type Cell, NAMES, TOOL_NAMES, addWhy, awayWords, cacheClock, minutesLeft, coldWords, whyWords, barsSvg, boardHtml, cardLayout, hitPct, switchCost, svgSize, isExtra, modelColor, money, shade, net, netPct, netWords, savedUsd, statsSvg, withMode } from './view'
@@ -1494,20 +1494,26 @@ export const register: Register = on => {
     const at = await read($, compactAt)
     const acModel = f.main?.model ?? s.cfg.main.model
     const growth = chatGrowth(s)
-    const best = growth === undefined ? undefined : cheapestPoint(acModel, growth, engineAt)
+    const limit = bd?.rawMaxTokens ?? usage?.context.window ?? 1_000_000 // the model's own context limit
+    const points = compactPoints(limit)
+    const best = growth === undefined ? undefined : cheapestPoint(acModel, growth, limit)
     const kt = (n: number) => `${Math.round(n / 1000)}K`
     const src = bd?.autocompactSource === 'env' ? ' (set by CLAUDE_CODE_AUTO_COMPACT_WINDOW, which beats settings.json)' : bd?.autocompactSource === 'settings' ? ' (your settings.json)' : ''
     const shown = at ?? best
+    const per100 = growth === undefined || best === undefined ? ''
+      : ` Every 100 steps: ${points.map(p => `${kt(p)} compacts ${Math.round(compactsPer100(p, growth) * 10) / 10} times, ${money(100 * compactStepUsd(acModel, p, growth))}`).join('; ')}. Green is near the cheapest; red compacts so often it loses detail, or costs too much.`
     const acNote = `Now ${kt(s.lastContext)}; Claude Code itself compacts at ${kt(engineAt)}${src}.${s.lastContext >= 1000 ? ` Compacting now costs about ${money(f.sheet.compact)}.` : ''} ${growth === undefined
       ? 'The cheapest point shows after a few steps.'
-      : `This chat grows about ${kt(growth)} a step; a step reads ${money(stepUsd(acModel, s.lastContext, 0))} now${shown ? `, and compacting at ${kt(shown)} averages about ${money(compactStepUsd(acModel, shown, growth))} a step` : ''}.`} A point you pick is used after the turn that passes it, for this chat only.`
+      : `This chat grows about ${kt(growth)} a step; a step reads ${money(stepUsd(acModel, s.lastContext, 0))} now${shown ? `, and compacting at ${kt(shown)} averages about ${money(compactStepUsd(acModel, shown, growth))} a step` : ''}.`}${per100} A point you pick is used after the turn that passes it, for this chat only${at && at >= engineAt ? `; Claude Code compacts at ${kt(engineAt)} first, so make it your default to reach ${kt(at)}` : ''}.`
+    const LOOK_COLOR: Record<CompactLook, string> = { good: '#4f9a5c', ok: '#c9932e', bad: '#c8553d' }
+    const acDot = (v: string) => (v === 'off' || growth === undefined || best === undefined ? undefined : LOOK_COLOR[compactLook(acModel, Number(v), growth, best)])
     // order: what a person changes most (this chat) first, then what to save on, then where routing is on at all
     const settings = (
       <Box key="router-settings-box" flexDirection="column" rowGap="md">
         {group('router-g-chat',
           field('router-chat', 'This chat', choices('router-chat', [['off', 'Off'], ['effort', 'Effort'], ['models', 'Models'], ['both', 'Both']], f.chatMode, v => setChat($, s, v))),
           note('router-chat-note', 'Effort follows each task. Models picks subagent models and suggests a chat switch. Lasts until the session ends.'),
-          field('router-compact', 'Compact at', choices('router-compact', [['off', 'Claude Code'] as [string, string], ...COMPACT_POINTS.filter(p => p < engineAt).map(p => [String(p), p === best ? `${kt(p)}, cheapest` : kt(p)] as [string, string])], at ? String(at) : 'off', v => update($, compactAt, () => (v === 'off' ? null : Number(v)))), true),
+          field('router-compact', 'Compact at', choices('router-compact', [['off', 'Claude Code'] as [string, string], ...points.map(p => [String(p), p === best ? `${kt(p)}, cheapest` : kt(p)] as [string, string])], at ? String(at) : 'off', v => update($, compactAt, () => (v === 'off' ? null : Number(v))), acDot), true),
           note('router-compact-note', acNote),
           <Box key="router-compact-default" marginLeft={LABEL + 1}>
             {at

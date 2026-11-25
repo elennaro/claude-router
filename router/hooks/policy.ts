@@ -650,8 +650,13 @@ export function coldMath(model: string, cache: number) {
 // Auto-compact at a chosen point (docs/PLAN-v3.md, the window replay). Measured on two weeks of the owner's transcripts
 // (2026-11-25): a compaction leaves about 113K (median of 195), writes about a 5K summary (median of 683), and the model
 // re-reads about 3K more in the steps after (median; p75 9K). A chat that compacts at T sawtooths between B and T.
-export const COMPACT_POINTS = [200_000, 300_000, 400_000, 500_000, 600_000]
 export const AC_BASE = 113_000, AC_OUT = 5_000, AC_REREAD = 3_000
+// The points offered: every 100K from 200K up to the model's own context limit.
+export function compactPoints(limit: number): Array<number> {
+  const out: Array<number> = []
+  for (let p = 200_000; p < limit; p += 100_000) out.push(p)
+  return out
+}
 // Average cost of one step when the chat compacts at `at`, growing `growth` tokens a step: half-way reads, plus one
 // compaction (read the chat, write the summary, write the kept part and the re-read) spread over a cycle's steps.
 export function compactStepUsd(model: string, at: number, growth: number, base = AC_BASE): number {
@@ -659,12 +664,23 @@ export function compactStepUsd(model: string, at: number, growth: number, base =
   const cycle = stepUsd(model, at, AC_OUT) + rebuildUsd(model, base + AC_REREAD)
   return stepUsd(model, (base + at) / 2, 0) + cycle * growth / (at - base)
 }
-// The cheapest point for this chat, among the points under the engine's own window (that one is the backstop).
-export function cheapestPoint(model: string, growth: number, window: number, base = AC_BASE): number | undefined {
+// The cheapest point for this chat, among the points under the model's context limit.
+export function cheapestPoint(model: string, growth: number, limit: number, base = AC_BASE): number | undefined {
   let best: number | undefined
-  for (const p of COMPACT_POINTS) if (p < window && compactStepUsd(model, p, growth, base) < (best === undefined ? Infinity : compactStepUsd(model, best, growth, base))) best = p
+  for (const p of compactPoints(limit)) if (compactStepUsd(model, p, growth, base) < (best === undefined ? Infinity : compactStepUsd(model, best, growth, base))) best = p
   return best
 }
+// How a point looks: green near the cheapest, red where compactions come too often (each one loses detail) or the
+// price runs too high, amber between. shortcut: 20 steps and 10%/25% are judgment, not measured; tune if they mislead.
+export const AC_MIN_STEPS = 20
+export type CompactLook = 'good' | 'ok' | 'bad'
+export function compactLook(model: string, at: number, growth: number, best: number, base = AC_BASE): CompactLook {
+  const ratio = compactStepUsd(model, at, growth, base) / compactStepUsd(model, best, growth, base)
+  if ((at - base) / growth < AC_MIN_STEPS || ratio > 1.25) return 'bad'
+  return ratio <= 1.1 ? 'good' : 'ok'
+}
+// Compactions every 100 steps at this point.
+export const compactsPer100 = (at: number, growth: number, base = AC_BASE) => (100 * growth) / (at - base)
 
 export type Life = { steps: number; open: boolean }
 export const MIN_LIVES = 20

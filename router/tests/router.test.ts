@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import {
-  BUILTIN, CLASS_LABELS, adviseSwitch, effortRank, rank, agentTier, autoModel, needsSecondSample, briefHash, briefTier, stepUp, classifyByRules, costUsd, firstModel, isCacheBreak, isContinuation, merge, parseJev, parseSessionCheck, parseMood, raiseEffort, moodPrompt, longRun, readLabel, spawnPick, turnEffort, withoutRouter, rebuildUsd, stepUsd, switchMath, remainingSteps, quickPays, type Life, sessionCheckSystem, briefPaths, sizeOf, bucket, estTokens, keepsRaw, pasteModel, pasteSystem, offloaded, cacheSheet, coldMath, awakeNext, AWAKE_TEXT, isNudgeReply, compactStepUsd, cheapestPoint,
+  BUILTIN, CLASS_LABELS, adviseSwitch, effortRank, rank, agentTier, autoModel, needsSecondSample, briefHash, briefTier, stepUp, classifyByRules, costUsd, firstModel, isCacheBreak, isContinuation, merge, parseJev, parseSessionCheck, parseMood, raiseEffort, moodPrompt, longRun, readLabel, spawnPick, turnEffort, withoutRouter, rebuildUsd, stepUsd, switchMath, remainingSteps, quickPays, type Life, sessionCheckSystem, briefPaths, sizeOf, bucket, estTokens, keepsRaw, pasteModel, pasteSystem, offloaded, cacheSheet, coldMath, awakeNext, AWAKE_TEXT, isNudgeReply, compactStepUsd, cheapestPoint, compactPoints, compactLook, compactsPer100,
 } from '../hooks/policy'
 import { addWhy, cacheClock, minutesLeft, whoWords, whyWords, boardHtml, cacheStrength, cardLayout, hitPct, svgSize, switchCost, netWords, savedUsd, shade, statsSvg, withMode } from '../hooks/view'
 import { RUNNER, type Step, bucketsOf, labelOf, livesOf } from '../hooks/db'
@@ -291,7 +291,7 @@ async function end($: any) {
   await $.session.end({ reason: 'other', sessionId: 'sess-1', resume: { sessionId: 'sess-1' } })
 }
 
-function wire(on: any, opts: { batches?: Array<Array<Step>>; runFails?: boolean; store?: Map<string, unknown>; haiku?: string | ((e: { system?: string }) => string); tokens?: number; model?: string; messages?: Array<unknown>; ownClock?: boolean; sent: Array<unknown>; asked?: { n: number }; lines?: Array<string | undefined>; opened?: Array<unknown>; surfaces?: Array<string>; files?: Record<string, string>; models?: Array<string>; read?: number; write?: number; select?: (sql: string) => Array<unknown>; argv?: Array<Array<string>>; nudges?: Array<{ text: string }>; window?: number }) {
+function wire(on: any, opts: { batches?: Array<Array<Step>>; runFails?: boolean; store?: Map<string, unknown>; haiku?: string | ((e: { system?: string }) => string); tokens?: number; model?: string; messages?: Array<unknown>; ownClock?: boolean; sent: Array<unknown>; asked?: { n: number }; lines?: Array<string | undefined>; opened?: Array<unknown>; surfaces?: Array<string>; files?: Record<string, string>; models?: Array<string>; read?: number; write?: number; select?: (sql: string) => Array<unknown>; argv?: Array<Array<string>>; nudges?: Array<{ text: string }>; window?: number; engineAt?: number }) {
   on('env.get', (_: unknown, e: { name: string }) => ({ value: e.name === 'USERPROFILE' ? '/home' : undefined }))
   on('session.root', () => ({ value: '/proj' }))
   on('session.id', () => ({ value: 'sess-1' }))
@@ -335,7 +335,7 @@ function wire(on: any, opts: { batches?: Array<Array<Step>>; runFails?: boolean;
   on('prompt.submit', (_: unknown, e: { text: string; origin?: { kind: string } }) => { if (e.origin?.kind === 'plugin') opts.nudges?.push(e); return { text: e.text } })
   on('model.complete', (_: unknown, e: { system?: string }) => { opts.asked && opts.asked.n++; return { value: { isAnswered: true, text: (typeof opts.haiku === 'function' ? opts.haiku(e) : opts.haiku) ?? 'default 0.9', usage: USAGE } } })
   // tokens set = a chat already under way (no first-prompt pick); unset = a new chat
-  on('session.usage', () => ({ value: { startedAt: 0, context: { window: opts.window ?? 200_000, ...(opts.tokens === undefined ? {} : { tokens: opts.tokens }) }, rateLimits: [] } }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: opts.window ?? 200_000, ...(opts.engineAt ? { breakdown: { autoCompactThreshold: opts.engineAt, rawMaxTokens: opts.window, autocompactSource: 'settings' } } : {}), ...(opts.tokens === undefined ? {} : { tokens: opts.tokens }) }, rateLimits: [] } }))
   on('turn.step', async function* (_: unknown, e: { effort?: unknown; model: string; turnId: string; index: number }) {
     opts.sent.push(e.effort)
     opts.models?.push(e.model)
@@ -1320,13 +1320,20 @@ test('a nudge is dropped when the chat was just used, and a nudge that finds the
   expect(toasts.some(t => t.includes('keep-awake found the cache already gone'))).toBe(true)
 })
 
-test('auto-compact cost: the cheapest point follows the chat\'s growth and stays under Claude Code\'s own window', () => {
+test('auto-compact cost: the cheapest point follows the chat\'s growth, up to the model\'s context limit; each point is coloured', () => {
   const at = (p: number, g: number) => Math.round(compactStepUsd('opus', p, g) * 1000)
   // 5K a step: half-way reads plus one compaction (read 300K, 5K out, write 116K) spread over 187K/5K steps
   expect([at(200_000, 5_000), at(300_000, 5_000), at(400_000, 5_000)]).toEqual([93, 70, 71])
+  expect(compactPoints(1_000_000)).toEqual([200_000, 300_000, 400_000, 500_000, 600_000, 700_000, 800_000, 900_000])
+  expect(compactPoints(200_000)).toEqual([]) // a 200K model: only Claude Code's own window
   expect(cheapestPoint('opus', 5_000, 1_000_000)).toBe(300_000)
   expect(cheapestPoint('opus', 20_000, 1_000_000)).toBe(600_000) // a fast-growing chat compacts less often
-  expect(cheapestPoint('opus', 5_000, 300_000)).toBe(200_000) // only points under the engine's window
+  // 5K a step: 200K compacts every 17 steps (loses detail), 300K-500K near the cheapest, 600K dearer, 700K+ too dear
+  expect(compactPoints(1_000_000).map(p => compactLook('opus', p, 5_000, 300_000))).toEqual(['bad', 'good', 'good', 'good', 'ok', 'bad', 'bad', 'bad'])
+  // 20K a step: 500K would compact every 19 steps; 900K costs a little more than 600K
+  expect([200_000, 500_000, 900_000].map(p => compactLook('opus', p, 20_000, 600_000))).toEqual(['bad', 'bad', 'ok'])
+  expect(cheapestPoint('opus', 5_000, 300_000)).toBe(200_000) // only points under the model's limit
+  expect(Math.round(compactsPer100(300_000, 5_000) * 10)).toBe(27) // 187K between compactions at 5K a step
   expect(cheapestPoint('opus', 0, 1_000_000)).toBeUndefined() // a chat that doesn't grow never needs it
   expect(compactStepUsd('opus', 100_000, 5_000)).toBe(Infinity) // a point under what compaction leaves
 })
@@ -1378,15 +1385,36 @@ test('auto-compact Settings: the cheapest point and the costs show once the chat
   for (const r of [150_000, 155_000, 160_000, 165_000]) { opts.read = r; await step($, 'medium') }
   await band.press({ key: 'router-settings' })
   await band.press({ key: 'router-settings' })
-  expect((await band.find({ key: 'router-compact-300000' }))?.props.label).toBe('300K, cheapest') // 5K a step on Opus
-  expect((await band.find({ key: 'router-compact-200000' }))?.props.label).toBe('200K')
+  expect((await band.find({ key: 'router-compact-300000' }))?.props.label).toBe('● 300K, cheapest') // 5K a step on Opus
+  expect((await band.find({ key: 'router-compact-200000' }))?.props.label).toBe('● 200K')
+  expect(await band.find({ key: 'router-compact-900000' })).toBeTruthy() // up to the model's limit (1M), not a fixed cap
+  // the compact row's dots, 200K to 900K: red, three greens, amber, then red as the price climbs
+  const looks = ['#c8553d', '#4f9a5c', '#c9932e']
+  const dots = (await band.findAll({ type: 'Text', text: '●' })).map((d: { props: { color?: string } }) => d.props.color).filter((c: string | undefined) => looks.includes(c ?? ''))
+  expect(dots).toEqual(['#c8553d', '#4f9a5c', '#4f9a5c', '#4f9a5c', '#c9932e', '#c8553d', '#c8553d', '#c8553d'])
   expect(await band.find({ type: 'Text', text: /grows about 5K a step; a step reads \$0\.03 now, and compacting at 300K averages about \$0\.07 a step/ })).toBeTruthy()
+  expect(await band.find({ type: 'Text', text: /Every 100 steps: 200K compacts 5\.7 times, \$\d+\.\d\d; 300K compacts 2\.7 times, \$7\.0\d;/ })).toBeTruthy()
   await band.press({ key: 'router-compact-400000' })
   await band.press({ key: 'router-compact-default-set' })
   expect(JSON.parse(files['/home/.claude/settings.json']!)).toEqual({ model: 'opus', autoCompactWindow: 400_000 })
   files['/home/.claude/settings.json'] = '{ broken'
   await band.press({ key: 'router-compact-default-set' })
   expect(files['/home/.claude/settings.json']).toBe('{ broken') // never overwrite a file it can't read
+  await band.unmount()
+})
+
+test('auto-compact Settings: a point past Claude Code\'s own window is offered up to the model\'s limit, and the note says it needs the default', async (engine, on) => {
+  const $ = engine as any
+  wire(on, { sent: [], read: 150_000, write: 0, window: 1_000_000, engineAt: 400_000 })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await band.press({ key: 'router-settings' })
+  await band.press({ key: 'router-compact-600000' })
+  expect(await band.find({ type: 'Text', text: /Claude Code itself compacts at 400K \(your settings\.json\)/ })).toBeTruthy()
+  expect(await band.find({ type: 'Text', text: /Claude Code compacts at 400K first, so make it your default to reach 600K/ })).toBeTruthy()
+  expect(await band.find({ key: 'router-compact-default-set' })).toBeTruthy()
+  await band.press({ key: 'router-compact-300000' })
+  expect(await band.find({ type: 'Text', text: /make it your default to reach/ })).toBeFalsy() // under the window: the router reaches it itself
   await band.unmount()
 })
 
