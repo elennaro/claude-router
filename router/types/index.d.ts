@@ -80,8 +80,10 @@ export type Versions = { at: number; tools: Record<Tool, ToolState> }
 
 // The saving features (docs/PLAN-v3.md slices 1-3), each switchable in Settings.
 // autoSwitch: move the chat down by itself when the cache rebuild pays; sizing: size the reader and researcher;
-// pastes: read big pastes first.
-export type Features = { autoSwitch: boolean; sizing: boolean; pastes: boolean }
+// pastes: read big pastes first; idle: offer to compact a big chat after an hour away.
+export type Features = { autoSwitch: boolean; sizing: boolean; pastes: boolean; idle: boolean }
+// The offer after an hour away: what resuming re-reads, what compacting first adds, and what it saves per step.
+export type Cold = { cache: number; resume: number; extra: number; perStep: number; payback: number }
 
 declare module 'claude-code' {
   interface PluginState {
@@ -100,6 +102,7 @@ declare module 'claude-code' {
       chat: ChatModel // the chat's model: picked on its first prompt, or by the person
       advice: Advice | null // the session check's offer, until pressed or dismissed
       features: Features // the saving features' switches (Settings), kept across sessions
+      cold: Cold | null // the compact-first offer after an hour away, until a prompt, a press or the next step
     }
   }
 }

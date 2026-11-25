@@ -606,6 +606,20 @@ export function cacheSheet(model: string, cache: number) {
   }
 }
 
+// After an hour away the cache is gone, and the next message writes the whole chat again either way (docs/PLAN-v3.md,
+// slice 4: a week of transcripts put 44% of main-chat cache writes on such resumes). Compacting first adds one write of
+// the kept part, and every later step reads the short chat instead of the whole one.
+// shortcut: the summary's own output is not counted; count it if offers show up that never pay back
+export const COLD_PAYBACK = 30 // steps: offer only when compacting pays back within about this many
+export function coldMath(model: string, cache: number) {
+  const fam = family(model)
+  const kept = Math.min(cache, COMPACT_KEEP)
+  const extra = rebuildUsd(fam, kept)
+  const perStep = stepUsd(fam, cache, 0) - stepUsd(fam, kept, 0)
+  const payback = perStep > 0 ? Math.ceil(extra / perStep) : Infinity
+  return { resume: rebuildUsd(fam, cache), extra, perStep, payback, pays: payback <= COLD_PAYBACK }
+}
+
 export type Life = { steps: number; open: boolean }
 export const MIN_LIVES = 20
 

@@ -4,7 +4,10 @@ import type { Bucket, By, Cache, Mix, Tally, Tool, TurnLog, Versions, Why } from
 
 export const money = (n: number) => (n <= -0.005 ? `-$${(-n).toFixed(2)}` : `$${Math.max(0, n).toFixed(2)}`) // no "-$0.00" from rounding
 // What a switch offer says it costs: the new model writes the chat to its own cache once (less after compacting).
-export const switchCost = (usd: number | undefined, isNew: boolean) => (usd && !isNew ? ` Switching re-reads the chat: about ${money(usd)} now, less after compacting.` : '')
+// The offer after an hour away: resuming re-reads everything anyway; compacting first adds a little and saves per step.
+export const coldWords = (c: { cache: number; resume: number; extra: number; perStep: number; payback: number }) =>
+  `You were away over an hour, so the cache expired: your next message re-reads the whole chat (${Math.round(c.cache / 1000)}K tokens, about ${money(c.resume)}) either way. Compacting first adds about ${money(c.extra)}, then saves about ${money(c.perStep)} a step, paying back in about ${c.payback} steps. The summary keeps the goal, plan, decisions and files, but loses detail.`
+export const switchCost =(usd: number | undefined, isNew: boolean) => (usd && !isNew ? ` Switching re-reads the chat: about ${money(usd)} now, less after compacting.` : '')
 // Against running with no router: net above 0 saved money, below 0 spent more. Savings and extra spend are kept apart
 // step by step (a cheap subagent and a high-effort turn do not cancel out unseen).
 export const net = (t: Tally) => t.baselineUsd - t.actualUsd

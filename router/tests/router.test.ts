@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import {
-  BUILTIN, CLASS_LABELS, adviseSwitch, effortRank, rank, agentTier, autoModel, needsSecondSample, briefHash, briefTier, stepUp, classifyByRules, costUsd, firstModel, isCacheBreak, isContinuation, merge, parseJev, parseSessionCheck, parseMood, raiseEffort, moodPrompt, longRun, readLabel, spawnPick, turnEffort, withoutRouter, rebuildUsd, stepUsd, switchMath, remainingSteps, quickPays, type Life, sessionCheckSystem, briefPaths, sizeOf, bucket, estTokens, keepsRaw, pasteModel, pasteSystem, offloaded, cacheSheet,
+  BUILTIN, CLASS_LABELS, adviseSwitch, effortRank, rank, agentTier, autoModel, needsSecondSample, briefHash, briefTier, stepUp, classifyByRules, costUsd, firstModel, isCacheBreak, isContinuation, merge, parseJev, parseSessionCheck, parseMood, raiseEffort, moodPrompt, longRun, readLabel, spawnPick, turnEffort, withoutRouter, rebuildUsd, stepUsd, switchMath, remainingSteps, quickPays, type Life, sessionCheckSystem, briefPaths, sizeOf, bucket, estTokens, keepsRaw, pasteModel, pasteSystem, offloaded, cacheSheet, coldMath,
 } from '../hooks/policy'
 import { addWhy, whyWords, boardHtml, cacheStrength, cardLayout, hitPct, svgSize, switchCost, netWords, savedUsd, shade, statsSvg, withMode } from '../hooks/view'
 import { RUNNER, type Step, labelOf, livesOf } from '../hooks/db'
@@ -1150,9 +1150,85 @@ test('Settings switches the saving features off and on; the choice is kept for l
   expect((await $.prompt.submit({ text: big, origin: { kind: 'composer' }, wait: false })).text).toBe(big)
   await $.agent.spawn({ prompt: 'Find the timeouts in logs/a.log', subagentType: 'router:document-reader', parentModel: 'claude-opus-5-5' })
   expect(spawned).toEqual([undefined]) // the agent's own model, no sizing
-  expect(store.get('features')).toEqual({ autoSwitch: true, sizing: false, pastes: false })
+  expect(store.get('features')).toEqual({ autoSwitch: true, sizing: false, pastes: false, idle: true })
   await band.press({ key: 'router-f-pastes-on' })
   expect((await $.prompt.submit({ text: big, origin: { kind: 'composer' }, wait: false })).text).not.toBe(big)
+  await band.unmount()
+})
+
+test('after an hour away: resuming re-reads the whole chat; compacting first costs the kept part once and pays back per step', () => {
+  const c = (x: number) => Math.round(x * 1000) // tenths of a cent
+  // Opus: 1-hour write $8/M, read $0.20/M. 200K resumed = $1.60; the compacted chat writes 65K = $0.52 once;
+  // each later step then reads 135K less = $0.027 a step, so it pays back in 20 steps
+  const m = coldMath('opus', 200_000)
+  expect([c(m.resume), c(m.extra), c(m.perStep), m.payback, m.pays]).toEqual([1600, 520, 27, 20, true])
+  // 120K: 55K less a step pays $0.52 back only after 48 steps, past the line: no offer
+  expect(coldMath('opus', 120_000).pays).toBe(false)
+  expect(coldMath('opus', 60_000).pays).toBe(false) // already smaller than a compacted chat
+})
+
+test('after an hour away from a big chat, the band offers to compact first, with the costs; a step, a prompt or Keep clears it', async (engine, on) => {
+  const $ = engine as any
+  const compacted: Array<unknown> = []
+  const sent: Array<unknown> = []
+  wire(on, { sent, read: 200_000, write: 0, ownClock: true })
+  const clock = mock.clock(on, { now: 1_000 })
+  on('session.compact', (_: unknown, e: unknown) => { compacted.push(e); return { messages: [{ role: 'user', text: 'summary', toolUses: [] }] } })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await step($, 'medium')
+  await clock.advance(1_800_000)
+  await step($, 'medium') // back within the hour: the cache lives on, the hour starts again
+  await clock.advance(2_000_000)
+  expect(await band.find({ key: 'router-cold-compact' })).toBeFalsy()
+  await clock.advance(1_700_000)
+  expect(await band.find({ type: 'Text', text: /re-reads the whole chat \(200K tokens, about \$1\.60\).*about \$0\.52.*20 steps/ })).toBeTruthy()
+  await band.press({ key: 'router-cold-keep' })
+  expect(await band.find({ key: 'router-cold-compact' })).toBeFalsy()
+  expect(compacted.length).toBe(0)
+  // the next break offers again; pressing compacts on the same model
+  await step($, 'medium')
+  await clock.advance(3_700_000)
+  await band.press({ key: 'router-cold-compact' })
+  expect(compacted.length).toBe(1)
+  expect(await band.find({ key: 'router-cold-compact' })).toBeFalsy()
+  // a prompt sent while the offer shows clears it (the message re-reads the chat anyway)
+  await step($, 'medium')
+  await clock.advance(3_700_000)
+  expect(await band.find({ key: 'router-cold-compact' })).toBeTruthy()
+  await $.prompt.submit({ text: 'ok, where were we', origin: { kind: 'composer' }, wait: false })
+  expect(await band.find({ key: 'router-cold-compact' })).toBeFalsy()
+  await band.unmount()
+})
+
+test('no compact offer for a small chat, a subagent, or with the switch off', async (engine, on) => {
+  const $ = engine as any
+  const store = new Map<string, unknown>()
+  wire(on, { sent: [], store, read: 100_000, write: 0, ownClock: true })
+  const clock = mock.clock(on, { now: 1_000 })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await step($, 'medium') // 100K: compacting would not pay back soon enough
+  await clock.advance(3_700_000)
+  expect(await band.find({ key: 'router-cold-compact' })).toBeFalsy()
+  await band.unmount()
+})
+
+test('the compact-after-a-break switch off: no offer even for a big chat; a subagent step never starts the hour', async (engine, on) => {
+  const $ = engine as any
+  wire(on, { sent: [], read: 300_000, write: 0, ownClock: true })
+  const clock = mock.clock(on, { now: 1_000 })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await step($, 'medium', 'sub1')
+  await clock.advance(3_700_000)
+  expect(await band.find({ key: 'router-cold-compact' })).toBeFalsy()
+  await band.press({ key: 'router-settings' })
+  await band.press({ key: 'router-f-idle-off' })
+  await band.press({ key: 'router-settings' })
+  await step($, 'medium')
+  await clock.advance(3_700_000)
+  expect(await band.find({ key: 'router-cold-compact' })).toBeFalsy()
   await band.unmount()
 })
 

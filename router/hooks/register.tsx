@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionMessage } from 'claude-code'
 
-import type { Advice, Bucket, Cache, ChatModel, Features, Hint, Mix, Tally, RouterView, TurnLog, Why } from '../types'
+import type { Advice, Bucket, Cache, ChatModel, Cold, Features, Hint, Mix, Tally, RouterView, TurnLog, Why } from '../types'
 import { BOARD, SWEEP, livesQuery, livesOf, type Step, type Totals, IMPORTED, addCache, bucketsOf, dayRow, isAlreadyImported, labelOf, legacySteps, run, sessionRow, spawnRow, totalsOf, totalsQuery, usageRow } from './db'
 import { shield } from './guard'
 import { claudeFamily } from './latest'
@@ -12,10 +12,10 @@ import {
 import {
   type Ask, AUTO, BUILTIN, DELEGATE_ID, delegateSection, wantsDelegate, CLASS_LABELS, type Config, type Usage, type SessionWindow, adviseSwitch, agentTier, autoModel, classifierPrompt, firstModel, parseSessionCheck, sessionCheckPrompt, sessionCheckSystem, classifierSystem, classifyByRules, costUsd, explicitAsk, family,
   classifyPlan, isCacheBreak, merge, settleAnswers, readLabel, prices, rank, setPrices, turnEffort, briefHash, isHarder, needsSecondSample, spawnPick, withoutRouter,
-  type Mood, longRun, moodPrompt, moodSystem, parseMood, raiseEffort, raiseSteps, stepUp, rebuildUsd, switchMath, FAMILIES,
+  type Mood, longRun, moodPrompt, moodSystem, parseMood, raiseEffort, raiseSteps, stepUp, rebuildUsd, switchMath, FAMILIES, coldMath,
   SIZED, briefPaths, bucket, sizeOf, cacheSheet, PASTE_MIN, estTokens, keepsRaw, pasteModel, pasteSystem, pastePrompt, offloaded,
 } from './policy'
-import { type Cell, NAMES, TOOL_NAMES, addWhy, whyWords, barsSvg, boardHtml, cardLayout, hitPct, switchCost, svgSize, isExtra, modelColor, money, shade, net, netPct, netWords, savedUsd, statsSvg, withMode } from './view'
+import { type Cell, NAMES, TOOL_NAMES, addWhy, coldWords, whyWords, barsSvg, boardHtml, cardLayout, hitPct, switchCost, svgSize, isExtra, modelColor, money, shade, net, netPct, netWords, savedUsd, statsSvg, withMode } from './view'
 
 const PANE = 'router'
 const hint = atom({ plugin: 'router', key: 'hint' } as const, null)
@@ -34,8 +34,9 @@ const tools = atom({ plugin: 'router', key: 'tools' } as const, null as Versions
 const updating = atom({ plugin: 'router', key: 'updating' } as const, null as Tool | null)
 const chat = atom({ plugin: 'router', key: 'chat' } as const, { model: null, by: null } as ChatModel) // the chat's model: picked on its first prompt, or by the person
 const advice = atom({ plugin: 'router', key: 'advice' } as const, null as Advice | null)
-const FEATURES_ON: Features = { autoSwitch: true, sizing: true, pastes: true }
+const FEATURES_ON: Features = { autoSwitch: true, sizing: true, pastes: true, idle: true }
 const features = atom({ plugin: 'router', key: 'features' } as const, FEATURES_ON)
+const cold = atom({ plugin: 'router', key: 'cold' } as const, null as Cold | null)
 const TODO_TOOLS = ['TodoWrite', 'mcp__ccd_turn__update_plan'] // the task list as Claude Code and the desktop app keep it
 
 const pretty = (m: string) => NAMES[family(m)] ?? m
@@ -71,6 +72,7 @@ type State = {
   agentAsked: Map<string, string> // agentId -> the model it would have run on with no router (the parent's, before any move of the parent), when that differs from what it runs on
   agentSpend: Map<string, { usd: number; base: number; extra: number; model: string }> // agentId -> the run's recorded totals
   pasted: boolean // a big paste was saved this session (its file is deleted at the end)
+  coldTimer: { cancel: () => void } | undefined // fires an hour after the main chat's last step: the cache is gone
   briefRun: Map<string, string> // brief hash -> the agentId of its latest run
   wastedRuns: Set<string> // runs a re-spawn replaced: no saving counts for them
   paneOpened: boolean
@@ -514,16 +516,33 @@ async function sessionCheck($: EngineInterface, s: State, trigger: string) {
   await update($, advice, () => ({ ...a, usd: rebuildUsd(a.model, s.lastContext) }))
 }
 
+// Our own compaction (our compact hook skips it): false when the engine skipped it.
+async function compactChat($: EngineInterface, s: State, skipped: string): Promise<boolean> {
+  const r = await $.session.compact({ instructions: 'Keep the goal, the plan, open tasks, decisions made, file paths and the next step.' })
+  if ('skip' in r && r.skip) { $.ui.toast(`router: compaction was skipped (${r.skip})${skipped}`); return false }
+  s.prev = NO_PREV
+  s.lastContext = 0
+  return true
+}
+
+// An hour after the main chat's last step its cache is gone: offer to compact first when that pays back soon.
+async function coldOffer($: EngineInterface, s: State, model: string) {
+  if (s.switching || !(await read($, features)).idle) return
+  const m = coldMath(model, s.lastContext)
+  if (m.pays) await update($, cold, (): Cold => ({ cache: s.lastContext, resume: m.resume, extra: m.extra, perStep: m.perStep, payback: m.payback }))
+}
+
+async function compactFirst($: EngineInterface, s: State) {
+  await update($, cold, () => null)
+  s.switching = true
+  try { await compactChat($, s, '') } catch { $.ui.toast('router: wait for the current turn to finish, then press it again') } finally { s.switching = false }
+}
+
 // The offer's buttons. Compact first so the new model re-reads a short summary, not the whole chat; or start fresh.
 async function switchChat($: EngineInterface, s: State, model: string, kind: 'compact' | 'fresh' | 'now') {
   s.switching = true
   try {
-    if (kind === 'compact') {
-      const r = await $.session.compact({ instructions: 'Keep the goal, the plan, open tasks, decisions made, file paths and the next step.' })
-      if ('skip' in r && r.skip) { $.ui.toast(`router: compaction was skipped (${r.skip}); the model stays`); return }
-      s.prev = NO_PREV // our own compaction skips our compact hook
-      s.lastContext = 0
-    }
+    if (kind === 'compact' && !(await compactChat($, s, '; the model stays'))) return
     if (kind === 'fresh') await $.command.run({ command: 'clear' })
     await update($, chat, (c): ChatModel => ({ ...c, model, by: 'you', routed: true, from: c.routed ? (c.from ?? null) : c.model }))
     await update($, advice, () => null)
@@ -546,6 +565,8 @@ async function clearChat($: EngineInterface, s: State) {
   })
   for (const m of [s.briefs, s.siblings, s.agentEffort, s.agentType, s.agentAsked, s.agentSpend, s.briefRun, s.wastedRuns]) m.clear()
   s.savedAgents = NO_AGENTS // the old chat's memory stays in the store, for a resume of it
+  s.coldTimer?.cancel()
+  await update($, cold, () => null)
   if (!s.switching) await update($, chat, (c): ChatModel => ({ ...c, model: null, by: null, effort: null }))
   await update($, advice, () => null)
   await update($, hint, () => null)
@@ -805,7 +826,7 @@ export const register: Register = on => {
   const s: State = {
     cfg: BUILTIN, home: '', root: '', project: 'unknown', sources: 'built-in only', lastClass: null, lastHintModel: null,
     hasClassified: false, hadClass: false, skipEffortThisTurn: false, headless: false, agentEffort: new Map(), defs: new Map(),
-    prev: NO_PREV, lastContext: 0, mainSteps: 0, mainOut: 0, cleanChanges: 0, baseEffort: '', rerouted: 0, lastRerouted: '', agentType: new Map(), agentAsked: new Map(), agentSpend: new Map(), briefRun: new Map(), wastedRuns: new Set(), paneOpened: false, pasted: false,
+    prev: NO_PREV, lastContext: 0, mainSteps: 0, mainOut: 0, cleanChanges: 0, baseEffort: '', rerouted: 0, lastRerouted: '', agentType: new Map(), agentAsked: new Map(), agentSpend: new Map(), briefRun: new Map(), wastedRuns: new Set(), paneOpened: false, pasted: false, coldTimer: undefined,
     session: 'session', label: '', lastLedgerTurn: '', pending: [], scheduled: false, warned: false, totals: { proj: EMPTY_TALLY, since: undefined }, routeModels: true, sure: false, switchTurn: false,
     ask: undefined, stickyAsk: undefined, v: undefined, seenPrompt: false, samples: [], turnCount: 0, quietUntil: 0, declined: null, switching: false,
     briefs: new Map(), siblings: new Map(), queue: Promise.resolve(), savedAgents: NO_AGENTS, unhappy: 0,
@@ -889,6 +910,7 @@ export const register: Register = on => {
   }))
   on('session.end', async ($, e, next) => {
     await flush($, s)
+    s.coldTimer?.cancel()
     if (s.pasted) await sweep($, s, `${s.session}-`, 0)
     const r = await next(e)
     if (e.reason === 'clear') await clearChat($, s)
@@ -959,6 +981,7 @@ export const register: Register = on => {
     if (s.cfg.mode === 'off' || s.headless || e.command || e.isMeta) { s.switchTurn = false; return go(e) }
     // only the person's own message (typed, or from their phone) is offloaded, never a peer's or a notification
     const own = e.origin?.kind === 'composer' || e.origin?.kind === 'bridge'
+    if (own && (await read($, cold))) await update($, cold, () => null) // the message re-reads the chat: the offer is moot
     const short = own && (await read($, features)).pastes ? await offload($, s, e.text) : undefined
     if (short) e = { ...e, text: short }
     // typed over a running turn, the prompt joins that turn: it may raise the turn's routing, never lower it
@@ -1144,6 +1167,8 @@ export const register: Register = on => {
     if (e.agentId === undefined) {
       const now = await $.clock.now()
       s.lastContext = u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens
+      s.coldTimer?.cancel()
+      if (!probe && !s.headless && s.cfg.mode !== 'off') s.coldTimer = $.clock.after(CACHE_LIFE_MS, () => { void coldOffer($, s, u.model) })
       s.mainSteps++
       s.mainOut += u.output_tokens
       const probeFile = await $.env.get('ROUTER_PROBE_LOG')
@@ -1226,7 +1251,18 @@ export const register: Register = on => {
             </Box>
           )
         : null
-    const head = offerRow ? <Box key="router-head" flexDirection="column" width={e.props.bodyColumns}>{row}{offerRow}</Box> : row
+    const away = f.v.isOn && !offerRow ? await read($, cold) : null
+    const coldRow = away
+      ? (
+          <Box key="router-cold" flexDirection="row" alignItems="center" gap={2} width={e.props.bodyColumns}>
+            <Text color="warning" wrap="wrap">{coldWords(away)}</Text>
+            <Button key="router-cold-compact" variant="primary" label="Compact first" onPress={() => compactFirst($, s)} />
+            <Button key="router-cold-keep" plain dimColor label="Keep it all" onPress={() => update($, cold, () => null)} />
+          </Box>
+        )
+      : null
+    const extra = offerRow ?? coldRow
+    const head = extra ? <Box key="router-head" flexDirection="column" width={e.props.bodyColumns}>{row}{extra}</Box> : row
     if (open === 'none') return stack(head)
 
     if (open === 'stats') {
@@ -1311,7 +1347,9 @@ export const register: Register = on => {
           feat('sizing', 'Helpers'),
           note('router-f-sizing-note', 'Runs the reader and researcher on Haiku or Sonnet by the size of the job, with a budget.'),
           feat('pastes', 'Big pastes'),
-          note('router-f-pastes-note', 'A message over about 10K tokens is saved to a file and a cheaper model reads it first. Put "raw" in a message to skip this.'))}
+          note('router-f-pastes-note', 'A message over about 10K tokens is saved to a file and a cheaper model reads it first. Put "raw" in a message to skip this.'),
+          feat('idle', 'Compact after a break'),
+          note('router-f-idle-note', 'After an hour away from a big chat, offers to compact it before your next message, with what that costs and saves. Never compacts by itself.'))}
         {group('router-g-scope',
           field('router-scope', 'Routing', [
             <Text key="router-global-l">Everywhere</Text>,
