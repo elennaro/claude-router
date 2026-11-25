@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionMessage } from 'claude-code'
 
-import type { Advice, Bucket, Cache, ChatModel, Cold, Features, Hint, Mix, Tally, RouterView, TurnLog, Why } from '../types'
+import type { Advice, Away, Bucket, Cache, ChatModel, Cold, Features, Hint, Mix, Tally, RouterView, TurnLog, Why } from '../types'
 import { BOARD, SWEEP, livesQuery, livesOf, type Step, type Totals, IMPORTED, addCache, bucketsOf, dayRow, isAlreadyImported, labelOf, legacySteps, run, sessionRow, spawnRow, totalsOf, totalsQuery, usageRow } from './db'
 import { shield } from './guard'
 import { claudeFamily } from './latest'
@@ -12,10 +12,11 @@ import {
 import {
   type Ask, AUTO, BUILTIN, DELEGATE_ID, delegateSection, wantsDelegate, CLASS_LABELS, type Config, type Usage, type SessionWindow, adviseSwitch, agentTier, autoModel, classifierPrompt, firstModel, parseSessionCheck, sessionCheckPrompt, sessionCheckSystem, classifierSystem, classifyByRules, costUsd, explicitAsk, family,
   classifyPlan, isCacheBreak, merge, settleAnswers, readLabel, prices, rank, setPrices, turnEffort, briefHash, isHarder, needsSecondSample, spawnPick, withoutRouter,
-  type Mood, longRun, moodPrompt, moodSystem, parseMood, raiseEffort, raiseSteps, stepUp, rebuildUsd, switchMath, FAMILIES, coldMath,
+  type Mood, longRun, moodPrompt, moodSystem, parseMood, raiseEffort, raiseSteps, stepUp, rebuildUsd, stepUsd, switchMath, FAMILIES, coldMath,
+  AWAKE_DEFAULT_HOURS, AWAKE_HOURS, AWAKE_PING_MS, AWAKE_TEXT, AWAY_COMPACT, awakeNext,
   SIZED, briefPaths, bucket, sizeOf, cacheSheet, PASTE_MIN, estTokens, keepsRaw, pasteModel, pasteSystem, pastePrompt, offloaded,
 } from './policy'
-import { type Cell, NAMES, TOOL_NAMES, addWhy, coldWords, whyWords, barsSvg, boardHtml, cardLayout, hitPct, switchCost, svgSize, isExtra, modelColor, money, shade, net, netPct, netWords, savedUsd, statsSvg, withMode } from './view'
+import { type Cell, NAMES, TOOL_NAMES, addWhy, awayWords, coldWords, whyWords, barsSvg, boardHtml, cardLayout, hitPct, switchCost, svgSize, isExtra, modelColor, money, shade, net, netPct, netWords, savedUsd, statsSvg, withMode } from './view'
 
 const PANE = 'router'
 const hint = atom({ plugin: 'router', key: 'hint' } as const, null)
@@ -34,9 +35,11 @@ const tools = atom({ plugin: 'router', key: 'tools' } as const, null as Versions
 const updating = atom({ plugin: 'router', key: 'updating' } as const, null as Tool | null)
 const chat = atom({ plugin: 'router', key: 'chat' } as const, { model: null, by: null } as ChatModel) // the chat's model: picked on its first prompt, or by the person
 const advice = atom({ plugin: 'router', key: 'advice' } as const, null as Advice | null)
-const FEATURES_ON: Features = { autoSwitch: true, sizing: true, pastes: true, idle: true }
+const FEATURES_ON: Features = { autoSwitch: true, sizing: true, pastes: true, awake: true }
 const features = atom({ plugin: 'router', key: 'features' } as const, FEATURES_ON)
 const cold = atom({ plugin: 'router', key: 'cold' } as const, null as Cold | null)
+const away = atom({ plugin: 'router', key: 'away' } as const, null as Away | null)
+const awakeHours = atom({ plugin: 'router', key: 'awakeHours' } as const, AWAKE_DEFAULT_HOURS)
 const TODO_TOOLS = ['TodoWrite', 'mcp__ccd_turn__update_plan'] // the task list as Claude Code and the desktop app keep it
 
 const pretty = (m: string) => NAMES[family(m)] ?? m
@@ -72,7 +75,9 @@ type State = {
   agentAsked: Map<string, string> // agentId -> the model it would have run on with no router (the parent's, before any move of the parent), when that differs from what it runs on
   agentSpend: Map<string, { usd: number; base: number; extra: number; model: string }> // agentId -> the run's recorded totals
   pasted: boolean // a big paste was saved this session (its file is deleted at the end)
-  coldTimer: { cancel: () => void } | undefined // fires an hour after the main chat's last step: the cache is gone
+  coldTimer: { cancel: () => void } | undefined // keep-awake: fires 50 minutes after the main chat's last step
+  awakeSince: number // the main chat's last step that was not a keep-awake nudge: the away window starts there
+  pinging: boolean // the turn running now is the router's own keep-awake nudge
   briefRun: Map<string, string> // brief hash -> the agentId of its latest run
   wastedRuns: Set<string> // runs a re-spawn replaced: no saving counts for them
   paneOpened: boolean
@@ -311,7 +316,7 @@ function serial<T>(s: State, fn: () => Promise<T>): Promise<T> {
 async function record($: EngineInterface, s: State, model: string, u: Usage, who: string, baseline: number, turnId?: string, longCache = false, moved = false) {
   const actual = costUsd(model, u, longCache)
   const extra = Math.max(0, actual - baseline)
-  const why: Why = who === 'main' ? (moved ? 'model' : 'effort') : who === 'router' || who === 'paste' ? who : 'agents'
+  const why: Why = who === 'main' ? (moved ? 'model' : 'effort') : who === 'router' || who === 'paste' || who === 'awake' ? who : 'agents'
   await update($, tally, (t): Tally => ({ actualUsd: t.actualUsd + actual, baselineUsd: t.baselineUsd + baseline, extraUsd: t.extraUsd + extra, by: addWhy(t.by, why, Math.max(0, baseline - actual), extra) }))
   const { day, now } = await stamp($, s)
   const isNewTurn = Boolean(turnId && turnId !== s.lastLedgerTurn)
@@ -321,6 +326,13 @@ async function record($: EngineInterface, s: State, model: string, u: Usage, who
     dayRow(day, s.session, Number(isNewTurn), now),
     usageRow(day, s.session, who, family(model), actual, baseline, extra, 1, cacheOf(u)),
   ])
+}
+
+// A saving with no spend of its own: keep-awake's avoided rebuild, booked when you come back (no step: steps stay real).
+async function bookSaving($: EngineInterface, s: State, model: string, base: number) {
+  await update($, tally, (t): Tally => ({ ...t, baselineUsd: t.baselineUsd + base, by: addWhy(t.by, 'awake', base, 0) }))
+  const { day } = await stamp($, s)
+  later($, s, [usageRow(day, s.session, 'awake', family(model), 0, base, 0, 0)])
 }
 
 // A run a re-spawn replaced: its booked baseline goes, and all it spent counts as extra.
@@ -517,17 +529,48 @@ async function sessionCheck($: EngineInterface, s: State, trigger: string) {
 }
 
 // Our own compaction (our compact hook skips it): false when the engine skipped it.
-async function compactChat($: EngineInterface, s: State, skipped: string): Promise<boolean> {
-  const r = await $.session.compact({ instructions: 'Keep the goal, the plan, open tasks, decisions made, file paths and the next step.' })
+async function compactChat($: EngineInterface, s: State, skipped: string, instructions = 'Keep the goal, the plan, open tasks, decisions made, file paths and the next step.'): Promise<boolean> {
+  const r = await $.session.compact({ instructions })
   if ('skip' in r && r.skip) { $.ui.toast(`router: compaction was skipped (${r.skip})${skipped}`); return false }
   s.prev = NO_PREV
   s.lastContext = 0
   return true
 }
 
-// An hour after the main chat's last step its cache is gone: offer to compact first when that pays back soon.
+// Keep awake: 50 minutes after each main step (a nudge's too), nudge the chat so its cache stays warm, until the away
+// window ends; then compact it while warm into a handoff and stop. Off, too small, or past the hour (the machine slept):
+// the compact-first offer once the cache has lapsed. Deterministic and in the background: nothing waits on it.
+function arm($: EngineInterface, s: State, model: string) {
+  s.coldTimer?.cancel()
+  s.coldTimer = $.clock.after(AWAKE_PING_MS, () => { void tick($, s, model) })
+}
+async function tick($: EngineInterface, s: State, model: string) {
+  if (s.switching || s.cfg.mode === 'off' || s.headless) return
+  const now = await $.clock.now()
+  const next = awakeNext({ on: (await read($, features)).awake, now, lastStep: s.prev.at, since: s.awakeSince, hours: await read($, awakeHours), cache: s.lastContext })
+  if (next === 'cold') {
+    const left = 60 * 60_000 - (now - s.prev.at)
+    if (left > 0) s.coldTimer = $.clock.after(left, () => { void coldOffer($, s, model) })
+    else await coldOffer($, s, model)
+    return
+  }
+  if (next === 'ping') {
+    // marked here, not in our prompt hook: a plugin's own prompt need not pass through its own hooks
+    s.pinging = true
+    s.switchTurn = false
+    await $.prompt.submit({ text: AWAKE_TEXT }).catch(() => { s.pinging = false })
+    return
+  }
+  // the window is over: a warm compaction (a cached read and a summary) leaves a short chat to come back to
+  s.switching = true
+  try {
+    if (await compactChat($, s, '', AWAY_COMPACT)) await update($, away, (a): Away => ({ pings: a?.pings ?? 0, usd: a?.usd ?? 0, rebuild: a?.rebuild ?? 0, compacted: true }))
+  } catch { /* a turn started meanwhile: that turn's step re-arms the timer */ } finally { s.switching = false }
+}
+
+// The cache lapsed: offer to compact first when that pays back soon.
 async function coldOffer($: EngineInterface, s: State, model: string) {
-  if (s.switching || !(await read($, features)).idle) return
+  if (s.switching) return
   const m = coldMath(model, s.lastContext)
   if (m.pays) await update($, cold, (): Cold => ({ cache: s.lastContext, resume: m.resume, extra: m.extra, perStep: m.perStep, payback: m.payback }))
 }
@@ -566,7 +609,10 @@ async function clearChat($: EngineInterface, s: State) {
   for (const m of [s.briefs, s.siblings, s.agentEffort, s.agentType, s.agentAsked, s.agentSpend, s.briefRun, s.wastedRuns]) m.clear()
   s.savedAgents = NO_AGENTS // the old chat's memory stays in the store, for a resume of it
   s.coldTimer?.cancel()
+  s.awakeSince = 0
+  s.pinging = false
   await update($, cold, () => null)
+  await update($, away, () => null)
   if (!s.switching) await update($, chat, (c): ChatModel => ({ ...c, model: null, by: null, effort: null }))
   await update($, advice, () => null)
   await update($, hint, () => null)
@@ -652,6 +698,12 @@ async function showWidget($: EngineInterface, isShown: boolean) {
   else await $.ui.close({ id: PANE }).catch(() => undefined)
 }
 
+// How long keep-awake keeps an idle chat warm, for this session and every later one.
+async function setAwakeHours($: EngineInterface, h: number) {
+  await update($, awakeHours, () => h)
+  await $.store.set('awakeHours', h)
+}
+
 // A saving feature on or off, for this session and every later one.
 async function setFeature($: EngineInterface, k: keyof Features, on: boolean) {
   const next = { ...(await read($, features)), [k]: on }
@@ -721,7 +773,8 @@ async function facts($: EngineInterface, s: State) {
   const hit = hitPct(Object.values(spend).reduce((a: Cache | undefined, x) => addCache(a, x.cache), undefined)) // this chat, main and subagents
   const sheet = cacheSheet(main?.model ?? s.cfg.main.model, s.lastContext)
   const feats = await read($, features)
-  return { v, turns, chat, proj, m, main, where, now, since, chatMode, cost, spend, hit, sheet, feats }
+  const hours = await read($, awakeHours)
+  return { v, turns, chat, proj, m, main, where, now, since, chatMode, cost, spend, hit, sheet, feats, hours }
 }
 
 function cells(s: State, f: Awaited<ReturnType<typeof facts>>): Array<Cell> {
@@ -740,7 +793,7 @@ function cells(s: State, f: Awaited<ReturnType<typeof facts>>): Array<Cell> {
 // The cache sheet in one line: what a model switch, a reset and compacting would cost right now.
 const sheetLine = (s: State, f: Awaited<ReturnType<typeof facts>>) => s.lastContext < 1000
   ? ''
-  : `Switching model writes the chat once on the new one: ${f.sheet.switches.map(x => `${pretty(x.model)} ${money(x.usd)}`).join(', ')}. Compacting: about ${money(f.sheet.compact)}. After an hour idle the cache is gone anyway, so switching then costs only the difference.`
+  : `Switching model writes the chat once on the new one: ${f.sheet.switches.map(x => `${pretty(x.model)} ${money(x.usd)}`).join(', ')}. Compacting: about ${money(f.sheet.compact)}. Keeping it warm while you are away: about ${money(f.sheet.ping)} a nudge, one every 50 minutes. After an hour idle the cache is gone anyway, so switching then costs only the difference.`
 
 // The note at the end of the Stats card's model band header.
 const reroutedNote = (v: RouterView) => `${v.rerouted} ${v.rerouted === 1 ? 'turn' : 'turns'}, ${v.routedAgents} ${v.routedAgents === 1 ? 'agent' : 'agents'} re-routed`
@@ -826,7 +879,7 @@ export const register: Register = on => {
   const s: State = {
     cfg: BUILTIN, home: '', root: '', project: 'unknown', sources: 'built-in only', lastClass: null, lastHintModel: null,
     hasClassified: false, hadClass: false, skipEffortThisTurn: false, headless: false, agentEffort: new Map(), defs: new Map(),
-    prev: NO_PREV, lastContext: 0, mainSteps: 0, mainOut: 0, cleanChanges: 0, baseEffort: '', rerouted: 0, lastRerouted: '', agentType: new Map(), agentAsked: new Map(), agentSpend: new Map(), briefRun: new Map(), wastedRuns: new Set(), paneOpened: false, pasted: false, coldTimer: undefined,
+    prev: NO_PREV, lastContext: 0, mainSteps: 0, mainOut: 0, cleanChanges: 0, baseEffort: '', rerouted: 0, lastRerouted: '', agentType: new Map(), agentAsked: new Map(), agentSpend: new Map(), briefRun: new Map(), wastedRuns: new Set(), paneOpened: false, pasted: false, coldTimer: undefined, awakeSince: 0, pinging: false,
     session: 'session', label: '', lastLedgerTurn: '', pending: [], scheduled: false, warned: false, totals: { proj: EMPTY_TALLY, since: undefined }, routeModels: true, sure: false, switchTurn: false,
     ask: undefined, stickyAsk: undefined, v: undefined, seenPrompt: false, samples: [], turnCount: 0, quietUntil: 0, declined: null, switching: false,
     briefs: new Map(), siblings: new Map(), queue: Promise.resolve(), savedAgents: NO_AGENTS, unhappy: 0,
@@ -838,7 +891,10 @@ export const register: Register = on => {
     await restoreAgents($, s)
     await seedMix($).catch(() => undefined)
     const kept = ((await $.store.get('features').catch(() => undefined)) ?? {}) as Partial<Features>
-    await update($, features, (): Features => ({ ...FEATURES_ON, ...kept }))
+    // only today's switches: an older version's key (0.8.1's "idle") is dropped
+    await update($, features, (): Features => ({ autoSwitch: kept.autoSwitch ?? true, sizing: kept.sizing ?? true, pastes: kept.pastes ?? true, awake: kept.awake ?? true }))
+    const hours = Number(await $.store.get('awakeHours').catch(() => undefined))
+    await update($, awakeHours, () => (AWAKE_HOURS.includes(hours) ? hours : AWAKE_DEFAULT_HOURS))
     await $.command.register({
       name: 'route',
       description: 'Router mode: on | off | status | board | widget | effort on|off|retest | models on|off|refresh | update claude|codex|antigravity | reload',
@@ -979,6 +1035,15 @@ export const register: Register = on => {
     // the first prompt names the session on the Board (labelOf: 60 characters, secrets masked)
     if (!e.command && !e.isMeta && !s.label) s.label = labelOf(e.text)
     if (s.cfg.mode === 'off' || s.headless || e.command || e.isMeta) { s.switchTurn = false; return go(e) }
+    if (e.origin?.kind === 'plugin' && e.text === AWAKE_TEXT) {
+      // our own keep-awake nudge: no classifier, no mood, no paste reading; the chat's model at the lowest effort.
+      // Dropped when the chat was used after the timer fired: its cache is warm already.
+      if ((await $.clock.now()) - s.prev.at < AWAKE_PING_MS - 60_000) return { drop: 'router: the chat was used meanwhile' }
+      s.pinging = true
+      s.switchTurn = false
+      return go(e)
+    }
+    s.pinging = false
     // only the person's own message (typed, or from their phone) is offloaded, never a peer's or a notification
     const own = e.origin?.kind === 'composer' || e.origin?.kind === 'bridge'
     if (own && (await read($, cold))) await update($, cold, () => null) // the message re-reads the chat: the offer is moot
@@ -1127,13 +1192,16 @@ export const register: Register = on => {
     }
     if (picked?.effort && e.effort !== undefined && !s.skipEffortThisTurn) effort = picked.effort as typeof effort
     if (ask?.effort && e.effort !== undefined) effort = ask.effort as typeof effort
+    // the router's own keep-awake nudge: the lowest effort (the cache stays, the reply is one word), never another model
+    if (isMain && s.pinging && e.effort !== undefined && (await read($, view)).perMessage !== 'unsupported') effort = 'low' as typeof effort
     const changed = effort !== e.effort || model !== undefined
     const result = yield* next(changed ? { ...e, effort, ...(model ? { model } : {}) } : e)
     const u = result.usage
     if (!u) return result
     // with no router the step runs on the model and effort it came with, or on the person's own picks (theirs, not the
     // router's); a moved subagent on its parent's model (audit 2026-11-19: Opus was the baseline even on a Sonnet session)
-    const who = e.agentId ? (s.agentType.get(e.agentId) ?? 'agent') : 'main'
+    const nudge = isMain && s.pinging
+    const who = e.agentId ? (s.agentType.get(e.agentId) ?? 'agent') : nudge ? 'awake' : 'main'
     const noRouter = {
       // a model reached through a router tip or offer is the router's doing: the baseline stays on the model before it (owner 2026-11-21)
       model: e.agentId ? (s.agentAsked.get(e.agentId) ?? u.model) : (asked ?? (picked?.routed ? (picked.from ?? e.model) : picked?.by === 'you' ? base : undefined) ?? e.model),
@@ -1142,7 +1210,8 @@ export const register: Register = on => {
     const longCache = e.agentId === undefined
     // the asked model's warm cache: none for a subagent, or after an hour's pause (it lapsed); a compaction zeroes lastContext
     const lapsed = s.prev.at > 0 && (await $.clock.now()) - s.prev.at > CACHE_LIFE_MS
-    const baseUsd = s.wastedRuns.has(e.agentId ?? "") ? 0 : withoutRouter(noRouter, { model: u.model, effort: effort as string | undefined }, u, e.agentId || lapsed ? 0 : s.lastContext, longCache)
+    // a nudge: with no router it would not run, so all it costs is extra
+    const baseUsd = nudge || s.wastedRuns.has(e.agentId ?? "") ? 0 : withoutRouter(noRouter, { model: u.model, effort: effort as string | undefined }, u, e.agentId || lapsed ? 0 : s.lastContext, longCache)
     await record($, s, u.model, u, who, baseUsd, e.agentId === undefined ? e.turnId : undefined, longCache, family(u.model) !== family(noRouter.model))
     if (e.agentId) { // a run's totals, so a re-spawn of the same brief can take back the first run's saving
       const a = s.agentSpend.get(e.agentId) ?? { usd: 0, base: 0, extra: 0, model: family(u.model) }
@@ -1167,8 +1236,25 @@ export const register: Register = on => {
     if (e.agentId === undefined) {
       const now = await $.clock.now()
       s.lastContext = u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens
-      s.coldTimer?.cancel()
-      if (!probe && !s.headless && s.cfg.mode !== 'off') s.coldTimer = $.clock.after(CACHE_LIFE_MS, () => { void coldOffer($, s, u.model) })
+      if (!probe && !s.headless && s.cfg.mode !== 'off') arm($, s, u.model)
+      if (nudge) {
+        // a nudge that found the cache gone (a 5-minute cache, as API keys get): nudges can't keep it, so they stop
+        if (u.cache_creation_input_tokens > s.lastContext / 2) {
+          await setFeature($, 'awake', false)
+          $.ui.toast('router: keep-awake found the cache already gone (here it lasts under 50 minutes), so it is now off. You can turn it on again in Settings.')
+        }
+        await update($, away, (a): Away => ({ pings: (a?.pings ?? 0) + 1, usd: (a?.usd ?? 0) + usd, rebuild: rebuildUsd(u.model, s.lastContext), compacted: false }))
+      } else {
+        const a = await read($, away)
+        // back after the cache would have lapsed with no router: that step would have written the whole chat again
+        // shortcut: after the window's compaction no saving is booked (the compaction's own cost isn't measured); book it once it is
+        if (a?.pings && !a.compacted && now - s.awakeSince > CACHE_LIFE_MS) {
+          const r = u.cache_read_input_tokens
+          await bookSaving($, s, noRouter.model, rebuildUsd(noRouter.model, r) - stepUsd(noRouter.model, r, 0))
+        }
+        s.awakeSince = now
+        if (a) await update($, away, () => null)
+      }
       s.mainSteps++
       s.mainOut += u.output_tokens
       const probeFile = await $.env.get('ROUTER_PROBE_LOG')
@@ -1251,17 +1337,21 @@ export const register: Register = on => {
             </Box>
           )
         : null
-    const away = f.v.isOn && !offerRow ? await read($, cold) : null
-    const coldRow = away
+    const lapsed = f.v.isOn && !offerRow ? await read($, cold) : null
+    const coldRow = lapsed
       ? (
           <Box key="router-cold" flexDirection="row" alignItems="center" gap={2} width={e.props.bodyColumns}>
-            <Text color="warning" wrap="wrap">{coldWords(away)}</Text>
+            <Text color="warning" wrap="wrap">{coldWords(lapsed)}</Text>
             <Button key="router-cold-compact" variant="primary" label="Compact first" onPress={() => compactFirst($, s)} />
             <Button key="router-cold-keep" plain dimColor label="Keep it all" onPress={() => update($, cold, () => null)} />
           </Box>
         )
       : null
-    const extra = offerRow ?? coldRow
+    const kept = f.v.isOn && !offerRow && !coldRow ? await read($, away) : null
+    const keptRow = kept
+      ? <Text key="router-away" dimColor wrap="wrap">{awayWords(kept, await read($, awakeHours))}</Text>
+      : null
+    const extra = offerRow ?? coldRow ?? keptRow
     const head = extra ? <Box key="router-head" flexDirection="column" width={e.props.bodyColumns}>{row}{extra}</Box> : row
     if (open === 'none') return stack(head)
 
@@ -1348,8 +1438,9 @@ export const register: Register = on => {
           note('router-f-sizing-note', 'Runs the reader and researcher on Haiku or Sonnet by the size of the job, with a budget.'),
           feat('pastes', 'Big pastes'),
           note('router-f-pastes-note', 'A message over about 10K tokens is saved to a file and a cheaper model reads it first. Put "raw" in a message to skip this.'),
-          feat('idle', 'Compact after a break'),
-          note('router-f-idle-note', 'After an hour away from a big chat, offers to compact it before your next message, with what that costs and saves. Never compacts by itself.'))}
+          feat('awake', 'Keep awake'),
+          field('router-awake-hours', 'Keep it for', choices('router-awake-hours', AWAKE_HOURS.map(h => [String(h), `${h}h`] as [string, string]), String(f.hours), v => setAwakeHours($, Number(v)))),
+          note('router-f-awake-note', `While you are away, a one-word nudge every 50 minutes keeps this chat's cache warm${s.lastContext >= 1000 ? ` (about ${money(f.sheet.ping)} each now, against ${money(f.sheet.reset)} to re-read it all)` : ''}. After ${f.hours} hours away it compacts the chat while warm into a handoff${s.lastContext >= 1000 ? ` (about ${money(f.sheet.compact)})` : ''} and stops. Off: once the cache lapses, the band offers to compact first.`))}
         {group('router-g-scope',
           field('router-scope', 'Routing', [
             <Text key="router-global-l">Everywhere</Text>,
@@ -1388,6 +1479,7 @@ export const register: Register = on => {
           {line('w-saved', isExtra(f.chat) ? 'Extra this chat' : 'Saved this chat', `${money(Math.abs(net(f.chat)))} · ${netPct(f.chat)}%`)}
           {s.lastContext >= 1000 && line('w-cache', 'Cache', `${Math.round(s.lastContext / 1000)}K · losing it ${money(f.sheet.reset)}`)}
           {s.lastContext >= 1000 && line('w-switch', 'Switch costs', f.sheet.switches.map(x => `${pretty(x.model)} ${money(x.usd)}`).join(', '))}
+          {s.lastContext >= 1000 && line('w-keep', 'Keep or compact', `warm ${money(f.sheet.ping)} a nudge · compact ${money(f.sheet.compact)}`)}
           {Svg && f.turns.length > 1 && <Svg key="w-bars" isInteractive source={barsSvg(f.turns, 220, 24)} width={220} height={24} alt={`Cost of the last ${f.turns.length} turns against no router`} />}
         </Box>
       )

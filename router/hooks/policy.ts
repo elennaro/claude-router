@@ -602,19 +602,43 @@ export function cacheSheet(model: string, cache: number) {
   return {
     switches: FAMILIES.filter(m => m !== fam).map(m => ({ model: m, usd: rebuildUsd(m, cache) })),
     reset: rebuildUsd(fam, cache),
-    compact: stepUsd(fam, cache, 0) + rebuildUsd(fam, Math.min(cache, COMPACT_KEEP)),
+    compact: compactUsd(fam, cache),
+    ping: pingUsd(fam, cache),
   }
+}
+
+// Compacting while the cache is warm: read the chat from cache, write the summary out, then write the kept part once.
+export const COMPACT_OUT = 3_000 // shortcut: a typical summary's length, guessed; measure from transcripts if the figure misleads
+export const compactUsd = (model: string, cache: number) => stepUsd(model, cache, COMPACT_OUT) + rebuildUsd(model, Math.min(cache, COMPACT_KEEP))
+
+// Keep awake (docs/PLAN-v3.md, slice 4). Two weeks of the owner's chats: resuming after over an hour idle cost about 22%
+// of all spend, and keeping chats warm up to 12 hours, then compacting, would have cost about a sixth of that.
+// A one-word nudge before the 1-hour cache lapses reads the chat from cache (about 1/40 of writing it again).
+export const AWAKE_PING_MS = 50 * 60_000 // under the hour, and under Claude Code's own idle compaction (about 54 minutes)
+export const AWAKE_MIN = 20_000 // tokens: below this a rebuild costs cents, and nudges would only clutter the chat
+export const AWAKE_HOURS = [2, 4, 8, 12, 24]
+export const AWAKE_DEFAULT_HOURS = 12
+export const AWAKE_TEXT = 'router keep-alive: an automatic nudge that keeps the prompt cache warm while you are away. It is not a request: do not continue any work and do not use tools. Reply with only: ok'
+export const AWAY_COMPACT = 'The person has been away for hours and this chat is being compacted as a handoff. Write: what this chat was working on, what is done, where it stopped, what is left, open decisions, the files involved, and end with one continuation message the person can send to pick up exactly where it stopped.'
+// One nudge: read the chat from cache, write the nudge and its reply (about 150 tokens), a word out.
+export const pingUsd = (model: string, cache: number) => stepUsd(model, cache, 20) + rebuildUsd(model, 150)
+
+// What the keep-awake timer does when it fires, 50 minutes after the main chat's last step.
+// lastStep: that step (a nudge's too); since: the last step that was not a nudge; cold: show the compact-first offer.
+export function awakeNext(o: { on: boolean; now: number; lastStep: number; since: number; hours: number; cache: number }): 'ping' | 'compact' | 'cold' {
+  if (!o.on || o.cache < AWAKE_MIN) return 'cold'
+  if (o.now - o.lastStep >= 60 * 60_000) return 'cold' // the machine slept past the hour: the cache is gone, a nudge would write it all again
+  return o.now - o.since + AWAKE_PING_MS > o.hours * 60 * 60_000 ? 'compact' : 'ping'
 }
 
 // After an hour away the cache is gone, and the next message writes the whole chat again either way (docs/PLAN-v3.md,
 // slice 4: a week of transcripts put 44% of main-chat cache writes on such resumes). Compacting first adds one write of
 // the kept part, and every later step reads the short chat instead of the whole one.
-// shortcut: the summary's own output is not counted; count it if offers show up that never pay back
 export const COLD_PAYBACK = 30 // steps: offer only when compacting pays back within about this many
 export function coldMath(model: string, cache: number) {
   const fam = family(model)
   const kept = Math.min(cache, COMPACT_KEEP)
-  const extra = rebuildUsd(fam, kept)
+  const extra = rebuildUsd(fam, kept) + stepUsd(fam, 0, COMPACT_OUT) // the kept part written once, and the summary written out
   const perStep = stepUsd(fam, cache, 0) - stepUsd(fam, kept, 0)
   const payback = perStep > 0 ? Math.ceil(extra / perStep) : Infinity
   return { resume: rebuildUsd(fam, cache), extra, perStep, payback, pays: payback <= COLD_PAYBACK }

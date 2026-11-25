@@ -13,8 +13,8 @@ export type Hint = { cls: string; model: string; why: string; current: string; u
 // effort; extraUsd sums each step's cost above its baseline (stronger picks, the router's own calls), so
 // saved = baselineUsd - actualUsd + extraUsd and both directions stay visible.
 // Why money was saved or spent extra: the main chat on another model, its effort, subagents, the router's own calls
-// (classifier, session check), big-paste reading.
-export type Why = 'model' | 'effort' | 'agents' | 'router' | 'paste'
+// (classifier, session check), big-paste reading, keeping an idle chat's cache warm.
+export type Why = 'model' | 'effort' | 'agents' | 'router' | 'paste' | 'awake'
 export type By = Partial<Record<Why, { saved: number; extra: number }>>
 export type Tally = {
   actualUsd: number
@@ -80,10 +80,13 @@ export type Versions = { at: number; tools: Record<Tool, ToolState> }
 
 // The saving features (docs/PLAN-v3.md slices 1-3), each switchable in Settings.
 // autoSwitch: move the chat down by itself when the cache rebuild pays; sizing: size the reader and researcher;
-// pastes: read big pastes first; idle: offer to compact a big chat after an hour away.
-export type Features = { autoSwitch: boolean; sizing: boolean; pastes: boolean; idle: boolean }
-// The offer after an hour away: what resuming re-reads, what compacting first adds, and what it saves per step.
+// pastes: read big pastes first; awake: keep an idle chat's cache warm for some hours, then compact it.
+export type Features = { autoSwitch: boolean; sizing: boolean; pastes: boolean; awake: boolean }
+// The offer after the cache lapsed anyway: what resuming re-reads, what compacting first adds, and what it saves per step.
 export type Cold = { cache: number; resume: number; extra: number; perStep: number; payback: number }
+// While you are away: the nudges sent since your last step, what they cost, what a rebuild would have cost, and whether
+// the window ended in a compaction. Shown in the band until your next message.
+export type Away = { pings: number; usd: number; rebuild: number; compacted: boolean }
 
 declare module 'claude-code' {
   interface PluginState {
@@ -102,7 +105,9 @@ declare module 'claude-code' {
       chat: ChatModel // the chat's model: picked on its first prompt, or by the person
       advice: Advice | null // the session check's offer, until pressed or dismissed
       features: Features // the saving features' switches (Settings), kept across sessions
-      cold: Cold | null // the compact-first offer after an hour away, until a prompt, a press or the next step
+      cold: Cold | null // the compact-first offer after the cache lapsed, until a prompt or a press
+      away: Away | null // keep-awake's report while you are away, until your next message
+      awakeHours: number // how long keep-awake keeps an idle chat warm before compacting it (Settings, kept across sessions)
     }
   }
 }

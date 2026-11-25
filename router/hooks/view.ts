@@ -7,7 +7,12 @@ export const money = (n: number) => (n <= -0.005 ? `-$${(-n).toFixed(2)}` : `$${
 // The offer after an hour away: resuming re-reads everything anyway; compacting first adds a little and saves per step.
 export const coldWords = (c: { cache: number; resume: number; extra: number; perStep: number; payback: number }) =>
   `You were away over an hour, so the cache expired: your next message re-reads the whole chat (${Math.round(c.cache / 1000)}K tokens, about ${money(c.resume)}) either way. Compacting first adds about ${money(c.extra)}, then saves about ${money(c.perStep)} a step, paying back in about ${c.payback} steps. The summary keeps the goal, plan, decisions and files, but loses detail.`
-export const switchCost =(usd: number | undefined, isNew: boolean) => (usd && !isNew ? ` Switching re-reads the chat: about ${money(usd)} now, less after compacting.` : '')
+// Keep-awake's report while you were away: what the nudges cost against re-reading the chat, and the compaction if any.
+export const awayWords = (a: { pings: number; usd: number; rebuild: number; compacted: boolean }, hours: number) =>
+  a.compacted
+    ? `While you were away the router kept this chat's cache warm for ${hours} hours (${a.pings} ${a.pings === 1 ? 'nudge' : 'nudges'}, ${money(a.usd)}), then compacted it into a handoff while still warm: the summary says what it was doing, where it stopped and the next step.`
+    : `While you were away the router kept this chat's cache warm: ${a.pings} ${a.pings === 1 ? 'nudge' : 'nudges'}, ${money(a.usd)} so far, against about ${money(a.rebuild)} to re-read it all on your return.`
+export const switchCost = (usd: number | undefined, isNew: boolean) => (usd && !isNew ? ` Switching re-reads the chat: about ${money(usd)} now, less after compacting.` : '')
 // Against running with no router: net above 0 saved money, below 0 spent more. Savings and extra spend are kept apart
 // step by step (a cheap subagent and a high-effort turn do not cancel out unseen).
 export const net = (t: Tally) => t.baselineUsd - t.actualUsd
@@ -37,7 +42,7 @@ export function addWhy(by: By | undefined, why: Why, saved: number, extra: numbe
   return { ...by, [why]: { saved: o.saved + saved, extra: o.extra + extra } }
 }
 
-const WHY_WORDS: Record<Why, string> = { model: 'switching the chat model', effort: 'effort', agents: 'subagents', router: 'routing calls', paste: 'reading pastes' }
+const WHY_WORDS: Record<Why, string> = { model: 'switching the chat model', effort: 'effort', agents: 'subagents', router: 'routing calls', paste: 'reading pastes', awake: 'keeping the cache warm' }
 // The Stats card's "Where it went": the biggest saving and the biggest extra by reason, in words.
 export function whyWords(by: By | undefined): { value: string; sub: string } {
   const rows = Object.entries(by ?? {}) as Array<[Why, { saved: number; extra: number }]>

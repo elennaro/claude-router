@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import {
-  BUILTIN, CLASS_LABELS, adviseSwitch, effortRank, rank, agentTier, autoModel, needsSecondSample, briefHash, briefTier, stepUp, classifyByRules, costUsd, firstModel, isCacheBreak, isContinuation, merge, parseJev, parseSessionCheck, parseMood, raiseEffort, moodPrompt, longRun, readLabel, spawnPick, turnEffort, withoutRouter, rebuildUsd, stepUsd, switchMath, remainingSteps, quickPays, type Life, sessionCheckSystem, briefPaths, sizeOf, bucket, estTokens, keepsRaw, pasteModel, pasteSystem, offloaded, cacheSheet, coldMath,
+  BUILTIN, CLASS_LABELS, adviseSwitch, effortRank, rank, agentTier, autoModel, needsSecondSample, briefHash, briefTier, stepUp, classifyByRules, costUsd, firstModel, isCacheBreak, isContinuation, merge, parseJev, parseSessionCheck, parseMood, raiseEffort, moodPrompt, longRun, readLabel, spawnPick, turnEffort, withoutRouter, rebuildUsd, stepUsd, switchMath, remainingSteps, quickPays, type Life, sessionCheckSystem, briefPaths, sizeOf, bucket, estTokens, keepsRaw, pasteModel, pasteSystem, offloaded, cacheSheet, coldMath, awakeNext, AWAKE_TEXT,
 } from '../hooks/policy'
 import { addWhy, whyWords, boardHtml, cacheStrength, cardLayout, hitPct, svgSize, switchCost, netWords, savedUsd, shade, statsSvg, withMode } from '../hooks/view'
 import { RUNNER, type Step, labelOf, livesOf } from '../hooks/db'
@@ -291,7 +291,7 @@ async function end($: any) {
   await $.session.end({ reason: 'other', sessionId: 'sess-1', resume: { sessionId: 'sess-1' } })
 }
 
-function wire(on: any, opts: { batches?: Array<Array<Step>>; runFails?: boolean; store?: Map<string, unknown>; haiku?: string | ((e: { system?: string }) => string); tokens?: number; model?: string; messages?: Array<unknown>; ownClock?: boolean; sent: Array<unknown>; asked?: { n: number }; lines?: Array<string | undefined>; opened?: Array<unknown>; surfaces?: Array<string>; files?: Record<string, string>; models?: Array<string>; read?: number; write?: number; select?: (sql: string) => Array<unknown>; argv?: Array<Array<string>> }) {
+function wire(on: any, opts: { batches?: Array<Array<Step>>; runFails?: boolean; store?: Map<string, unknown>; haiku?: string | ((e: { system?: string }) => string); tokens?: number; model?: string; messages?: Array<unknown>; ownClock?: boolean; sent: Array<unknown>; asked?: { n: number }; lines?: Array<string | undefined>; opened?: Array<unknown>; surfaces?: Array<string>; files?: Record<string, string>; models?: Array<string>; read?: number; write?: number; select?: (sql: string) => Array<unknown>; argv?: Array<Array<string>>; nudges?: Array<{ text: string }> }) {
   on('env.get', (_: unknown, e: { name: string }) => ({ value: e.name === 'USERPROFILE' ? '/home' : undefined }))
   on('session.root', () => ({ value: '/proj' }))
   on('session.id', () => ({ value: 'sess-1' }))
@@ -332,7 +332,7 @@ function wire(on: any, opts: { batches?: Array<Array<Step>>; runFails?: boolean;
   })
   on('command.register', () => ({ value: { command: 'route' } }))
   on('session.start', (_: unknown, e: { cwd: string }) => ({ cwd: e.cwd }))
-  on('prompt.submit', (_: unknown, e: { text: string }) => ({ text: e.text }))
+  on('prompt.submit', (_: unknown, e: { text: string; origin?: { kind: string } }) => { if (e.origin?.kind === 'plugin') opts.nudges?.push(e); return { text: e.text } })
   on('model.complete', (_: unknown, e: { system?: string }) => { opts.asked && opts.asked.n++; return { value: { isAnswered: true, text: (typeof opts.haiku === 'function' ? opts.haiku(e) : opts.haiku) ?? 'default 0.9', usage: USAGE } } })
   // tokens set = a chat already under way (no first-prompt pick); unset = a new chat
   on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200_000, ...(opts.tokens === undefined ? {} : { tokens: opts.tokens }) }, rateLimits: [] } }))
@@ -1101,8 +1101,10 @@ test('cache sheet and reasons: what losing the cache costs, and where saved and 
   const sh = cacheSheet('claude-opus-5-5', 100_000)
   expect(sh.switches.map(x => [x.model, Math.round(x.usd * 100)])).toEqual([['haiku', 2], ['sonnet', 40], ['fable', 160]])
   expect(Math.round(sh.reset * 100)).toBe(80) // Opus writes 100K again at $8/M
-  expect(Math.round(sh.compact * 100)).toBe(54) // reads 100K ($0.02) and writes 65K back ($0.52)
-  expect(Math.round(cacheSheet('opus', 30_000).compact * 1000)).toBe(246) // a small cache is written back whole
+  expect(Math.round(sh.compact * 100)).toBe(60) // reads 100K ($0.02), writes a 3K summary out ($0.06) and 65K back ($0.52)
+  expect(Math.round(cacheSheet('opus', 30_000).compact * 1000)).toBe(306) // a small cache is written back whole
+  // a keep-awake nudge: reads 100K ($0.02), a word out, and writes its own 150 tokens ($0.0012)
+  expect(Math.round(sh.ping * 10000)).toBe(216)
   let by = addWhy(undefined, 'agents', 2, 0)
   by = addWhy(by, 'effort', 0, 0.1)
   by = addWhy(by, 'router', 0, 0.004) // under half a cent: not worth a word
@@ -1128,7 +1130,7 @@ test('with a real cache the widget and the Stats card show its size, what losing
   const card = await band.find({ type: 'Svg' })
   expect(card?.props.alt).toContain('Cache 100K tokens, losing it costs $0.80')
   expect(card?.props.alt).toMatch(/Where it went .*extra: \$[0-9.]+ on effort/) // engineering raised Opus to high
-  expect(await band.find({ type: 'Text', text: /Switching model writes the chat once on the new one: Haiku \$0\.10, Sonnet \$0\.40, Fable \$1\.60\. Compacting: about \$0\.54/ })).toBeTruthy()
+  expect(await band.find({ type: 'Text', text: /Switching model writes the chat once on the new one: Haiku \$0\.10, Sonnet \$0\.40, Fable \$1\.60\. Compacting: about \$0\.60\. Keeping it warm while you are away: about \$0\.02 a nudge/ })).toBeTruthy()
   await band.unmount()
 })
 
@@ -1150,49 +1152,175 @@ test('Settings switches the saving features off and on; the choice is kept for l
   expect((await $.prompt.submit({ text: big, origin: { kind: 'composer' }, wait: false })).text).toBe(big)
   await $.agent.spawn({ prompt: 'Find the timeouts in logs/a.log', subagentType: 'router:document-reader', parentModel: 'claude-opus-5-5' })
   expect(spawned).toEqual([undefined]) // the agent's own model, no sizing
-  expect(store.get('features')).toEqual({ autoSwitch: true, sizing: false, pastes: false, idle: true })
+  expect(store.get('features')).toEqual({ autoSwitch: true, sizing: false, pastes: false, awake: true })
   await band.press({ key: 'router-f-pastes-on' })
   expect((await $.prompt.submit({ text: big, origin: { kind: 'composer' }, wait: false })).text).not.toBe(big)
   await band.unmount()
 })
 
-test('after an hour away: resuming re-reads the whole chat; compacting first costs the kept part once and pays back per step', () => {
+test('after the cache lapsed: resuming re-reads the whole chat; compacting first costs the kept part and a summary, and pays back per step', () => {
   const c = (x: number) => Math.round(x * 1000) // tenths of a cent
-  // Opus: 1-hour write $8/M, read $0.20/M. 200K resumed = $1.60; the compacted chat writes 65K = $0.52 once;
-  // each later step then reads 135K less = $0.027 a step, so it pays back in 20 steps
+  // Opus: 1-hour write $8/M, read $0.20/M, output $20/M. 200K resumed = $1.60; compacting first writes a 3K summary
+  // ($0.06) and 65K back ($0.52); each later step reads 135K less = $0.027, so it pays back in 22 steps
   const m = coldMath('opus', 200_000)
-  expect([c(m.resume), c(m.extra), c(m.perStep), m.payback, m.pays]).toEqual([1600, 520, 27, 20, true])
-  // 120K: 55K less a step pays $0.52 back only after 48 steps, past the line: no offer
-  expect(coldMath('opus', 120_000).pays).toBe(false)
+  expect([c(m.resume), c(m.extra), c(m.perStep), m.payback, m.pays]).toEqual([1600, 580, 27, 22, true])
+  expect(coldMath('opus', 120_000).pays).toBe(false) // 55K less a step pays back only after 53 steps
   expect(coldMath('opus', 60_000).pays).toBe(false) // already smaller than a compacted chat
 })
 
-test('after an hour away from a big chat, the band offers to compact first, with the costs; a step, a prompt or Keep clears it', async (engine, on) => {
+test('keep-awake decides: nudge before the hour, compact when the window ends, offer once the cache lapsed or when off or small', () => {
+  const m = 60_000
+  const at = { on: true, lastStep: 0, since: 0, hours: 2, cache: 200_000 }
+  expect(awakeNext({ ...at, now: 50 * m })).toBe('ping') // 50 + 50 minutes still inside 2 hours
+  expect(awakeNext({ ...at, now: 100 * m, lastStep: 50 * m })).toBe('compact') // the next nudge would land past 2 hours
+  expect(awakeNext({ ...at, now: 70 * m, lastStep: 0 })).toBe('cold') // the timer ran late (the machine slept): the cache is gone
+  expect(awakeNext({ ...at, now: 50 * m, on: false })).toBe('cold')
+  expect(awakeNext({ ...at, now: 50 * m, cache: 15_000 })).toBe('cold') // a rebuild costs cents
+})
+
+test('keep awake: a nudge every 50 minutes at low effort on the same model, booked as extra; coming back books the rebuild it avoided', async (engine, on) => {
   const $ = engine as any
-  const compacted: Array<unknown> = []
+  const batches: Array<Array<Step>> = []
   const sent: Array<unknown> = []
-  wire(on, { sent, read: 200_000, write: 0, ownClock: true })
+  const models: Array<string> = []
+  const asked = { n: 0 }
+  const nudges: Array<{ text: string; origin?: { kind: string; name?: string } }> = []
+  wire(on, { sent, models, asked, batches, nudges, files: {}, read: 200_000, write: 0, ownClock: true })
+  const clock = mock.clock(on, { now: 1_000 })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await step($, 'medium')
+  await clock.advance(2_900_000)
+  expect(nudges.length).toBe(0)
+  await clock.advance(100_000) // 50 minutes after the last step
+  expect(nudges.length).toBe(1)
+  expect(nudges[0]!.text).toBe(AWAKE_TEXT)
+  expect(asked.n).toBe(0) // no classifier, no mood check on a nudge
+  await step($, 'medium') // the nudge's turn
+  expect(sent.at(-1)).toBe('low')
+  expect(models.at(-1)).toBe('claude-opus-5-5') // never another model: that would rebuild the cache
+  await clock.advance(3_000_000)
+  expect(nudges.length).toBe(2)
+  await step($, 'medium')
+  expect(await band.find({ type: 'Text', text: /kept this chat's cache warm: 2 nudges, \$0\.08 so far, against about \$1\.60/ })).toBeTruthy()
+  // you come back after 1h40 with no router the cache would have lapsed: your step would have written 200K again
+  await $.prompt.submit({ text: 'ok, where were we', origin: { kind: 'composer' }, wait: false })
+  await step($, 'medium')
+  expect(sent.at(-1)).not.toBe('low')
+  expect(await band.find({ key: 'router-away' })).toBeFalsy()
+  await end($)
+  const u = rows(batches, 'usage').filter(r => r[2] === 'awake')
+  const cents = (x: unknown) => Math.round(Number(x) * 10000) / 100
+  expect(u.map(r => [cents(r[5]), cents(r[6]), cents(r[7])])).toEqual([[4.01, 0, 4.01], [4.01, 0, 4.01], [0, 156, 0]]) // two nudges as they really ran (200K read, 10 in, 5 out), then $1.60 - $0.04 avoided
+  await band.unmount()
+})
+
+test('keep awake ends after the hours you set: the chat is compacted while warm into a handoff, and the nudges stop', async (engine, on) => {
+  const $ = engine as any
+  const store = new Map<string, unknown>()
+  const compacted: Array<{ instructions?: string }> = []
+  const nudges: Array<{ text: string }> = []
+  wire(on, { sent: [], store, nudges, read: 200_000, write: 0, ownClock: true })
+  const clock = mock.clock(on, { now: 1_000 })
+  on('session.compact', (_: unknown, e: { instructions?: string }) => { compacted.push(e); return { messages: [{ role: 'user', text: 'summary', toolUses: [] }] } })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await band.press({ key: 'router-settings' })
+  await band.press({ key: 'router-awake-hours-2' })
+  await band.press({ key: 'router-settings' })
+  expect(store.get('awakeHours')).toBe(2)
+  await step($, 'medium')
+  await clock.advance(3_000_000)
+  await step($, 'medium') // the one nudge that fits in 2 hours
+  await clock.advance(3_000_000)
+  expect(nudges.length).toBe(1)
+  expect(compacted.length).toBe(1)
+  expect(compacted[0]!.instructions).toContain('continuation message')
+  expect(await band.find({ type: 'Text', text: /warm for 2 hours \(1 nudge, \$0\.04\), then compacted it into a handoff/ })).toBeTruthy()
+  await clock.advance(7_200_000)
+  expect(nudges.length).toBe(1)
+  await band.unmount()
+})
+
+test('the away window counts from your last step, not a nudge; back within the hour of your last step books no saving', async (engine, on) => {
+  const $ = engine as any
+  const batches: Array<Array<Step>> = []
+  const nudges: Array<{ text: string }> = []
+  const compacted: Array<unknown> = []
+  wire(on, { sent: [], batches, nudges, files: {}, read: 200_000, write: 0, ownClock: true })
   const clock = mock.clock(on, { now: 1_000 })
   on('session.compact', (_: unknown, e: unknown) => { compacted.push(e); return { messages: [{ role: 'user', text: 'summary', toolUses: [] }] } })
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
   const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await band.press({ key: 'router-settings' })
+  await band.press({ key: 'router-awake-hours-2' })
+  await band.press({ key: 'router-settings' })
+  await step($, 'medium')
+  await clock.advance(2_400_000)
+  await step($, 'medium') // you work on: 40 and 80 minutes in
+  await clock.advance(2_400_000)
+  await step($, 'medium')
+  await clock.advance(3_000_000) // 50 minutes after your last step: inside the 2 hours counted from it, so a nudge
+  expect(nudges.length).toBe(1)
+  await step($, 'medium')
+  await clock.advance(300_000) // back 55 minutes after your last step: with no router the cache was still warm
+  await $.prompt.submit({ text: 'next bit', origin: { kind: 'composer' }, wait: false })
+  await step($, 'medium')
+  await clock.advance(3_000_000) // the window starts again at this step
+  expect([nudges.length, compacted.length]).toEqual([2, 0])
+  await end($)
+  expect(rows(batches, 'usage').filter(r => r[2] === 'awake').map(r => Number(r[6]))).toEqual([0]) // the one nudge that ran; no saving
+  await band.unmount()
+})
+
+test('a nudge is dropped when the chat was just used, and a nudge that finds the cache gone turns keep-awake off', async (engine, on) => {
+  const $ = engine as any
+  const store = new Map<string, unknown>()
+  const toasts: Array<string> = []
+  const opts = { sent: [] as Array<unknown>, store, read: 200_000, write: 0, ownClock: true }
+  wire(on, opts)
+  const clock = mock.clock(on, { now: 1_000 })
+  on('ui.toast', (_: unknown, e: { text: string }) => { toasts.push(e.text); return { value: undefined } })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await step($, 'medium')
+  await clock.advance(60_000)
+  expect(await $.prompt.submit({ text: AWAKE_TEXT, origin: { kind: 'plugin', name: 'router' }, wait: false })).toEqual({ drop: 'router: the chat was used meanwhile' })
+  await clock.advance(2_940_000) // the timer's own nudge, 50 minutes after the step
+  opts.read = 0
+  opts.write = 200_000 // the cache was gone: the nudge wrote the whole chat again (a 5-minute cache)
+  await step($, 'medium')
+  expect(store.get('features')).toEqual({ autoSwitch: true, sizing: true, pastes: true, awake: false })
+  expect(toasts.some(t => t.includes('keep-awake found the cache already gone'))).toBe(true)
+})
+
+test('with keep-awake off, once the cache lapses the band offers to compact first, with the costs; a prompt or Keep clears it', async (engine, on) => {
+  const $ = engine as any
+  const compacted: Array<unknown> = []
+  const nudges: Array<{ text: string }> = []
+  wire(on, { sent: [], nudges, read: 200_000, write: 0, ownClock: true })
+  const clock = mock.clock(on, { now: 1_000 })
+  on('session.compact', (_: unknown, e: unknown) => { compacted.push(e); return { messages: [{ role: 'user', text: 'summary', toolUses: [] }] } })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await band.press({ key: 'router-settings' })
+  await band.press({ key: 'router-f-awake-off' })
+  await band.press({ key: 'router-settings' })
   await step($, 'medium')
   await clock.advance(1_800_000)
   await step($, 'medium') // back within the hour: the cache lives on, the hour starts again
   await clock.advance(2_000_000)
   expect(await band.find({ key: 'router-cold-compact' })).toBeFalsy()
   await clock.advance(1_700_000)
-  expect(await band.find({ type: 'Text', text: /re-reads the whole chat \(200K tokens, about \$1\.60\).*about \$0\.52.*20 steps/ })).toBeTruthy()
+  expect(nudges.length).toBe(0)
+  expect(await band.find({ type: 'Text', text: /re-reads the whole chat \(200K tokens, about \$1\.60\).*about \$0\.58.*22 steps/ })).toBeTruthy()
   await band.press({ key: 'router-cold-keep' })
   expect(await band.find({ key: 'router-cold-compact' })).toBeFalsy()
   expect(compacted.length).toBe(0)
-  // the next break offers again; pressing compacts on the same model
   await step($, 'medium')
   await clock.advance(3_700_000)
   await band.press({ key: 'router-cold-compact' })
   expect(compacted.length).toBe(1)
   expect(await band.find({ key: 'router-cold-compact' })).toBeFalsy()
-  // a prompt sent while the offer shows clears it (the message re-reads the chat anyway)
   await step($, 'medium')
   await clock.advance(3_700_000)
   expect(await band.find({ key: 'router-cold-compact' })).toBeTruthy()
@@ -1201,36 +1329,24 @@ test('after an hour away from a big chat, the band offers to compact first, with
   await band.unmount()
 })
 
-test('no compact offer for a small chat, a subagent, or with the switch off', async (engine, on) => {
+test('no compact offer and no nudge for a small chat or a subagent', async (engine, on) => {
   const $ = engine as any
-  const store = new Map<string, unknown>()
-  wire(on, { sent: [], store, read: 100_000, write: 0, ownClock: true })
+  const nudges: Array<{ text: string }> = []
+  const opts = { sent: [] as Array<unknown>, nudges, read: 15_000, write: 0, ownClock: true }
+  wire(on, opts)
   const clock = mock.clock(on, { now: 1_000 })
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
   const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  await step($, 'medium') // 100K: compacting would not pay back soon enough
+  await step($, 'medium') // 15K: a rebuild costs cents
   await clock.advance(3_700_000)
+  opts.read = 300_000
+  await step($, 'medium', 'sub1') // a subagent's step never starts the main chat's timer
+  await clock.advance(3_700_000)
+  expect(nudges.length).toBe(0)
   expect(await band.find({ key: 'router-cold-compact' })).toBeFalsy()
   await band.unmount()
 })
 
-test('the compact-after-a-break switch off: no offer even for a big chat; a subagent step never starts the hour', async (engine, on) => {
-  const $ = engine as any
-  wire(on, { sent: [], read: 300_000, write: 0, ownClock: true })
-  const clock = mock.clock(on, { now: 1_000 })
-  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
-  await step($, 'medium', 'sub1')
-  await clock.advance(3_700_000)
-  expect(await band.find({ key: 'router-cold-compact' })).toBeFalsy()
-  await band.press({ key: 'router-settings' })
-  await band.press({ key: 'router-f-idle-off' })
-  await band.press({ key: 'router-settings' })
-  await step($, 'medium')
-  await clock.advance(3_700_000)
-  expect(await band.find({ key: 'router-cold-compact' })).toBeFalsy()
-  await band.unmount()
-})
 
 test('a switched-off feature stays off in the next session', async (engine, on) => {
   const $ = engine as any
@@ -1611,7 +1727,8 @@ test('after a move down in mid-chat, a harder prompt keeps the cheaper model and
 test("an hour's pause is a free switch point: lighter same work moves on the next check", async (engine, on) => {
   const $ = engine as any
   const batches: Array<Array<Step>> = []
-  wire(on, { sent: [], batches, files: { '/home/.claude/routing.json': ROUTING }, haiku: 'haiku 0.95 same', tokens: 40_000, write: 40_000, ownClock: true })
+  // keep-awake off: with it on, the cache never lapses and the pause is no free switch point
+  wire(on, { sent: [], batches, store: new Map<string, unknown>([['features', { autoSwitch: true, sizing: true, pastes: true, awake: false }]]), files: { '/home/.claude/routing.json': ROUTING }, haiku: 'haiku 0.95 same', tokens: 40_000, write: 40_000, ownClock: true })
   const clock = mock.clock(on, { now: 1_000 })
   on('ui.toast', () => ({ value: undefined }))
   on('tool.call', () => ({ result: { content: 'ok' } }))
