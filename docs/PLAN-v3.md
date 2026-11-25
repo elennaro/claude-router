@@ -102,6 +102,16 @@ Clean room: ideas only, no code or text copied (several of these tools are sourc
 
 Each idea ships only with its own deterministic test.
 
+Added 2026-11-25 from a web study (public docs and write-ups; savings figures found are vendor claims with no control, so each idea needs its own eval):
+
+5. **Trim big tool results, losslessly recoverable** (lead item). A `tool.call` hook may return its own `result` after the tool ran, and the model reads that instead (checked in the plugin API types). For a Read, Grep, Bash or WebFetch result over a size line: keep head and tail, collapse repeated log lines, pass errors through untouched, save the full text under `~/.claude/router/` and append its path, the same pattern as big pastes. Every kept result is re-read on each later turn, so this is likely the biggest remaining saving. Eval: planted-fact tasks like `paste/run.mjs`, where the answer needs a line from a trimmed result.
+6. **Compaction timing.** Compacting while the cache is warm reads the cached prefix; after the cache expires it pays for everything again. Offer "compact now while it's warm" at a task break, and hold an auto-compact while the cache is cold if the hooks allow it.
+7. **Avoidable cache breaks at run time.** Warn before what rebuilds the cache: a skill or agent with a model override, a fast-mode toggle, an MCP server added mid-chat. Extends item 1 from files to actions.
+8. **Cache TTL advice.** API-key users get 5-minute entries in the main chat, and subagents get 5 minutes by default. The plugin can't change that, but it can read the 1h/5m split in usage and suggest the setting when the math says so.
+9. **Fork or fresh subagent.** A fork reads the parent's warm cache, but a fresh subagent doesn't. Prefer a fork when the parent prefix is large and warm and the task needs that context.
+
+Checked and set aside: summarising every tool result with a model (costs more than it saves on small outputs), prose-trimming styles (small share, risks quality), capping thinking tokens (effort routing already covers it), API-only context-editing headers (the plugin can't send them).
+
 ## How evals run
 
 1. Plain API evals (classifier, judge, summary scoring) are Node scripts that call the Messages API with the owner's API key: Batch API where latency doesn't matter, prompt caching on shared prefixes, every answer stored in `evals/work/eval.db` and paid once. `node fast.mjs` replays everything for $0.
