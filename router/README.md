@@ -2,6 +2,28 @@
 
 Router mode for Claude Code: each turn, subagent and outside-agent call gets a fitting model and effort: more effort where the work needs it (production-code investigation always Opus high), Sonnet for chats that open with a message, translation, lookup, long read, data or test task, Sonnet high for subagents on defined tasks, Haiku for lookups inside subagents, and never a tier below what the work needs. In the evals: answers 15.6% better than always Opus medium, at about 1.2× its spend.
 
+In real use (the author's first 8 days, 2026-11-18 to 25): 1.7% more spend than no router, with the ledger 2% from Claude Code's own transcripts. The goal is to get below the baseline at the same quality, by tuning which effort raises pay. The ledger now records each one (0.9.0).
+
+## Features at a glance
+
+| Feature | What you get |
+|---|---|
+| Effort per turn | each task gets its class's effort; effort changes keep the prompt cache |
+| The chat's model | a cheaper model on the first prompt when 3 Haiku samples agree; never up by itself |
+| Quick turns | a sure lookup runs one turn on Haiku, then back |
+| Unhappy replies | the 2nd unhappy reply raises effort a step, the 4th again and offers the next model |
+| Model tips and session check | switch offers with buttons and what the switch costs |
+| Subagents | routed by type or brief: Haiku for lookups, Sonnet high for defined tasks, Opus high for debugging, review, security |
+| Reader and researcher | two shipped subagents, sized per brief to Haiku or Sonnet |
+| Big pastes | a long paste is read first by a cheaper model; the chat gets the analysis and the file path |
+| Keep awake | a hidden nudge keeps an idle chat's cache warm, only while you're likely to come back; off per chat |
+| Compact at | your own compaction point per chat, the cheapest one marked, optionally your default |
+| Ledger, Stats, Board | spend against no router, saved and extra apart, by chat, project, model and effort; trims itself |
+| Units | dollars, or % of your plan's weekly limit |
+| Codex, Antigravity | outside second opinions as read-only tools |
+
+Every row is detailed under *What it does* below.
+
 ## Install
 
 ```

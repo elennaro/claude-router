@@ -35,4 +35,4 @@ One Haiku sample reads your reply after each answer. The first unhappy reply cha
 
 ## What it measures against
 
-Every figure is against **no router**: the model and effort that would have run without the plugin, at the same tokens. Saved and extra spend are kept apart, so cheap subagents can't hide a dearer turn.
+Every figure is against **no router**: the model and effort that would have run without the plugin, at the same tokens. Saved and extra spend are kept apart, so cheap subagents can't hide a dearer turn. Each step's effort, the effort it would have had, its class and why it was set go into the [ledger](Ledger.md).

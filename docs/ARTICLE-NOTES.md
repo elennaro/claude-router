@@ -63,6 +63,18 @@ real usage. Per-move detail is in [LESSONS.md](LESSONS.md); the numbers come fro
    router had spent more than no router that week, and the day before it had saved a little. The math held up
    against Claude Code's own transcripts (2% apart over 8 days); the display didn't. The Board now says "saved $x" or
    "$x extra" in words, like the band (wrong move 24). The same check showed the real result for the article below.
+12. **Recording why each effort was chosen (0.8.9, 0.9.0, 2026-11-25).** An independent review of the new
+   keep-awake and units code found five real bugs. The worst: plan % read up to 9x low on the day the week reset,
+   because the ledger counts whole days and the week starts at a clock time. The fix uses the ledger's total when
+   the new window is first seen as the week's zero. Then the owner pointed at the bigger gap: effort is the router's
+   main lever, yet the ledger kept no effort, so the $96 of extra spend could not be traced. 0.9.0 adds an `efforts`
+   table (effort, no-router effort, class, and why: class, unhappy, pick, asked, agent, nudge, as-is). The ledger
+   also trims itself: effort detail after 60 days, the rest after 400.
+13. **Next: labelled data and a local classifier.** Two steps, owner's plan. First, an opt-in switch log in Settings
+   with like and dislike on each model or effort switch; dislike switches back, with a warning when that costs a
+   cache rebuild. Later, labels read from the person's replies instead of buttons. Then a small local classifier
+   (CPU-sized, chosen from the open models on the Hugging Face "Jev decision index") trained first on public
+   routing and task-type datasets, then on the owner's own anonymized labels, to replace the Haiku calls.
 
 ## How the savings are measured
 
