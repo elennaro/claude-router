@@ -34,6 +34,7 @@ export type Bucket = {
   turns: number // main-loop turns
   byModel: Record<string, { usd: number; base: number; extra: number; steps: number; cache?: Cache }> // base: with no router; 0 for the classifier
   agents?: Record<string, AgentTally> // per subagent type
+  awake?: { nudges: number; usd: number; saved: number } // keep-awake: what the nudges cost and the re-reads they saved
 }
 
 // Prompt tokens by where they came from: read = served from the prompt cache. Cache hit = read / (input + read + write).

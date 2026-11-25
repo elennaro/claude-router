@@ -13,10 +13,10 @@ import {
   type Ask, AUTO, BUILTIN, DELEGATE_ID, delegateSection, wantsDelegate, CLASS_LABELS, type Config, type Usage, type SessionWindow, adviseSwitch, agentTier, autoModel, classifierPrompt, firstModel, parseSessionCheck, sessionCheckPrompt, sessionCheckSystem, classifierSystem, classifyByRules, costUsd, explicitAsk, family,
   classifyPlan, isCacheBreak, merge, settleAnswers, readLabel, prices, rank, setPrices, turnEffort, briefHash, isHarder, needsSecondSample, spawnPick, withoutRouter,
   type Mood, longRun, moodPrompt, moodSystem, parseMood, raiseEffort, raiseSteps, stepUp, rebuildUsd, stepUsd, switchMath, FAMILIES, coldMath,
-  AWAKE_DEFAULT_HOURS, AWAKE_HOURS, AWAKE_PING_MS, AWAKE_TEXT, AWAY_COMPACT, awakeNext, isNudgeReply,
+  AWAKE_DEFAULT_HOURS, AWAKE_HOURS, AWAKE_MIN, AWAKE_PING_MS, AWAKE_TEXT, AWAY_COMPACT, awakeNext, isNudgeReply,
   SIZED, briefPaths, bucket, sizeOf, cacheSheet, PASTE_MIN, estTokens, keepsRaw, pasteModel, pasteSystem, pastePrompt, offloaded,
 } from './policy'
-import { type Cell, NAMES, TOOL_NAMES, addWhy, awayWords, coldWords, whyWords, barsSvg, boardHtml, cardLayout, hitPct, switchCost, svgSize, isExtra, modelColor, money, shade, net, netPct, netWords, savedUsd, statsSvg, withMode } from './view'
+import { type Cell, NAMES, TOOL_NAMES, addWhy, awayWords, cacheClock, minutesLeft, coldWords, whyWords, barsSvg, boardHtml, cardLayout, hitPct, switchCost, svgSize, isExtra, modelColor, money, shade, net, netPct, netWords, savedUsd, statsSvg, withMode } from './view'
 
 const PANE = 'router'
 const hint = atom({ plugin: 'router', key: 'hint' } as const, null)
@@ -76,6 +76,7 @@ type State = {
   agentSpend: Map<string, { usd: number; base: number; extra: number; model: string }> // agentId -> the run's recorded totals
   pasted: boolean // a big paste was saved this session (its file is deleted at the end)
   coldTimer: { cancel: () => void } | undefined // keep-awake: fires 50 minutes after the main chat's last step
+  minuteTick: { cancel: () => void } | undefined // redraws the Stats card's cache clock once a minute while it is open
   awakeSince: number // the main chat's last step that was not a keep-awake nudge: the away window starts there
   pinging: boolean // the turn running now is the router's own keep-awake nudge
   openTurn: string // the main chat's turn still running ('' when idle): keep-awake waits while one is open
@@ -776,7 +777,8 @@ async function facts($: EngineInterface, s: State) {
   const sheet = cacheSheet(main?.model ?? s.cfg.main.model, s.lastContext)
   const feats = await read($, features)
   const hours = await read($, awakeHours)
-  return { v, turns, chat, proj, m, main, where, now, since, chatMode, cost, spend, hit, sheet, feats, hours }
+  const at = await $.clock.now()
+  return { v, turns, chat, proj, m, main, where, now, since, chatMode, cost, spend, hit, sheet, feats, hours, at }
 }
 
 function cells(s: State, f: Awaited<ReturnType<typeof facts>>): Array<Cell> {
@@ -787,9 +789,22 @@ function cells(s: State, f: Awaited<ReturnType<typeof facts>>): Array<Cell> {
     { label: 'This project', value: netWords(f.proj), isExtra: isExtra(f.proj), sub: `${netPct(f.proj)}% ${isExtra(f.proj) ? 'more' : 'less'} since ${f.since}` },
     { label: 'Now', value: f.v.isOn ? f.now : 'Off', swatch, sub: !f.v.isOn ? `off ${f.where}` : f.chatMode === 'effort' ? 'effort only' : f.chatMode === 'models' ? 'models only' : picked },
     { label: 'Spent this chat', value: money(f.cost ?? f.chat.actualUsd), sub: f.hit === undefined ? 'cache hit not known yet' : `cache hit ${f.hit}%` },
-    { label: 'Cache', value: s.lastContext >= 1000 ? `${Math.round(s.lastContext / 1000)}K tokens` : 'empty', sub: s.lastContext >= 1000 ? `losing it costs ${money(f.sheet.reset)}` : 'nothing to rebuild yet' },
+    { label: 'Cache', value: s.lastContext >= 1000 ? `${Math.round(s.lastContext / 1000)}K tokens` : 'empty', sub: s.lastContext >= 1000 ? `${cacheClock(s.prev.at, f.at)} · rebuild ${money(f.sheet.reset)}` : 'nothing to rebuild yet' },
     { label: 'Where it went', ...whyWords(f.chat.by) },
+    awakeCell(s, f),
   ]
+}
+
+// Keep awake's cell: what it saved this chat, when the next nudge goes and what the nudges cost.
+function awakeCell(s: State, f: Awaited<ReturnType<typeof facts>>): Cell {
+  const a = f.chat.by?.awake
+  const on = f.feats.awake
+  const next = on && s.lastContext >= AWAKE_MIN && !s.openTurn ? minutesLeft(s.prev.at, f.at, AWAKE_PING_MS / 60_000) : undefined
+  const sub = [
+    next ? `nudge in ${next} min` : on && s.lastContext < AWAKE_MIN ? 'starts at 20K tokens' : on ? '' : 'off in Settings',
+    a?.extra ? `nudges ${money(a.extra)}` : '',
+  ].filter(Boolean).join(' · ')
+  return { label: 'Keep awake', value: a && a.saved >= 0.005 ? `saved ${money(a.saved)}` : on ? 'On' : 'Off', sub: sub || 'no nudges yet' }
 }
 
 // The cache sheet in one line: what a model switch, a reset and compacting would cost right now.
@@ -881,7 +896,7 @@ export const register: Register = on => {
   const s: State = {
     cfg: BUILTIN, home: '', root: '', project: 'unknown', sources: 'built-in only', lastClass: null, lastHintModel: null,
     hasClassified: false, hadClass: false, skipEffortThisTurn: false, headless: false, agentEffort: new Map(), defs: new Map(),
-    prev: NO_PREV, lastContext: 0, mainSteps: 0, mainOut: 0, cleanChanges: 0, baseEffort: '', rerouted: 0, lastRerouted: '', agentType: new Map(), agentAsked: new Map(), agentSpend: new Map(), briefRun: new Map(), wastedRuns: new Set(), paneOpened: false, pasted: false, coldTimer: undefined, awakeSince: 0, pinging: false, openTurn: '',
+    prev: NO_PREV, lastContext: 0, mainSteps: 0, mainOut: 0, cleanChanges: 0, baseEffort: '', rerouted: 0, lastRerouted: '', agentType: new Map(), agentAsked: new Map(), agentSpend: new Map(), briefRun: new Map(), wastedRuns: new Set(), paneOpened: false, pasted: false, coldTimer: undefined, minuteTick: undefined, awakeSince: 0, pinging: false, openTurn: '',
     session: 'session', label: '', lastLedgerTurn: '', pending: [], scheduled: false, warned: false, totals: { proj: EMPTY_TALLY, since: undefined }, routeModels: true, sure: false, switchTurn: false,
     ask: undefined, stickyAsk: undefined, v: undefined, seenPrompt: false, samples: [], turnCount: 0, quietUntil: 0, declined: null, switching: false,
     briefs: new Map(), siblings: new Map(), queue: Promise.resolve(), savedAgents: NO_AGENTS, unhappy: 0,
@@ -1362,6 +1377,8 @@ export const register: Register = on => {
     if (open === 'none') return stack(head)
 
     if (open === 'stats') {
+      // the cache clock counts down: redraw once a minute while the card is open
+      if (!s.minuteTick && s.prev.at) s.minuteTick = $.clock.after(60_000, () => { s.minuteTick = undefined; $.ui.invalidate('ui.render') })
       const c = cells(s, f)
       const fit = cardLayout(e.props.bodyColumns)
       const src = statsSvg(c, f.turns, fit.width, fit.perRow, f.spend, reroutedNote(f.v))
@@ -1436,17 +1453,17 @@ export const register: Register = on => {
         {group('router-g-pick',
           field('router-model', 'Model', choices('router-model', [['auto', 'Auto'], ['haiku', 'Haiku'], ['sonnet', 'Sonnet'], ['opus', 'Opus'], ['fable', 'Fable']], picked.by === 'you' ? family(picked.model ?? s.cfg.main.model) : 'auto', v => pickModel($, v), v => (v === 'auto' ? undefined : modelColor(v)))),
           field('router-effort', 'Effort', choices('router-effort', [['auto', 'Auto'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra high'], ['max', 'Max']], picked.effort ?? 'auto', v => update($, chat, (c): ChatModel => ({ ...c, effort: v === 'auto' ? null : v })), v => (v === 'auto' ? undefined : shade(f.main?.model ?? s.cfg.main.model, v, 'dark')))),
-          note('router-pick-note', 'A pick here locks this chat to it: the router stops moving the chat, and savings are counted against your pick. Auto lets the router choose per task again.'))}
+          note('router-pick-note', 'A pick locks this chat to it, and savings count against it. Auto lets the router choose per task.'))}
         {group('router-g-save',
           feat('autoSwitch', 'Move down'),
-          note('router-f-autoSwitch-note', 'Moves the chat to a cheaper model by itself, only when rebuilding the cache pays back (right after compacting, after an hour idle, or in a chat that will run long). Moving up is always your call.'),
+          note('router-f-autoSwitch-note', 'Moves to a cheaper model on its own, only when rebuilding the cache pays back. Moving up is always your call.'),
           feat('sizing', 'Helpers'),
           note('router-f-sizing-note', 'Runs the reader and researcher on Haiku or Sonnet by the size of the job, with a budget.'),
           feat('pastes', 'Big pastes'),
-          note('router-f-pastes-note', 'A message over about 10K tokens is saved to a file and a cheaper model reads it first. Put "raw" in a message to skip this.'),
+          note('router-f-pastes-note', 'A message over about 10K tokens goes to a file, and a cheaper model reads it first. Write "raw" to skip.'),
           feat('awake', 'Keep awake'),
           field('router-awake-hours', 'Keep it for', choices('router-awake-hours', AWAKE_HOURS.map(h => [String(h), `${h}h`] as [string, string]), String(f.hours), v => setAwakeHours($, Number(v)))),
-          note('router-f-awake-note', `While you are away, a one-word nudge every 50 minutes keeps this chat's cache warm${s.lastContext >= 1000 ? ` (about ${money(f.sheet.ping)} each now, against ${money(f.sheet.reset)} to re-read it all)` : ''}. After ${f.hours} hours away it compacts the chat while warm into a handoff${s.lastContext >= 1000 ? ` (about ${money(f.sheet.compact)})` : ''} and stops. Off: once the cache lapses, the band offers to compact first.`))}
+          note('router-f-awake-note', `A hidden nudge every 50 minutes keeps an idle chat's cache warm${s.lastContext >= 1000 ? ` (about ${money(f.sheet.ping)} each, against ${money(f.sheet.reset)} to re-read it)` : ''}. After ${f.hours} hours it compacts the chat into a handoff${s.lastContext >= 1000 ? ` (about ${money(f.sheet.compact)})` : ''} and stops. Off: the band offers to compact once the cache lapses.`))}
         {group('router-g-scope',
           field('router-scope', 'Routing', [
             <Text key="router-global-l">Everywhere</Text>,

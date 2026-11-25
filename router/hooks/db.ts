@@ -177,7 +177,10 @@ export function bucketsOf(rows: Array<Array<Record<string, any>> | null>): Array
     const m = b.byModel[u.model] ?? { usd: 0, base: 0, extra: 0, steps: 0 }
     const cache = addCache(m.cache, { input: u.tin ?? 0, read: u.tread ?? 0, write: u.twrite ?? 0 })
     b.byModel[u.model] = { usd: m.usd + u.usd, base: m.base + u.base, extra: m.extra + (u.extra ?? 0), steps: m.steps + u.steps, cache }
-    if (u.who !== 'main' && u.who !== 'router') {
+    if (u.who === 'awake') { // nudge rows carry the cost, the saving row (no steps) the avoided re-read
+      const a = b.awake ?? { nudges: 0, usd: 0, saved: 0 }
+      b.awake = { nudges: a.nudges + u.steps, usd: a.usd + u.usd, saved: a.saved + Math.max(0, u.base - u.usd) }
+    } else if (u.who !== 'main' && u.who !== 'router') {
       const a = b.agents?.[u.who] ?? NO_AGENT
       b.agents = { ...b.agents, [u.who]: { ...a, usd: a.usd + u.usd, base: a.base + u.base, extra: a.extra + (u.extra ?? 0) } }
     }

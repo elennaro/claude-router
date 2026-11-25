@@ -32,7 +32,7 @@ const FONT = "-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-ser
 // shortcut: an app theme that differs from the system theme gets the wrong text color; pass the theme in if that bites.
 // .v.x: a value that is spend above the no-router cost; .c: a cache-hit square (its opacity is the hit);
 // .hit: an invisible column that takes the hover for its turn; .m-<model>-<effort step>: the model colors (shadeCss).
-const STYLE = `.l,.s{fill:#87867f;font:12px ${FONT}}.v{fill:#1f1e1d;font:600 18px ${FONT}}.d{stroke:#1f1e1d;stroke-opacity:.12}.v.x{fill:#c15f3c}.c{fill:#1f1e1d}.hit{fill:transparent}@media (prefers-color-scheme:dark){.v{fill:#ecebe6}.d{stroke:#fff;stroke-opacity:.14}.v.x{fill:#e5906f}.c{fill:#ecebe6}}`
+const STYLE = `.l,.s{fill:#73726c;font:12px ${FONT}}.l,.s,.v{pointer-events:none}.v{fill:#1f1e1d;font:600 18px ${FONT}}.d{stroke:#1f1e1d;stroke-opacity:.12}.v.x{fill:#c15f3c}.c{fill:#1f1e1d}.hit{fill:transparent}@media (prefers-color-scheme:dark){.l,.s{fill:#a3a29b}.v{fill:#ecebe6}.d{stroke:#fff;stroke-opacity:.14}.v.x{fill:#e5906f}.c{fill:#ecebe6}}`
 let shades: string | undefined // built on first use: the palette constants sit further down
 const css = () => STYLE + (shades ??= shadeCss((c, color) => `.${c}{fill:${color}}`, c => `.${c}{stroke:#ffffff73;stroke-width:1}`))
 
@@ -44,18 +44,32 @@ export function addWhy(by: By | undefined, why: Why, saved: number, extra: numbe
   return { ...by, [why]: { saved: o.saved + saved, extra: o.extra + extra } }
 }
 
-const WHY_WORDS: Record<Why, string> = { model: 'switching the chat model', effort: 'effort', agents: 'subagents', router: 'routing calls', paste: 'reading pastes', awake: 'keeping the cache warm' }
-// The Stats card's "Where it went": the biggest saving and the biggest extra by reason, in words.
+// Short names: they share one Stats cell (about 30 characters a line in a narrow card)
+const WHY_WORDS: Record<Why, string> = { model: 'model moves', effort: 'effort', agents: 'subagents', router: 'router calls', paste: 'pastes', awake: 'keep awake' }
+// The Stats card's "Where it went": the reason that saved most as the value; the saving, then the extras, under it.
 export function whyWords(by: By | undefined): { value: string; sub: string } {
   const rows = Object.entries(by ?? {}) as Array<[Why, { saved: number; extra: number }]>
   const top = (k: 'saved' | 'extra') => rows.filter(([, x]) => x[k] >= 0.005).sort((a, b) => b[1][k] - a[1][k])
   const saved = top('saved'), extra = top('extra')
-  const list = (r: typeof saved, k: 'saved' | 'extra') => r.map(([w, x]) => `${money(x[k])} on ${WHY_WORDS[w]}`).join(', ')
-  if (!saved.length && !extra.length) return { value: 'Nothing moved yet', sub: 'every step ran as it would with no router' }
-  return { value: saved.length ? `saved ${list(saved.slice(0, 1), 'saved')}` : 'nothing saved', sub: extra.length ? `extra: ${list(extra, 'extra')}` : 'no extra spend' }
+  if (!saved.length && !extra.length) return { value: 'Nothing moved yet', sub: 'every step ran as with no router' }
+  // the biggest extra only: a 4-column cell holds about 32 characters; the Board has every reason
+  const extras = extra.length ? `+${money(extra[0]![1].extra)} ${WHY_WORDS[extra[0]![0]]}` : 'no extra spend'
+  const best = saved[0]
+  const name = best ? WHY_WORDS[best[0]] : ''
+  return best ? { value: name[0]!.toUpperCase() + name.slice(1), sub: `saved ${money(best[1].saved)} · ${extras}` } : { value: 'Nothing saved', sub: extras }
 }
+// A turn's name in the log: the main chat's task, keep-awake's nudges by name, or the subagent's type.
+export const whoWords = (t: { who: string; cls: string }) => (t.who === 'main' ? t.cls : t.who === 'awake' ? 'keep awake' : t.who)
 
 export type Cell ={ label: string; value: string; sub: string; isExtra?: boolean; swatch?: string }
+
+// The main chat's cache clock: minutes left of the hour since its last step ('' before any step, 0 once expired),
+// and keep-awake's next nudge, 50 minutes after that step.
+export const minutesLeft = (lastAt: number, now: number, of: number) => (lastAt ? Math.max(0, Math.ceil((of * 60_000 - (now - lastAt)) / 60_000)) : undefined)
+export function cacheClock(lastAt: number, now: number): string {
+  const left = minutesLeft(lastAt, now, 60)
+  return left === undefined ? '' : left ? `warm ${left} min` : 'expired'
+}
 
 // Small turn costs need a third digit, or every bar's tip says $0.00.
 const cents = (n: number) => (n < 0.1 ? `$${n.toFixed(3)}` : money(n))
@@ -145,7 +159,7 @@ function divergingBars(turns: Array<TurnLog>, x0: number, y0: number, width: num
     const h = Math.max(2, Math.sqrt(Math.abs(d) / max) * (half - 1))
     const y = d >= 0 ? mid - h : mid + 1
     const hit = hitPct(t.cache)
-    const tip = `${t.who === 'main' ? t.cls : t.who}: ${nice(t.model)} ${t.effort || ''}. ${cents(t.usd)} spent, ${cents(t.baseUsd)} with no router (${Math.abs(d) < 0.0005 ? 'same' : `${d > 0 ? '+' : '−'}${cents(Math.abs(d))}`})${hit === undefined ? '' : `. Cache hit ${hit}%`}`
+    const tip = `${whoWords(t)}: ${nice(t.model)} ${t.effort || ''}. ${cents(t.usd)} spent, ${cents(t.baseUsd)} with no router (${Math.abs(d) < 0.0005 ? 'same' : `${d > 0 ? '+' : '−'}${cents(Math.abs(d))}`})${hit === undefined ? '' : `. Cache hit ${hit}%`}`
     out += `<g><title>${esc(tip)}</title><rect class="hit" x="${x}" y="${y0}" width="${bw.toFixed(1)}" height="${2 * half}"/>`
     out += `<rect class="${cls(t.model, t.effort)}" x="${x}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" rx="1.5"/></g>`
     const s = cacheStrength(t.cache)
@@ -231,10 +245,10 @@ export function statsSvg(cells: Array<Cell>, turns: Array<TurnLog>, width: numbe
     const x = col * colW + (col === 0 ? 0 : 16)
     const vx = c.swatch ? x + 18 : x
     if (col > 0) body += `<line class="d" x1="${col * colW}" y1="${y + 8}" x2="${col * colW}" y2="${y + rowH - 8}"/>`
-    body += `<text class="l" x="${x}" y="${y + 16}">${esc(fit(c.label, chars(6.4)))}</text>`
+    body += `<g><title>${esc(`${c.label}: ${c.value}${c.sub ? ` · ${c.sub}` : ''}`)}</title><rect class="hit" x="${x}" y="${y}" width="${colW - 16}" height="${rowH}"/></g><text class="l" x="${x}" y="${y + 16}">${esc(fit(c.label, chars(6.4)))}</text>`
     if (c.swatch) { const [m = '', e = ''] = c.swatch.split(':'); body += `<rect class="${cls(m, e)}" x="${x}" y="${y + 29}" width="12" height="12" rx="3"/>` }
     body += `<text class="v${c.isExtra ? ' x' : ''}" x="${vx}" y="${y + 42}">${esc(fit(c.value, chars(10.4, colW - 24 - (vx - x))))}</text>`
-    if (c.sub) body += `<text class="s" x="${x}" y="${y + 60}">${esc(fit(c.sub, chars(6.4)))}</text>`
+    if (c.sub) body += `<text class="s" x="${x}" y="${y + 60}">${esc(fit(c.sub, chars(6)))}</text>`
   })
   let height = Math.ceil(cells.length / perRow) * rowH
   const section = (title: string, note = '') => {
@@ -307,16 +321,16 @@ export function boardHtml(buckets: Array<Bucket>, turns: Array<TurnLog>, session
 :root{--bg:#faf9f5;--panel:#fff;--text:#141413;--muted:#73726c;--line:#e8e6dc;--accent:#d97757;--spent:#87867f;--ghost:rgba(135,134,127,.22);--over:#b4532c;--under:#3c7547;--seg:#f0eee6;color-scheme:light}
 @media (prefers-color-scheme:dark){:root{--bg:#262624;--panel:#30302e;--text:#faf9f5;--muted:#a3a29b;--line:#3e3e38;--spent:#a3a29b;--ghost:rgba(163,162,155,.25);--over:#e8946f;--under:#8cc192;--seg:#3a3a37;color-scheme:dark}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif}
-main{max-width:960px;margin:0 auto;padding:48px 24px 64px}
+main{max-width:960px;margin:0 auto;padding:32px 24px 48px}
 header{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-end;justify-content:space-between}
-h1{font-size:22px;font-weight:600;margin:0 0 4px}h2{font-size:15px;font-weight:600;margin:40px 0 12px}
+h1{font-size:22px;font-weight:600;margin:0 0 4px}h2{font-size:15px;font-weight:600;margin:28px 0 10px}
 p{margin:0;color:var(--muted)}
 .range{display:flex;flex-wrap:wrap;gap:2px;background:var(--seg);border-radius:10px;padding:3px}
 .range button{font:inherit;font-size:13px;min-height:32px;border:0;background:none;color:var(--muted);padding:0 10px;border-radius:7px;cursor:pointer}
 .range button:hover{color:var(--text)}
 .range button[aria-pressed="true"]{background:var(--panel);color:var(--text);box-shadow:0 1px 2px rgba(0,0,0,.08)}
 .range button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
-.kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:24px;margin:32px 0 12px}
+.kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:24px;margin:24px 0 12px}
 .kpi>span{display:block;font-size:13px;color:var(--muted)}.kpi b{display:block;font-size:28px;font-weight:600;line-height:1.25;font-variant-numeric:tabular-nums}.kpi small{color:var(--muted);font-size:13px}
 .split{max-width:72ch}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:4px 16px;overflow-x:auto}
@@ -343,11 +357,11 @@ footer{margin-top:40px;color:var(--muted);font-size:13px;display:grid;gap:8px;ma
 <div class="kpi"><span>Difference</span><b id="diff"></b><small id="diff-pct"></small></div>
 <div class="kpi"><span>Cache hit</span><b id="hit"></b><small>of prompt tokens</small></div>
 </section>
-<p class="split" id="split"></p>
+<p class="split" id="split"></p><p class="split" id="awake"></p>
 <h2>Sessions <span class="muted" id="count"></span></h2><div class="card"><table><thead><tr><th>Session</th><th class="opt">Project</th><th class="opt">Last active</th><th class="opt">Models</th><th class="n opt">Turns</th><th class="n">Spent</th><th class="n opt">Without router</th><th class="n">Difference</th></tr></thead><tbody id="sessions"></tbody></table></div>
 <h2>By project</h2><div class="card"><table><thead><tr><th>Project</th><th class="n">Spent</th><th class="n opt">Without router</th><th class="n">Difference</th><th class="opt"><span class="sr">Spent against without router</span></th></tr></thead><tbody id="projects"></tbody></table></div>
 <h2>Spend by model</h2><div class="card" id="mix"></div>
-<h2>Subagents</h2><div class="card"><table><thead><tr><th>Type</th><th class="n">Runs</th><th class="n opt">Moved off the parent's model</th><th class="n opt">Sent again</th><th class="n">Spent</th><th class="n opt">Without router</th><th class="n">Difference</th></tr></thead><tbody id="agents"></tbody></table></div>
+<h2>Subagents</h2><div class="card"><table><thead><tr><th>Type</th><th class="n">Runs</th><th class="n opt" title="Runs moved off the parent's model">Moved</th><th class="n opt">Sent again</th><th class="n">Spent</th><th class="n opt">Without router</th><th class="n">Difference</th></tr></thead><tbody id="agents"></tbody></table></div>
 <section id="chat" hidden><h2>This chat, turn by turn</h2><div class="card"><table><thead><tr><th>Task</th><th>Model</th><th class="opt">Effort</th><th class="n opt">Cache hit</th><th class="n">Cost</th><th class="n opt">Without router</th><th class="n">Difference</th></tr></thead><tbody id="turns"></tbody></table></div></section>
 <footer><span>API list prices. On a Max plan this tracks how fast you use your limits, not money.</span>
 <span>Without router means each request on the model and effort it asked for (yours, or the parent chat's for a subagent), with the same tokens. A different effort is priced by its measured cost: a high-effort step costs about 1.4 times a medium one, a low one about 0.72 times. The router's own Haiku calls count as extra.</span>
@@ -395,6 +409,7 @@ function draw() {
   const rows = D.buckets.filter(b => b.day >= from);
   const sessions = {}, projects = {}, models = {}, agents = {};
   const cache = { input: 0, read: 0, write: 0 };
+  const awake = { nudges: 0, usd: 0, saved: 0 };
   let usd = 0, base = 0, extra = 0;
   for (const b of rows) {
     const t = sum(b); usd += t.usd; base += t.base; extra += t.extra;
@@ -407,6 +422,7 @@ function draw() {
       x.usd += m.usd; x.steps += m.steps; addC(x.cache, m.cache); addC(cache, m.cache);
       s.models[f] = (s.models[f] || 0) + m.usd;
     }
+    if (b.awake) { awake.nudges += b.awake.nudges; awake.usd += b.awake.usd; awake.saved += b.awake.saved; }
     for (const [k, a] of Object.entries(b.agents || {})) { const g = agents[k] || (agents[k] = { runs: 0, routed: 0, respawned: 0, usd: 0, base: 0 }); for (const f in g) g[f] += a[f] || 0; }
   }
   $('spent').textContent = money(usd);
@@ -418,6 +434,7 @@ function draw() {
   $('hit').textContent = h === null ? '\\u2013' : h + '%';
   const saved = Math.max(0, base - usd + extra);
   $('split').textContent = rows.length ? 'Saved ' + money(saved) + ' on steps the router made cheaper. Spent ' + money(extra) + ' extra on stronger steps and on its own Haiku calls.' : '';
+  $('awake').textContent = awake.nudges ? 'Keep awake: ' + awake.nudges + (awake.nudges === 1 ? ' nudge' : ' nudges') + ' cost ' + money(awake.usd) + ' and saved ' + money(awake.saved) + ' of re-reading idle chats.' : '';
   const ss = Object.entries(sessions).sort((a, b) => b[1].last - a[1].last).slice(0, 60);
   $('sessions').innerHTML = ss.length ? ss.map(([id, s]) => '<tr><td class="label" title="' + esc(s.label) + '">' + (esc(s.label) || '<span class="muted">untitled</span>') + (id === D.session ? '<span class="now">this chat</span>' : '') + '</td><td class="opt">' + esc(s.project) + '</td><td class="opt muted">' + new Date(s.last).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) + '</td><td class="opt">' + band(s.models, 'mini') + '</td><td class="n opt">' + s.turns +'</td><td class="n">' + money(s.usd) + '</td><td class="n muted opt">' + money(s.base) + '</td><td class="n">' + diff(s.usd, s.base) + '</td></tr>').join('') : empty(8, 'No sessions in this range. Pick a longer range above.');
   const ps = Object.entries(projects).sort((a, b) => b[1].usd - a[1].usd);
@@ -433,7 +450,7 @@ function draw() {
 // This chat's turns, newest first: they come from the session, not the ledger, so the range does not filter them.
 if (D.turns.length) {
   $('chat').hidden = false;
-  $('turns').innerHTML = D.turns.slice().reverse().map(t => '<tr><td>' + esc(t.who === 'main' ? t.cls : t.who) + '</td><td><span class="sw m-' + fam(t.model) + '-' + step(t.effort) + '"></span>' + esc(D.names[t.model] || t.model) + '</td><td class="opt">' + esc(t.effort || '\\u2013') + (t.picker && t.picker !== t.effort && t.who === 'main' ? ' <span class="muted">(you picked ' + esc(t.picker) + ')</span>' : '') + '</td><td class="n opt">' + (t.cache && hit(t.cache) !== null ? hit(t.cache) + '%' : '<span class="muted">&ndash;</span>') + '</td><td class="n">' + cents(t.usd) + '</td><td class="n muted opt">' + cents(t.baseUsd) + '</td><td class="n">' + diff(t.usd, t.baseUsd, cents) + '</td></tr>').join('');
+  $('turns').innerHTML = D.turns.slice().reverse().map(t => '<tr><td>' + esc(t.who === 'main' ? t.cls : t.who === 'awake' ? 'keep awake' : t.who) + '</td><td><span class="sw m-' + fam(t.model) + '-' + step(t.effort) + '"></span>' + esc(D.names[t.model] || t.model) + '</td><td class="opt">' + esc(t.effort || '\\u2013') + (t.picker && t.picker !== t.effort && t.who === 'main' ? ' <span class="muted">(you picked ' + esc(t.picker) + ')</span>' : '') + '</td><td class="n opt">' + (t.cache && hit(t.cache) !== null ? hit(t.cache) + '%' : '<span class="muted">&ndash;</span>') + '</td><td class="n">' + cents(t.usd) + '</td><td class="n muted opt">' + cents(t.baseUsd) + '</td><td class="n">' + diff(t.usd, t.baseUsd, cents) + '</td></tr>').join('');
 }
 $('range').addEventListener('click', e => { const r = e.target.closest('button'); if (!r) return; pick = r.dataset.r; try { localStorage.setItem('router-range', pick) } catch (x) {} draw() });
 draw();

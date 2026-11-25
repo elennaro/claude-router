@@ -3,8 +3,8 @@ import { expect, mock, test } from 'claude-code/testing'
 import {
   BUILTIN, CLASS_LABELS, adviseSwitch, effortRank, rank, agentTier, autoModel, needsSecondSample, briefHash, briefTier, stepUp, classifyByRules, costUsd, firstModel, isCacheBreak, isContinuation, merge, parseJev, parseSessionCheck, parseMood, raiseEffort, moodPrompt, longRun, readLabel, spawnPick, turnEffort, withoutRouter, rebuildUsd, stepUsd, switchMath, remainingSteps, quickPays, type Life, sessionCheckSystem, briefPaths, sizeOf, bucket, estTokens, keepsRaw, pasteModel, pasteSystem, offloaded, cacheSheet, coldMath, awakeNext, AWAKE_TEXT, isNudgeReply,
 } from '../hooks/policy'
-import { addWhy, whyWords, boardHtml, cacheStrength, cardLayout, hitPct, svgSize, switchCost, netWords, savedUsd, shade, statsSvg, withMode } from '../hooks/view'
-import { RUNNER, type Step, labelOf, livesOf } from '../hooks/db'
+import { addWhy, cacheClock, minutesLeft, whoWords, whyWords, boardHtml, cacheStrength, cardLayout, hitPct, svgSize, switchCost, netWords, savedUsd, shade, statsSvg, withMode } from '../hooks/view'
+import { RUNNER, type Step, bucketsOf, labelOf, livesOf } from '../hooks/db'
 import { shield } from '../hooks/guard'
 
 test("the router's own error never blocks the person's work: the event passes once, one warning", async () => {
@@ -1108,8 +1108,8 @@ test('cache sheet and reasons: what losing the cache costs, and where saved and 
   let by = addWhy(undefined, 'agents', 2, 0)
   by = addWhy(by, 'effort', 0, 0.1)
   by = addWhy(by, 'router', 0, 0.004) // under half a cent: not worth a word
-  expect(whyWords(by)).toEqual({ value: 'saved $2.00 on subagents', sub: 'extra: $0.10 on effort' })
-  expect(whyWords(addWhy(by, 'agents', -2, 1))).toEqual({ value: 'nothing saved', sub: 'extra: $1.00 on subagents, $0.10 on effort' }) // a take-back
+  expect(whyWords(by)).toEqual({ value: 'Subagents', sub: 'saved $2.00 · +$0.10 effort' })
+  expect(whyWords(addWhy(by, 'agents', -2, 1))).toEqual({ value: 'Nothing saved', sub: '+$1.00 subagents' }) // a take-back
   expect(whyWords(undefined).value).toBe('Nothing moved yet')
 })
 
@@ -1128,8 +1128,9 @@ test('with a real cache the widget and the Stats card show its size, what losing
   const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
   await band.press({ key: 'router-stats' })
   const card = await band.find({ type: 'Svg' })
-  expect(card?.props.alt).toContain('Cache 100K tokens, losing it costs $0.80')
-  expect(card?.props.alt).toMatch(/Where it went .*extra: \$[0-9.]+ on effort/) // engineering raised Opus to high
+  expect(card?.props.alt).toContain('Cache 100K tokens, warm 60 min · rebuild $0.80')
+  expect([cacheClock(0, 5), cacheClock(1_000, 1_000 + 20 * 60_000), cacheClock(1_000, 1_000 + 61 * 60_000), minutesLeft(1_000, 1_000 + 20 * 60_000, 50)]).toEqual(['', 'warm 40 min', 'expired', 30])
+  expect(card?.props.alt).toMatch(/Where it went .*\+\$[0-9.]+ effort/) // engineering raised Opus to high
   expect(await band.find({ type: 'Text', text: /Switching model writes the chat once on the new one: Haiku \$0\.10, Sonnet \$0\.40, Fable \$1\.60\. Compacting: about \$0\.60\. Keeping it warm while you are away: about \$0\.02 a nudge/ })).toBeTruthy()
   await band.unmount()
 })
@@ -1941,4 +1942,12 @@ test('Settings: model and effort choices carry their colors as children (a label
   expect((await band.find({ key: 'router-model-auto' }))?.props.label).toBe('Auto') // Auto has no color
   await band.press({ key: 'router-model-sonnet' }) // still a button
   await band.unmount()
+})
+
+test('Board: keep-awake rows add up as their own line, never as a subagent type', () => {
+  const [b] = bucketsOf([[{ day: 'd', session: 's', project: 'p', label: 'l', turns: 3, first: 0, last: 1 }], [{ day: 'd', session: 's', who: 'awake', model: 'opus', steps: 2, usd: 0.08, base: 0, extra: 0.08 }, { day: 'd', session: 's', who: 'awake', model: 'opus', steps: 0, usd: 0, base: 1.56, extra: 0 }], []])
+  expect(b!.awake).toEqual({ nudges: 2, usd: 0.08, saved: 1.56 })
+  expect(b!.agents).toBeUndefined()
+  expect([whoWords({ who: 'awake', cls: 'default' }), whoWords({ who: 'main', cls: 'code' }), whoWords({ who: 'Explore', cls: '-' })]).toEqual(['keep awake', 'code', 'Explore'])
+  expect(boardHtml([b!], [], 's', 'Opus', 'now', 'then')).toContain("$('awake').textContent")
 })
