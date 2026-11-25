@@ -91,6 +91,12 @@ Newest at the bottom. Each entry: what we did, what happened, what we learned. N
     already deduplicated by message id across files; the quick replay script didn't. Lesson: count each model step
     once, by its message id across every file, and cross-check any new spend figure against the existing checker
     before it reaches a plan.
+24. **A sign where a word was needed.** The Board showed the net against no router as "+$30.24", meaning the router
+    cost $30 more. The owner read it as $30 saved, then saw the month show "+$28" and concluded the savings math was
+    broken: how can a month save less than the week inside it? The math was right (the extra day before the week had
+    saved $2, which lowered the overspend), but the display made a correct number read backwards, and the band already
+    said "saved $x" or "$x extra" in words. Lesson: a figure that can go either way says which way in words, the same
+    words on every surface, and a check enforces it (ui.check now fails on a bare sign).
 
 ## Right moves
 

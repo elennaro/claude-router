@@ -1,7 +1,19 @@
 # FAQ
 
 **The band says "$x extra". Is the router wasting money?**
-Not necessarily. Extra is spend above no router: a stronger model you pressed a button for, the classifier's own Haiku calls, or keep-awake nudges. Stats → *Where it went* names the biggest extra. Saved and extra are summed apart on purpose.
+Not necessarily. Extra is spend above no router: a raised effort on a hard or unhappy task, a stronger model you pressed a button for, the classifier's own Haiku calls, or keep-awake nudges. Stats → *Where it went* names the biggest extra. Saved and extra are summed apart on purpose.
+
+**The week shows a bigger saving than the month around it. How?**
+The Board's net is saved minus extra. If the extra days are in the month but not the week, the month's net is smaller. Saved alone only grows with a longer range. The line under the totals shows saved and extra apart. More in [Stats and the Board](Stats-and-Board.md).
+
+**Can I see savings as a share of my plan instead of dollars?**
+Settings → *Units* → **Plan %**. It is priced from what this machine spent per point of your weekly limit this week, so spend on other devices makes it read high.
+
+**I turned routing on in one session, but another still says it's off.**
+Other open sessions pick up the change within about 10 seconds, or on their next prompt.
+
+**How do I stop keep awake for one chat only?**
+Settings → *This chat* → *Keep awake* → Off, or **Stop for this chat** on the away report.
 
 **It moved my chat to Sonnet. I want Opus back.**
 Press **Undo** on "Picked X for this chat", pick Opus in Settings → *Model*, or say "use opus from now on".

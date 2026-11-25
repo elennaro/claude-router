@@ -48,6 +48,21 @@ real usage. Per-move detail is in [LESSONS.md](LESSONS.md); the numbers come fro
    reader and researcher subagents, keep awake (a hidden nudge every 50 minutes; resumes after an hour idle were about
    a fifth of all spend), and a per-chat *Compact at* point (a 300K window would have cut main-chat spend by about 7%).
    The first replay overstated everything about five times (wrong move 23).
+10. **Settling the cache features (0.8.5 to 0.8.8).** A *Compact at* slider up to the model's limit, coloured green
+   at the cheapest point and red where compactions get too frequent or dear, which can write the point into Claude
+   Code's settings. A UI kit with its own checks (text fit, contrast, overlap at three widths, both themes) that every
+   surface now passes. Keep awake learned to stop: a chat that is clearly finished gets no nudge (one Haiku read of the
+   last exchange), and once 20 idle stretches have closed, the router knows how likely people are to come back at each
+   hour of the day and nudges only while the expected saving beats the nudges' cost (backward induction over the
+   nudges left; a rebuild costs about 40 reads on Opus and Sonnet, 80 on Fable). Learned from the machine's own use,
+   not from the author's hours. Also: keep awake off for one chat, routing turned on in one session reaches the others
+   within about 10 seconds, and a units switch shows savings as a share of the plan's weekly limit, priced from what
+   this machine spent per point this week.
+11. **The +$30 that read as a saving (2026-11-25).** The owner saw the Board say "+$33" for a week and "+$22" for
+   the month around it, read both as savings, and concluded the math was broken. The figures were net overspend: the
+   router had spent more than no router that week, and the day before it had saved a little. The math held up
+   against Claude Code's own transcripts (2% apart over 8 days); the display didn't. The Board now says "saved $x" or
+   "$x extra" in words, like the band (wrong move 24). The same check showed the real result for the article below.
 
 ## How the savings are measured
 
@@ -107,10 +122,36 @@ What the numbers can and cannot say:
   evidence for quality, the ledger is not.
 - Prices are API list prices. On a subscription plan they track usage against limits, not money.
 
+## Live ledger, first 8 days (2026-11-18 to 2026-11-25)
+
+One machine, the author's real work, all sessions. Source: `router.db` summed by day, and `check-savings.mjs 8`.
+
+| Figure | Value |
+|---|---|
+| Spent (API list prices) | $1,898 |
+| No router, same tokens | $1,867 |
+| Net | **$31 extra, about 1.7% more than no router** |
+| Saved (steps the router made cheaper) | $73 |
+| Extra (stronger steps, its own Haiku calls, nudges) | $104, of which $96 in the main chat on Opus |
+| Router's own classifier calls | $0.34 |
+| Ledger vs Claude Code's transcripts | $1,906 vs $1,867, 2% apart |
+| Main-chat cache writes that were 1-hour entries | 212M of 215M tokens (99%), as the price code assumes |
+
+What it means:
+- The ledger is trustworthy to a few percent. The one session far off (+26%) was the checker's cut-off on 2026-11-18,
+  the day two router copies ran (known limit above); per day after that, it matched within about 5%.
+- The router does not yet spend less than no router in real use. Most extra comes from raising effort on Opus main-chat
+  turns (a high step costs about 1.4x a medium one). Effort raises keep the cache and buy quality in the evals, but
+  the ledger keeps no effort per row, so it cannot yet say which classes or raises the $96 bought. That is the next
+  step: live per-class statistics, anonymized, to tune which raises pay.
+- Compared with the eval's 1.21x spend, real use came out at 1.02x: closer to the baseline than the evals predicted.
+
 ## Numbers to quote (with their source)
 
 - Evals: 283 cases; answers +15.6% better than always Opus medium at 1.21x its spend (`evals/results/report.md`).
 - Acceptance: Opus medium 85% accepted, Sonnet medium 80%, same 75 cases; per class in `evals/results/accept-report.md`.
 - Ledger before the fixes, 2026-11-19: spend and the no-router figure within 0.3% of each other (the router had
   just started moving work off Opus).
+- Live ledger, 8 days of real work: $1,898 spent against $1,867 with no router (1.7% more), $73 saved and $104 extra;
+  ledger and transcripts 2% apart (section above).
 - Eval spend for the whole project: a few hundred dollars at API prices (`evals/work/spend.jsonl`).
