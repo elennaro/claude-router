@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import {
-  BUILTIN, CLASS_LABELS, adviseSwitch, effortRank, rank, agentTier, autoModel, needsSecondSample, briefHash, briefTier, stepUp, classifyByRules, costUsd, firstModel, isCacheBreak, isContinuation, merge, parseJev, parseSessionCheck, parseMood, raiseEffort, moodPrompt, longRun, readLabel, spawnPick, turnEffort, withoutRouter, rebuildUsd, stepUsd, switchMath, remainingSteps, quickPays, type Life, sessionCheckSystem, briefPaths, sizeOf, bucket, estTokens, keepsRaw, pasteModel, pasteSystem, offloaded, cacheSheet, coldMath, awakeNext, AWAKE_TEXT, isNudgeReply,
+  BUILTIN, CLASS_LABELS, adviseSwitch, effortRank, rank, agentTier, autoModel, needsSecondSample, briefHash, briefTier, stepUp, classifyByRules, costUsd, firstModel, isCacheBreak, isContinuation, merge, parseJev, parseSessionCheck, parseMood, raiseEffort, moodPrompt, longRun, readLabel, spawnPick, turnEffort, withoutRouter, rebuildUsd, stepUsd, switchMath, remainingSteps, quickPays, type Life, sessionCheckSystem, briefPaths, sizeOf, bucket, estTokens, keepsRaw, pasteModel, pasteSystem, offloaded, cacheSheet, coldMath, awakeNext, AWAKE_TEXT, isNudgeReply, compactStepUsd, cheapestPoint,
 } from '../hooks/policy'
 import { addWhy, cacheClock, minutesLeft, whoWords, whyWords, boardHtml, cacheStrength, cardLayout, hitPct, svgSize, switchCost, netWords, savedUsd, shade, statsSvg, withMode } from '../hooks/view'
 import { RUNNER, type Step, bucketsOf, labelOf, livesOf } from '../hooks/db'
@@ -291,7 +291,7 @@ async function end($: any) {
   await $.session.end({ reason: 'other', sessionId: 'sess-1', resume: { sessionId: 'sess-1' } })
 }
 
-function wire(on: any, opts: { batches?: Array<Array<Step>>; runFails?: boolean; store?: Map<string, unknown>; haiku?: string | ((e: { system?: string }) => string); tokens?: number; model?: string; messages?: Array<unknown>; ownClock?: boolean; sent: Array<unknown>; asked?: { n: number }; lines?: Array<string | undefined>; opened?: Array<unknown>; surfaces?: Array<string>; files?: Record<string, string>; models?: Array<string>; read?: number; write?: number; select?: (sql: string) => Array<unknown>; argv?: Array<Array<string>>; nudges?: Array<{ text: string }> }) {
+function wire(on: any, opts: { batches?: Array<Array<Step>>; runFails?: boolean; store?: Map<string, unknown>; haiku?: string | ((e: { system?: string }) => string); tokens?: number; model?: string; messages?: Array<unknown>; ownClock?: boolean; sent: Array<unknown>; asked?: { n: number }; lines?: Array<string | undefined>; opened?: Array<unknown>; surfaces?: Array<string>; files?: Record<string, string>; models?: Array<string>; read?: number; write?: number; select?: (sql: string) => Array<unknown>; argv?: Array<Array<string>>; nudges?: Array<{ text: string }>; window?: number }) {
   on('env.get', (_: unknown, e: { name: string }) => ({ value: e.name === 'USERPROFILE' ? '/home' : undefined }))
   on('session.root', () => ({ value: '/proj' }))
   on('session.id', () => ({ value: 'sess-1' }))
@@ -335,7 +335,7 @@ function wire(on: any, opts: { batches?: Array<Array<Step>>; runFails?: boolean;
   on('prompt.submit', (_: unknown, e: { text: string; origin?: { kind: string } }) => { if (e.origin?.kind === 'plugin') opts.nudges?.push(e); return { text: e.text } })
   on('model.complete', (_: unknown, e: { system?: string }) => { opts.asked && opts.asked.n++; return { value: { isAnswered: true, text: (typeof opts.haiku === 'function' ? opts.haiku(e) : opts.haiku) ?? 'default 0.9', usage: USAGE } } })
   // tokens set = a chat already under way (no first-prompt pick); unset = a new chat
-  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200_000, ...(opts.tokens === undefined ? {} : { tokens: opts.tokens }) }, rateLimits: [] } }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: opts.window ?? 200_000, ...(opts.tokens === undefined ? {} : { tokens: opts.tokens }) }, rateLimits: [] } }))
   on('turn.step', async function* (_: unknown, e: { effort?: unknown; model: string; turnId: string; index: number }) {
     opts.sent.push(e.effort)
     opts.models?.push(e.model)
@@ -1318,6 +1318,76 @@ test('a nudge is dropped when the chat was just used, and a nudge that finds the
   await step($, 'medium')
   expect(store.get('features')).toEqual({ autoSwitch: true, sizing: true, pastes: true, awake: false })
   expect(toasts.some(t => t.includes('keep-awake found the cache already gone'))).toBe(true)
+})
+
+test('auto-compact cost: the cheapest point follows the chat\'s growth and stays under Claude Code\'s own window', () => {
+  const at = (p: number, g: number) => Math.round(compactStepUsd('opus', p, g) * 1000)
+  // 5K a step: half-way reads plus one compaction (read 300K, 5K out, write 116K) spread over 187K/5K steps
+  expect([at(200_000, 5_000), at(300_000, 5_000), at(400_000, 5_000)]).toEqual([93, 70, 71])
+  expect(cheapestPoint('opus', 5_000, 1_000_000)).toBe(300_000)
+  expect(cheapestPoint('opus', 20_000, 1_000_000)).toBe(600_000) // a fast-growing chat compacts less often
+  expect(cheapestPoint('opus', 5_000, 300_000)).toBe(200_000) // only points under the engine's window
+  expect(cheapestPoint('opus', 0, 1_000_000)).toBeUndefined() // a chat that doesn't grow never needs it
+  expect(compactStepUsd('opus', 100_000, 5_000)).toBe(Infinity) // a point under what compaction leaves
+})
+
+test('auto-compact: the chat compacts after the turn that passes its own point, not before, not for a subagent; Clear resets it', async (engine, on) => {
+  const $ = engine as any
+  const toasts: Array<string> = []
+  const compacted: Array<unknown> = []
+  const opts = { sent: [] as Array<unknown>, read: 250_000, write: 0, ownClock: true, window: 1_000_000 }
+  wire(on, opts)
+  const clock = mock.clock(on, { now: 1_000 })
+  on('ui.toast', (_: unknown, e: { text: string }) => { toasts.push(e.text); return { value: undefined } })
+  on('session.compact', (_: unknown, e: unknown) => { compacted.push(e); return { messages: [{ role: 'user', text: 'summary', toolUses: [] }] } })
+  on('turn.complete', () => ({ text: '' }))
+  const done = async (agentId?: string) => { await $.turn.complete({ turnId: 't', answer: '', durationMs: 1, isAborted: false, reason: 'answer', ...(agentId ? { agentId } : {}) }); await clock.advance(1_000) }
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await band.press({ key: 'router-settings' })
+  await band.press({ key: 'router-compact-300000' })
+  await step($, 'medium')
+  await done()
+  expect(compacted.length).toBe(0) // 250K: under the point
+  opts.read = 310_000
+  await step($, 'medium')
+  await done('a1')
+  expect(compacted.length).toBe(0) // a subagent's run ending mid-turn: the main turn still runs
+  await done()
+  expect(compacted.length).toBe(1)
+  expect(toasts.some(t => t.includes('compacted this chat at 310K (your point: 300K)'))).toBe(true)
+  await done()
+  expect(compacted.length).toBe(1) // the next step tells the new size; nothing to do meanwhile
+  await band.press({ key: 'router-compact-off' })
+  await step($, 'medium')
+  await done()
+  expect(compacted.length).toBe(1) // Claude Code's own window again
+  await band.unmount()
+})
+
+test('auto-compact Settings: the cheapest point and the costs show once the chat has grown a few steps; the default goes into settings.json, other keys kept', async (engine, on) => {
+  const $ = engine as any
+  const files: Record<string, string> = { '/home/.claude/routing.json': ROUTING, '/home/.claude/settings.json': '{"model":"opus"}' }
+  const opts = { sent: [] as Array<unknown>, files, read: 150_000, write: 0, window: 1_000_000 }
+  wire(on, opts)
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await band.press({ key: 'router-settings' })
+  expect(await band.find({ type: 'Text', text: /The cheapest point shows after a few steps/ })).toBeTruthy()
+  expect(await band.find({ key: 'router-compact-default-set' })).toBeFalsy() // no point picked: nothing to make default
+  for (const r of [150_000, 155_000, 160_000, 165_000]) { opts.read = r; await step($, 'medium') }
+  await band.press({ key: 'router-settings' })
+  await band.press({ key: 'router-settings' })
+  expect((await band.find({ key: 'router-compact-300000' }))?.props.label).toBe('300K, cheapest') // 5K a step on Opus
+  expect((await band.find({ key: 'router-compact-200000' }))?.props.label).toBe('200K')
+  expect(await band.find({ type: 'Text', text: /grows about 5K a step; a step reads \$0\.03 now, and compacting at 300K averages about \$0\.07 a step/ })).toBeTruthy()
+  await band.press({ key: 'router-compact-400000' })
+  await band.press({ key: 'router-compact-default-set' })
+  expect(JSON.parse(files['/home/.claude/settings.json']!)).toEqual({ model: 'opus', autoCompactWindow: 400_000 })
+  files['/home/.claude/settings.json'] = '{ broken'
+  await band.press({ key: 'router-compact-default-set' })
+  expect(files['/home/.claude/settings.json']).toBe('{ broken') // never overwrite a file it can't read
+  await band.unmount()
 })
 
 test('with keep-awake off, once the cache lapses the band offers to compact first, with the costs; a prompt or Keep clears it', async (engine, on) => {
