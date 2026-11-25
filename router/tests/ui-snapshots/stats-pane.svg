@@ -1,0 +1,344 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="360" height="604" viewBox="0 0 360 604">
+<style>.l,.s{fill:#73726c;font:12px -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif}.l,.s,.v{pointer-events:none}.v{fill:#1f1e1d;font:600 18px -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif}.d{stroke:#1f1e1d;stroke-opacity:.12}.v.x{fill:#c15f3c}.c{fill:#1f1e1d}.hit{fill:transparent}@media (prefers-color-scheme:dark){.l,.s{fill:#a3a29b}.v{fill:#ecebe6}.d{stroke:#fff;stroke-opacity:.14}.v.x{fill:#e5906f}.c{fill:#ecebe6}}.m-haiku-0{fill:#a2b86d}.m-haiku-1{fill:#7A9A2E}.m-haiku-2{fill:#556c20}.m-haiku-3{fill:#374515}.m-sonnet-0{fill:#5fb1c2}.m-sonnet-1{fill:#1A8FA8}.m-sonnet-2{fill:#126476}.m-sonnet-3{fill:#0c404c}.m-opus-0{fill:#e4a089}.m-opus-1{fill:#D97757}.m-opus-2{fill:#98533d}.m-opus-3{fill:#623627}.m-fable-0{fill:#cd7591}.m-fable-1{fill:#B83A62}.m-fable-2{fill:#812945}.m-fable-3{fill:#531a2c}.m-other-0{fill:#abaaa5}.m-other-1{fill:#87867f}.m-other-2{fill:#5f5e59}.m-other-3{fill:#3d3c39}@media (prefers-color-scheme:dark){.m-haiku-0{fill:#b9cc90}.m-haiku-1{fill:#80A236}.m-haiku-2{fill:#5c7527}.m-haiku-3{fill:#40511b}.m-sonnet-0{fill:#86c4d2}.m-sonnet-1{fill:#2394AE}.m-sonnet-2{fill:#196b7d}.m-sonnet-3{fill:#124a57}.m-opus-0{fill:#e6b599}.m-opus-1{fill:#D27946}.m-opus-2{fill:#975732}.m-opus-3{fill:#693d23}.m-fable-0{fill:#dc95b1}.m-fable-1{fill:#BF3F72}.m-fable-2{fill:#8a2d52}.m-fable-3{fill:#602039}.m-other-0{fill:#ccccc8}.m-other-1{fill:#a3a29b}.m-other-2{fill:#757570}.m-other-3{fill:#52514e}.m-haiku-2{stroke:#ffffff73;stroke-width:1}.m-haiku-3{stroke:#ffffff73;stroke-width:1}.m-sonnet-2{stroke:#ffffff73;stroke-width:1}.m-sonnet-3{stroke:#ffffff73;stroke-width:1}.m-opus-2{stroke:#ffffff73;stroke-width:1}.m-opus-3{stroke:#ffffff73;stroke-width:1}.m-fable-2{stroke:#ffffff73;stroke-width:1}.m-fable-3{stroke:#ffffff73;stroke-width:1}.m-other-2{stroke:#ffffff73;stroke-width:1}.m-other-3{stroke:#ffffff73;stroke-width:1}}</style>
+<g>
+<title>This chat: saved $2.35 · $2.96 saved, $0.61 extra</title>
+<rect class="hit" x="0" y="0" width="164" height="72"/>
+</g>
+<text class="l" x="0" y="16">This chat</text>
+<text class="v" x="0" y="42">saved $2.35</text>
+<text class="s" x="0" y="60">$2.96 saved, $0.61 extra</text>
+<line class="d" x1="180" y1="8" x2="180" y2="64"/>
+<g>
+<title>This project: $12.43 extra · 18% more since 3 Nov</title>
+<rect class="hit" x="196" y="0" width="164" height="72"/>
+</g>
+<text class="l" x="196" y="16">This project</text>
+<text class="v x" x="196" y="42">$12.43 extra</text>
+<text class="s" x="196" y="60">18% more since 3 Nov</text>
+<g>
+<title>Now: Sonnet xhigh (you asked) · task: architecture-review</title>
+<rect class="hit" x="0" y="72" width="164" height="72"/>
+</g>
+<text class="l" x="0" y="88">Now</text>
+<rect class="m-sonnet-3" x="0" y="101" width="12" height="12" rx="3"/>
+<text class="v" x="18" y="114">Sonnet xhigh…</text>
+<text class="s" x="0" y="132">task: architecture-review</text>
+<line class="d" x1="180" y1="80" x2="180" y2="136"/>
+<g>
+<title>Spent this chat: $7.10 · cache hit 99.4%</title>
+<rect class="hit" x="196" y="72" width="164" height="72"/>
+</g>
+<text class="l" x="196" y="88">Spent this chat</text>
+<text class="v" x="196" y="114">$7.10</text>
+<text class="s" x="196" y="132">cache hit 99.4%</text>
+<g>
+<title>Cache: 184K tokens · warm 37 min · rebuild $2.76</title>
+<rect class="hit" x="0" y="144" width="164" height="72"/>
+</g>
+<text class="l" x="0" y="160">Cache</text>
+<text class="v" x="0" y="186">184K tokens</text>
+<text class="s" x="0" y="204">warm 37 min · rebuild $2.…</text>
+<line class="d" x1="180" y1="152" x2="180" y2="208"/>
+<g>
+<title>Where it went: Model moves · saved $1.90 · +$0.42 effort</title>
+<rect class="hit" x="196" y="144" width="164" height="72"/>
+</g>
+<text class="l" x="196" y="160">Where it went</text>
+<text class="v" x="196" y="186">Model moves</text>
+<text class="s" x="196" y="204">saved $1.90 · +$0.42 effo…</text>
+<g>
+<title>Keep awake: saved $3.10 · nudge in 41 min · nudges $0.18</title>
+<rect class="hit" x="0" y="216" width="164" height="72"/>
+</g>
+<text class="l" x="0" y="232">Keep awake</text>
+<text class="v" x="0" y="258">saved $3.10</text>
+<text class="s" x="0" y="276">nudge in 41 min · nudges …</text>
+<line class="d" x1="0" y1="296.5" x2="360" y2="296.5"/>
+<text class="l" x="0" y="320">Models this chat</text>
+<text class="s" x="360" y="320" text-anchor="end">5 turns, 3 agents re-routed</text>
+<g>
+<title>Haiku low: $0.42, 6% of spend, 11 steps, cache hit 96%</title>
+<rect class="hit" x="0.0" y="328" width="20.8" height="20"/>
+<rect class="m-haiku-0" x="0.0" y="332" width="20.8" height="12" rx="3"/>
+</g>
+<g>
+<title>Sonnet high: $1.37, 19% of spend, 8 steps, cache hit 95%</title>
+<rect class="hit" x="22.8" y="328" width="67.9" height="20"/>
+<rect class="m-sonnet-2" x="22.8" y="332" width="67.9" height="12" rx="3"/>
+</g>
+<g>
+<title>Opus medium: $4.12, 58% of spend, 14 steps, cache hit 93%</title>
+<rect class="hit" x="92.7" y="328" width="204.3" height="20"/>
+<rect class="m-opus-1" x="92.7" y="332" width="204.3" height="12" rx="3"/>
+</g>
+<g>
+<title>Opus high: $0.88, 12% of spend, 3 steps, cache hit 95%</title>
+<rect class="hit" x="299.0" y="328" width="43.6" height="20"/>
+<rect class="m-opus-2" x="299.0" y="332" width="43.6" height="12" rx="3"/>
+</g>
+<g>
+<title>Fable max: $0.31, 4% of spend, 1 step, cache hit 94%</title>
+<rect class="hit" x="344.6" y="328" width="15.4" height="20"/>
+<rect class="m-fable-3" x="344.6" y="332" width="15.4" height="12" rx="3"/>
+</g>
+<rect class="m-haiku-1" x="0" y="355" width="10" height="10" rx="2"/>
+<text class="s" x="14" y="364">Haiku 6%</text>
+<rect class="m-sonnet-1" x="82.8" y="355" width="10" height="10" rx="2"/>
+<text class="s" x="96.8" y="364">Sonnet 19%</text>
+<rect class="m-opus-1" x="178.8" y="355" width="10" height="10" rx="2"/>
+<text class="s" x="192.8" y="364">Opus 70%</text>
+<rect class="m-fable-1" x="261.6" y="355" width="10" height="10" rx="2"/>
+<text class="s" x="275.6" y="364">Fable 4%</text>
+<g>
+<title>Effort: a darker color means more effort</title>
+<text class="s" x="0" y="384">effort low</text>
+<rect class="m-other-0" x="64" y="375" width="10" height="10" rx="2"/>
+<rect class="m-other-1" x="76" y="375" width="10" height="10" rx="2"/>
+<rect class="m-other-2" x="88" y="375" width="10" height="10" rx="2"/>
+<rect class="m-other-3" x="100" y="375" width="10" height="10" rx="2"/>
+<text class="s" x="114" y="384">max</text>
+</g>
+<line class="d" x1="0" y1="412.5" x2="360" y2="412.5"/>
+<text class="l" x="0" y="436">Cost per turn vs no router</text>
+<text class="s" x="360" y="436" text-anchor="end">hover for numbers</text>
+<text class="s" x="0" y="460">more</text>
+<text class="s" x="0" y="518">less</text>
+<line class="d" x1="44" y1="484.5" x2="360" y2="484.5"/>
+<g>
+<title>scoped-code: Opus medium. $0.026 spent, $0.020 with no router (+$0.006). Cache hit 98%</title>
+<rect class="hit" x="44.0" y="448" width="10.2" height="72"/>
+<rect class="m-opus-1" x="44.0" y="479.3" width="10.2" height="4.7" rx="1.5"/>
+</g>
+<g>
+<title>Cache hit 98%</title>
+<rect class="c" x="44.0" y="575.1" width="10.2" height="12.9" rx="1.5" fill-opacity="0.72"/>
+</g>
+<g>
+<title>explore: Haiku low. $0.17 spent, $0.22 with no router (−$0.055). Cache hit 98%</title>
+<rect class="hit" x="56.2" y="448" width="10.2" height="72"/>
+<rect class="m-haiku-0" x="56.2" y="485.0" width="10.2" height="14.1" rx="1.5"/>
+</g>
+<g>
+<title>Cache hit 98%</title>
+<rect class="c" x="56.2" y="575.2" width="10.2" height="12.8" rx="1.5" fill-opacity="0.72"/>
+</g>
+<g>
+<title>code-review: Sonnet high. $0.27 spent, $0.42 with no router (−$0.15). Cache hit 98%</title>
+<rect class="hit" x="68.5" y="448" width="10.2" height="72"/>
+<rect class="m-sonnet-2" x="68.5" y="485.0" width="10.2" height="23.1" rx="1.5"/>
+</g>
+<g>
+<title>Cache hit 98%</title>
+<rect class="c" x="68.5" y="575.2" width="10.2" height="12.8" rx="1.5" fill-opacity="0.72"/>
+</g>
+<g>
+<title>router:document-reader: Opus high. $0.039 spent, $0.070 with no router (−$0.032). Cache hit 98%</title>
+<rect class="hit" x="80.7" y="448" width="10.2" height="72"/>
+<rect class="m-opus-2" x="80.7" y="485.0" width="10.2" height="10.7" rx="1.5"/>
+</g>
+<g>
+<title>Cache hit 98%</title>
+<rect class="c" x="80.7" y="575.2" width="10.2" height="12.8" rx="1.5" fill-opacity="0.72"/>
+</g>
+<g>
+<title>scoped-code: Haiku medium. $0.12 spent, $0.27 with no router (−$0.15). Cache hit 2%</title>
+<rect class="hit" x="92.9" y="448" width="10.2" height="72"/>
+<rect class="m-haiku-1" x="92.9" y="485.0" width="10.2" height="23.2" rx="1.5"/>
+</g>
+<g>
+<title>Cache hit 2%</title>
+<rect class="c" x="92.9" y="585.9" width="10.2" height="2.1" rx="1.5" fill-opacity="0.30"/>
+</g>
+<g>
+<title>explore: Sonnet medium. $0.61 spent, $0.47 with no router (+$0.14). Cache hit 98%</title>
+<rect class="hit" x="105.2" y="448" width="10.2" height="72"/>
+<rect class="m-sonnet-1" x="105.2" y="461.4" width="10.2" height="22.6" rx="1.5"/>
+</g>
+<g>
+<title>Cache hit 98%</title>
+<rect class="c" x="105.2" y="575.2" width="10.2" height="12.8" rx="1.5" fill-opacity="0.72"/>
+</g>
+<g>
+<title>code-review: Fable max. $0.030 spent, $0.12 with no router (−$0.090). Cache hit 98%</title>
+<rect class="hit" x="117.4" y="448" width="10.2" height="72"/>
+<rect class="m-fable-3" x="117.4" y="485.0" width="10.2" height="18.1" rx="1.5"/>
+</g>
+<g>
+<title>Cache hit 98%</title>
+<rect class="c" x="117.4" y="575.2" width="10.2" height="12.8" rx="1.5" fill-opacity="0.72"/>
+</g>
+<g>
+<title>router:document-reader: Opus low. $0.32 spent, $0.32 with no router (same). Cache hit 98%</title>
+<rect class="hit" x="129.6" y="448" width="10.2" height="72"/>
+<rect class="m-opus-0" x="129.6" y="482.0" width="10.2" height="2.0" rx="1.5"/>
+</g>
+<g>
+<title>Cache hit 98%</title>
+<rect class="c" x="129.6" y="575.2" width="10.2" height="12.8" rx="1.5" fill-opacity="0.72"/>
+</g>
+<g>
+<title>scoped-code: Opus medium. $0.39 spent, $0.52 with no router (−$0.13). Cache hit 98%</title>
+<rect class="hit" x="141.8" y="448" width="10.2" height="72"/>
+<rect class="m-opus-1" x="141.8" y="485.0" width="10.2" height="21.7" rx="1.5"/>
+</g>
+<g>
+<title>Cache hit 98%</title>
+<rect class="c" x="141.8" y="575.2" width="10.2" height="12.8" rx="1.5" fill-opacity="0.72"/>
+</g>
+<g>
+<title>explore: Haiku low. $0.11 spent, $0.17 with no router (−$0.059). Cache hit 98%</title>
+<rect class="hit" x="154.1" y="448" width="10.2" height="72"/>
+<rect class="m-haiku-0" x="154.1" y="485.0" width="10.2" height="14.7" rx="1.5"/>
+</g>
+<g>
+<title>Cache hit 98%</title>
+<rect class="c" x="154.1" y="575.2" width="10.2" height="12.8" rx="1.5" fill-opacity="0.72"/>
+</g>
+<g>
+<title>code-review: Sonnet high. $0.48 spent, $0.37 with no router (+$0.11). Cache hit 98%</title>
+<rect class="hit" x="166.3" y="448" width="10.2" height="72"/>
+<rect class="m-sonnet-2" x="166.3" y="463.9" width="10.2" height="20.1" rx="1.5"/>
+</g>
+<g>
+<title>Cache hit 98%</title>
+<rect class="c" x="166.3" y="575.2" width="10.2" height="12.8" rx="1.5" fill-opacity="0.72"/>
+</g>
+<g>
+<title>router:document-reader: Opus high. $0.009 spent, $0.020 with no router (−$0.011). Cache hit 98%</title>
+<rect class="hit" x="178.5" y="448" width="10.2" height="72"/>
+<rect class="m-opus-2" x="178.5" y="485.0" width="10.2" height="6.3" rx="1.5"/>
+</g>
+<g>
+<title>Cache hit 98%</title>
+<rect class="c" x="178.5" y="575.2" width="10.2" height="12.8" rx="1.5" fill-opacity="0.72"/>
+</g>
+<g>
+<title>scoped-code: Haiku medium. $0.077 spent, $0.22 with no router (−$0.14). Cache hit 98%</title>
+<rect class="hit" x="190.8" y="448" width="10.2" height="72"/>
+<rect class="m-haiku-1" x="190.8" y="485.0" width="10.2" height="22.8" rx="1.5"/>
+</g>
+<g>
+<title>Cache hit 98%</title>
+<rect class="c" x="190.8" y="575.2" width="10.2" height="12.8" rx="1.5" fill-opacity="0.72"/>
+</g>
+<g>
+<title>explore: Sonnet medium. $0.11 spent, $0.42 with no router (−$0.32). Cache hit 2%</title>
+<rect class="hit" x="203.0" y="448" width="10.2" height="72"/>
+<rect class="m-sonnet-1" x="203.0" y="485.0" width="10.2" height="33.8" rx="1.5"/>
+</g>
+<g>
+<title>Cache hit 2%</title>
+<rect class="c" x="203.0" y="585.9" width="10.2" height="2.1" rx="1.5" fill-opacity="0.30"/>
+</g>
+<g>
+<title>code-review: Fable max. $0.070 spent, $0.070 with no router (same). Cache hit 98%</title>
+<rect class="hit" x="215.2" y="448" width="10.2" height="72"/>
+<rect class="m-fable-3" x="215.2" y="482.0" width="10.2" height="2.0" rx="1.5"/>
+</g>
+<g>
+<title>Cache hit 98%</title>
+<rect class="c" x="215.2" y="575.2" width="10.2" height="12.8" rx="1.5" fill-opacity="0.72"/>
+</g>
+<g>
+<title>router:document-reader: Opus low. $0.35 spent, $0.27 with no router (+$0.081). Cache hit 98%</title>
+<rect class="hit" x="227.5" y="448" width="10.2" height="72"/>
+<rect class="m-opus-0" x="227.5" y="466.9" width="10.2" height="17.1" rx="1.5"/>
+</g>
+<g>
+<title>Cache hit 98%</title>
+<rect class="c" x="227.5" y="575.2" width="10.2" height="12.8" rx="1.5" fill-opacity="0.72"/>
+</g>
+<g>
+<title>scoped-code: Opus medium. $0.31 spent, $0.47 with no router (−$0.16). Cache hit 98%</title>
+<rect class="hit" x="239.7" y="448" width="10.2" height="72"/>
+<rect class="m-opus-1" x="239.7" y="485.0" width="10.2" height="24.4" rx="1.5"/>
+</g>
+<g>
+<title>Cache hit 98%</title>
+<rect class="c" x="239.7" y="575.2" width="10.2" height="12.8" rx="1.5" fill-opacity="0.72"/>
+</g>
+<g>
+<title>explore: Haiku low. $0.066 spent, $0.12 with no router (−$0.054). Cache hit 98%</title>
+<rect class="hit" x="251.9" y="448" width="10.2" height="72"/>
+<rect class="m-haiku-0" x="251.9" y="485.0" width="10.2" height="14.0" rx="1.5"/>
+</g>
+<g>
+<title>Cache hit 98%</title>
+<rect class="c" x="251.9" y="575.2" width="10.2" height="12.8" rx="1.5" fill-opacity="0.72"/>
+</g>
+<g>
+<title>code-review: Sonnet high. $0.14 spent, $0.32 with no router (−$0.18). Cache hit 98%</title>
+<rect class="hit" x="264.2" y="448" width="10.2" height="72"/>
+<rect class="m-sonnet-2" x="264.2" y="485.0" width="10.2" height="25.3" rx="1.5"/>
+</g>
+<g>
+<title>Cache hit 98%</title>
+<rect class="c" x="264.2" y="575.2" width="10.2" height="12.8" rx="1.5" fill-opacity="0.72"/>
+</g>
+<g>
+<title>router:document-reader: Opus high. $0.18 spent, $0.52 with no router (−$0.34). Cache hit 98%</title>
+<rect class="hit" x="276.4" y="448" width="10.2" height="72"/>
+<rect class="m-opus-2" x="276.4" y="485.0" width="10.2" height="35.0" rx="1.5"/>
+</g>
+<g>
+<title>Cache hit 98%</title>
+<rect class="c" x="276.4" y="575.2" width="10.2" height="12.8" rx="1.5" fill-opacity="0.72"/>
+</g>
+<g>
+<title>scoped-code: Haiku medium. $0.22 spent, $0.17 with no router (+$0.051). Cache hit 98%</title>
+<rect class="hit" x="288.6" y="448" width="10.2" height="72"/>
+<rect class="m-haiku-1" x="288.6" y="470.4" width="10.2" height="13.6" rx="1.5"/>
+</g>
+<g>
+<title>Cache hit 98%</title>
+<rect class="c" x="288.6" y="575.2" width="10.2" height="12.8" rx="1.5" fill-opacity="0.72"/>
+</g>
+<g>
+<title>explore: Sonnet medium. $0.37 spent, $0.37 with no router (same). Cache hit 98%</title>
+<rect class="hit" x="300.8" y="448" width="10.2" height="72"/>
+<rect class="m-sonnet-1" x="300.8" y="482.0" width="10.2" height="2.0" rx="1.5"/>
+</g>
+<g>
+<title>Cache hit 98%</title>
+<rect class="c" x="300.8" y="575.2" width="10.2" height="12.8" rx="1.5" fill-opacity="0.72"/>
+</g>
+<g>
+<title>code-review: Fable max. $0.015 spent, $0.020 with no router (−$0.005). Cache hit 2%</title>
+<rect class="hit" x="313.1" y="448" width="10.2" height="72"/>
+<rect class="m-fable-3" x="313.1" y="485.0" width="10.2" height="4.3" rx="1.5"/>
+</g>
+<g>
+<title>Cache hit 2%</title>
+<rect class="c" x="313.1" y="585.9" width="10.2" height="2.1" rx="1.5" fill-opacity="0.30"/>
+</g>
+<g>
+<title>router:document-reader: Opus low. $0.14 spent, $0.22 with no router (−$0.077). Cache hit 98%</title>
+<rect class="hit" x="325.3" y="448" width="10.2" height="72"/>
+<rect class="m-opus-0" x="325.3" y="485.0" width="10.2" height="16.7" rx="1.5"/>
+</g>
+<g>
+<title>Cache hit 98%</title>
+<rect class="c" x="325.3" y="575.2" width="10.2" height="12.8" rx="1.5" fill-opacity="0.72"/>
+</g>
+<g>
+<title>scoped-code: Opus medium. $0.23 spent, $0.42 with no router (−$0.19). Cache hit 98%</title>
+<rect class="hit" x="337.5" y="448" width="10.2" height="72"/>
+<rect class="m-opus-1" x="337.5" y="485.0" width="10.2" height="26.2" rx="1.5"/>
+</g>
+<g>
+<title>Cache hit 98%</title>
+<rect class="c" x="337.5" y="575.2" width="10.2" height="12.8" rx="1.5" fill-opacity="0.72"/>
+</g>
+<g>
+<title>explore: Haiku low. $0.091 spent, $0.070 with no router (+$0.021). Cache hit 98%</title>
+<rect class="hit" x="349.8" y="448" width="10.2" height="72"/>
+<rect class="m-haiku-0" x="349.8" y="475.3" width="10.2" height="8.7" rx="1.5"/>
+</g>
+<g>
+<title>Cache hit 98%</title>
+<rect class="c" x="349.8" y="575.2" width="10.2" height="12.8" rx="1.5" fill-opacity="0.72"/>
+</g>
+<line class="d" x1="0" y1="536.5" x2="360" y2="536.5"/>
+<text class="l" x="0" y="560">Cache hit per turn</text>
+<text class="s" x="360" y="560" text-anchor="end">taller = more from cache; full at …</text>
+</svg>
