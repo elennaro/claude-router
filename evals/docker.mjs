@@ -4,7 +4,7 @@
 // Usage (from evals/):
 //   node docker.mjs --check             free: build, then the engine tests, validate, db check, eval self-tests and
 //                                       the offline replay, each in its own container
-//   node docker.mjs paste/run.mjs       a paid suite: needs ANTHROPIC_API_KEY in this shell; EVAL_CAP_USD (default 10,
+//   node docker.mjs paste/run.mjs       a paid suite: needs ROUTER_EVAL_API_KEY (a platform API key) in this shell; EVAL_CAP_USD (default 10,
 //                                       never above 50) caps this run
 import { spawnSync } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
@@ -39,6 +39,9 @@ export function capFor(v) {
   return cap
 }
 
+// A pasted command or a stray value in the key slot fails here, before a container starts.
+export const looksLikeKey = k => /^sk-ant-[A-Za-z0-9_-]{20,}$/.test(k.trim())
+
 const CHECKS = [
   ['router', ['claude', '--version']],
   ['router', ['claude', 'plugin', 'validate', '.']],
@@ -61,7 +64,11 @@ function main() {
     process.exitCode = failed.length || replay ? 1 : 0
     return
   }
-  if (!process.env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is not set in this shell; paid runs bill the API key, never the subscription')
+  // The key lives under its own name, so Claude Code on this machine never picks it up and bills the API instead of
+  // the subscription; only the container sees it as ANTHROPIC_API_KEY.
+  const key = process.env.ROUTER_EVAL_API_KEY || process.env.ANTHROPIC_API_KEY || ''
+  if (!looksLikeKey(key)) throw new Error('ROUTER_EVAL_API_KEY is missing or not an Anthropic API key (sk-ant-...); paid runs bill the API key, never the subscription')
+  process.env.ANTHROPIC_API_KEY = key
   process.env.EVAL_CAP_USD = String(capFor(process.env.EVAL_CAP_USD))
   console.log(`running ${what} in a fresh container, cap $${process.env.EVAL_CAP_USD}`)
   process.exitCode = inBox('evals', ['node', what], ['ANTHROPIC_API_KEY', 'EVAL_CAP_USD'])
@@ -70,5 +77,6 @@ function main() {
 if (process.argv[2] === '--self-test') {
   const throws = v => { try { capFor(v); return false } catch { return true } }
   if (capFor(undefined) !== 10 || capFor('') !== 10 || capFor('5') !== 5 || capFor('50') !== 50 || !throws('51') || !throws('0') || !throws('abc')) throw new Error('self-test: cap rules')
+  if (!looksLikeKey('sk-ant-api03-' + 'x'.repeat(40)) || looksLikeKey('cd F:\\work\\claude-router\\plugin\\evals; node docker.mjs paste/run.mjs --x') || looksLikeKey('sk-proj-' + 'x'.repeat(40)) || looksLikeKey('task-ant-' + 'x'.repeat(40)) || looksLikeKey('')) throw new Error('self-test: key check')
   console.log('docker runner self-test: ok')
 } else if (process.argv[1]?.replace(/\\/g, '/').endsWith('evals/docker.mjs')) main()

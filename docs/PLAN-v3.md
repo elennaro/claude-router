@@ -138,7 +138,7 @@ Checked and set aside: summarising every tool result with a model (costs more th
 ## How evals run
 
 1. Plain API evals (classifier, judge, summary scoring) are Node scripts that call the Messages API with the owner's API key: Batch API where latency doesn't matter, prompt caching on shared prefixes, every answer stored in `evals/work/eval.db` and paid once. `node fast.mjs` replays everything for $0.
-2. Evals that run Claude Code itself go in a **fresh Docker container per run**: Linux, Node, Claude Code, the plugin installed from the repo (working copy or tag), nothing mounted from the host's `~/.claude`. `ANTHROPIC_API_KEY` comes from the host environment at run time (billed to the API platform, never the subscription), and is never written to the image or printed. The container is deleted after the run; answers go only to `eval.db`.
+2. Evals that run Claude Code itself go in a **fresh Docker container per run**: Linux, Node, Claude Code, the plugin installed from the repo (working copy or tag), nothing mounted from the host's `~/.claude`. `ROUTER_EVAL_API_KEY` comes from the host environment at run time (passed in as `ANTHROPIC_API_KEY`) (billed to the API platform, never the subscription), and is never written to the image or printed. The container is deleted after the run; answers go only to `eval.db`.
 3. Spend: Haiku runs up to $5 each without asking. Any Sonnet, Opus or Fable answer or judge needs the owner's OK with its cost and the decision it buys.
 
 ## Set aside
