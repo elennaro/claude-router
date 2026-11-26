@@ -60,7 +60,7 @@ Made by the E5 authors (Wang, Yang, Huang, Yang, Majumder, Wei; [arXiv:2402.0567
 
 ## Training data
 
-Public sets give coarse task types and difficulty. The router's own 33 classes (31 with rules plus `engineering`,
+Public sets give coarse task types and difficulty. The router's own 24 classes (22 with rules plus `engineering`,
 `message`; `CLASS_LABELS`) are finer, and about a third have no public analogue at all. So the data comes in four
 layers, coarse to fine.
 
@@ -89,7 +89,7 @@ were found and not inspected.
 **The four layers:**
 1. **Coarse pre-training** on Magpie + Dolly + Arena mapped as above (only rows whose mapping is unambiguous).
 2. **Distillation**: the current Haiku classifier (the exact plugin prompt) labels a pool of 10-20k public prompts
-   (WildChat, Arena), English and Russian. This teaches the router's own 33 labels and its "default" habit.
+   (WildChat, Arena), English and Russian. This teaches the router's own 24 labels and its "default" habit.
 3. **Synthetic gaps**: Haiku writes prompts for the classes no public set has (final-copy, brand-visual,
    image-prompt, vision, devops-config, security-review, code-review, test-writing, structure, critique, rare-hard,
    repeat-agent, message), in English, Russian and mixed, with the generator rules in `evals/generate.mjs` (never the
@@ -105,7 +105,7 @@ overlap with a case are dropped.
 **Frozen embeddings plus a small head first; fine-tune only if the head fails the gates.**
 
 1. Embed every training prompt once with multilingual-e5-small (`query: ` prefix, first 512 tokens, mean pool).
-2. Train a multinomial logistic regression head (384 -> 34 including `default`), class-weighted so rare floor classes
+2. Train a multinomial logistic regression head (384 -> 25 including `default`), class-weighted so rare floor classes
    are not drowned out. Calibrate with temperature scaling on a held-out split, so its probability can stand in for
    Haiku's confidence (`passAt` 0.7, sure at 0.85) unchanged.
 3. The head is about 13K numbers: a JSON file of ~100 KB that can live in the repo.
@@ -207,17 +207,35 @@ What this changes:
 1. No runtime to install and no native code: it fits the repo's built-ins-only rule. Files: a 128 MB int8 table and
    the 18 MB tokenizer, downloaded on opt-in. A fresh process per prompt costs ~0.5 s, mostly loading.
 2. Cross-language match is weaker than e5's but real on full sentences (same task EN vs RU 0.25 and 0.19, different
-   tasks 0.09 and 0.06); on 4-6 token prompts it is noise. Whether that is enough for 34 classes only the trained
+   tasks 0.09 and 0.06); on 4-6 token prompts it is noise. Whether that is enough for 25 labels only the trained
    head on the eval can say.
 3. Recommendation: train the head on both in step 4 and compare on the gates; take potion if it clears them (much
    simpler to ship), e5 otherwise.
+
+## Step 2 result (2026-11-26, $1.04 Haiku)
+
+Scripts in `evals/classifier/`; output in the private `evals/work/classifier/` (gitignored).
+
+1. `public.mjs` (layer 1, free): Dolly and 8,000 Arena prompts mapped where unambiguous. Magpie left out: the Qwen set
+   states no licence, the other is Llama-licensed. Dolly gives explore, mechanical, brainstorm, learn-explain; Arena
+   gives math and, through the router's own rules, a few code classes. 5,572 rows. The 7,975 Arena prompts (580 in
+   Russian) are also saved as the layer 2 pool.
+2. `synth.mjs` (layer 3): Haiku writes 30 messages per call from the class definitions only (no real prompts shown),
+   12 calls per class in English, Russian and mixed at three lengths; 4 Russian-and-mixed calls for the three classes
+   public data already fills. 275 calls, 7,889 messages, $1.04 (the plan guessed $3-5).
+3. `build.mjs` (free): joins both, drops 20 duplicates and 4 rows close to an eval case (half their word triples in
+   one case). **13,437 rows; every one of the 25 labels has 311 or more, about two thirds of each gap class Russian
+   or mixed.** The three biggest classes (explore, mechanical, brainstorm, ~1,600 each) are capped at 1,500 public
+   rows; class weights in training handle the rest.
+
+Not done: layer 2 (distillation, decision 2), and no one has read a sample of the synthetic rows for label mistakes.
 
 ## Steps and cost
 
 | Step | What | Cost |
 |---|---|---|
 | 1 | Download e5-small int8 (D:), measure CPU latency in Node for options (a) and (c) | $0 |
-| 2 | Build layers 1 and 3 (public sets, Haiku synthetic gaps ~7k prompts) | ~$3-5 Haiku |
+| 2 | Build layers 1 and 3 (public sets, Haiku synthetic gaps ~7k prompts): **done**, 13.4k rows | $1.04 Haiku |
 | 3 | Layer 2 distillation (after decision 2); add the owner's labels when they land | ~$6-18 Haiku |
 | 4 | Train the head, `CLASSIFIER=local` replay, gates | $0 (CPU or local GPU) |
 | 5 | Fine-tune only if 4 misses | $0 local GPU; paid measure runs only if new tiers appear (owner's OK) |
@@ -226,7 +244,7 @@ What this changes:
 
 ## Risks
 
-- **33 fine classes from ~10 eval cases each**: the eval can only see large differences; the gates' noise is about a
+- **24 fine classes from ~10 eval cases each**: the eval can only see large differences; the gates' noise is about a
   case per point.
 - **Floor classes** (final-copy, brand-visual, rare-hard, architecture, critique, security-review, structure) have no
   public data. A miss there is a hard-gate fail, so these lean on synthetic data and the cascade's Haiku fallback.
