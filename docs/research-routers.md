@@ -113,6 +113,30 @@ medium or high effort per agent step. No routing result for Russian was found; P
 5. Gemini CLI's rubric and examples are Apache-2.0 and can be adapted with attribution; oh-my-openagent's code cannot
    (Sustainable Use licence); Arch-Router's weights need a commercial licence.
 
+## Which model sits inside, and do we need our own (2026-11-26)
+
+| Router | Decision model | How built | Link |
+|---|---|---|---|
+| Gemini CLI | a Flash-class API model (version not named in code); local option Gemma 3 1B, 969 MB, merged 2026-02-26 | prompted, JSON, 2 labels | [doc](https://geminicli.com/docs/core/local-model-routing) |
+| NVIDIA classifier | DeBERTa-v3-base 0.2B | 4,024 human-labelled English prompts, 11 task types + 6 complexity scores, one pass | [card](https://huggingface.co/nvidia/prompt-task-and-complexity-classifier) |
+| vLLM SR | Vela-2.0 0.8B on Qwen3.5-0.8B | trained, several heads in one model | [card](https://huggingface.co/vllm-sr/Vela-2.0-0.8B) |
+| Arch-Router | Qwen2.5-1.5B fine-tune | conversational data, size not published | [card](https://huggingface.co/katanemo/Arch-Router-1.5B) |
+| RouteLLM | BERT, matrix factorisation, Llama-3 8B | Arena votes + GPT-4 judge | [repo](https://github.com/lm-sys/RouteLLM) |
+| Jev, AWS Bedrock | undisclosed | - | [Jev](https://openrouter.ai/blog/insights/what-is-jev/) |
+
+Trained routers need thousands of labelled prompts; without them, products prompt a model. **[fact]** No public
+leaderboard scores small models on routing; the closest proxies are IFEval/IFBench (strict format) and XNLI-ru
+(Russian, encoders). Current small models by IFEval: Qwen3.5-4B 89.8 (Mar 2026), LFM2.5-1.2B 86.2 (Jan 2026, 856 MB
+Q4, 116 tok/s on a Ryzen AI 9 CPU, Russian not listed), Granite 4.1 3B 82.3 (no Russian), Qwen3.5-0.8B 52.1;
+mmBERT-small (140M, XNLI-ru 75.6) for an encoder. Router benchmarks: LLMRouterBench
+([2601.07206](https://arxiv.org/abs/2601.07206)), RouterArena ([2510.00202](https://arxiv.org/abs/2510.00202)).
+**[fact, model cards and papers; quant sizes mostly unverified]**
+
+Our ledger: the Haiku classifier made 2,361 calls in 9 days for $0.38, 0.014% of the $2,611 spent. Training data we
+may use: none (eval labels come from Claude judges; the owner's Training labels had 0 rows). **[fact]** So a local
+decision model saves no money and cannot be trained now; it pays only if Haiku's delay per prompt hurts, which is not
+measured yet. Keep Haiku. **[guess, from the numbers above]**
+
 ## Not checked
 
 The "super-manager" the owner remembered was not identified (candidates: DeerFlow, Ruflo, claude-code-router).
