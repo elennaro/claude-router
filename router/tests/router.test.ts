@@ -961,6 +961,7 @@ test('withMode sets "mode" and keeps the rest of the file as written', async () 
   expect(JSON.parse(withMode('{\n  "codex": { "effort": "xhigh" }\n}\n', 'off'))).toEqual({ mode: 'off', codex: { effort: 'xhigh' } })
   expect(JSON.parse(withMode(undefined, 'off'))).toEqual({ mode: 'off' })
   expect(JSON.parse(withMode('{}', 'on'))).toEqual({ mode: 'on' })
+  expect(JSON.parse(withMode('{"main":{"model":"opus"},"mode":"on"}', 'off'))).toEqual({ main: { model: 'opus' }, mode: 'off' }) // one line: no second key
   expect(() => withMode('{ broken', 'off')).toThrow()
 })
 
@@ -997,6 +998,35 @@ test('the band is one row; Stats opens the card; Settings turns routing off for 
   await band.press({ key: 'router-chat-off' })
   expect(await band.find({ type: 'Text', text: 'off in this chat' })).toBeTruthy()
   await band.unmount()
+})
+
+test("this chat's own settings come back after a restart and outlast another session's routing switch (owner case 2026-11-26)", async (engine, on) => {
+  const $ = engine as any
+  const files: Record<string, string> = { '/home/.claude/routing.json': ROUTING }
+  // what the process before the restart left: this chat off, keep awake off, effort pinned high
+  const store = new Map<string, unknown>([['chat:sess-1', { mode: 'off', awake: false, effort: 'high' }]])
+  wire(on, { sent: [], files, store, ownClock: true })
+  const clock = mock.clock(on, { now: 1_000 })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await band.find({ type: 'Text', text: 'off in this chat' })).toBeTruthy()
+  files['/home/.claude/routing.json'] = JSON.stringify({ ...JSON.parse(ROUTING), mode: 'on' }) // another session's Settings wrote it
+  await clock.advance(11_000)
+  await band.unmount()
+  const again = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await clock.advance(1_000)
+  expect(await again.find({ type: 'Text', text: 'off in this chat' })).toBeTruthy() // still this chat's choice
+  await again.press({ key: 'router-settings' })
+  expect((await again.find({ key: 'router-chat-awake-off' }))?.props.variant).toBe('primary')
+  expect((await again.find({ key: 'router-effort-high' }))?.props.variant).toBe('primary')
+  await again.press({ key: 'router-chat-both' })
+  await again.press({ key: 'router-chat-awake-on' })
+  expect(store.get('chat:sess-1')).toEqual({ mode: 'both', awake: true, effort: 'high' })
+  expect(store.get('chats')).toEqual(['sess-1'])
+  await again.press({ key: 'router-global-off' }) // a switch made here: the chat follows it
+  expect(await again.find({ type: 'Text', text: 'off everywhere' })).toBeTruthy()
+  expect((store.get('chat:sess-1') as { mode: unknown }).mode).toBe(null)
+  await again.unmount()
 })
 
 test('routing turned on for the project in another session reaches this one: the band follows within seconds (owner case 2026-11-25)', async (engine, on) => {

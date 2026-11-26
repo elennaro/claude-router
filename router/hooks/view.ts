@@ -312,6 +312,8 @@ export function withMode(text: string | undefined, mode: 'on' | 'off'): string {
   if (Object.keys(obj).length === 0) return fresh
   const line = /^(\s*)"mode"\s*:\s*"[a-z]*"/m
   if (line.test(text)) return text.replace(line, `$1"mode": "${mode}"`)
+  // a "mode" not on a line of its own (a one-line file): rewrite it, or a second key would lose to the old one
+  if ('mode' in obj) return `${JSON.stringify({ ...obj, mode }, null, 2)}\n`
   return text.replace('{', `{\n  "mode": "${mode}",`)
 }
 

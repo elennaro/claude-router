@@ -91,6 +91,7 @@ const TODO_TOOLS = ['TodoWrite', 'mcp__ccd_turn__update_plan'] // the task list 
 const pretty = (m: string) => NAMES[family(m)] ?? m
 
 type Def = { model?: string; effort?: string }
+type ChatMode = 'off' | 'effort' | 'models' | 'both'
 
 // Session state; module variables start over on a reload, which is fine for all of these.
 type State = {
@@ -149,6 +150,7 @@ type State = {
   trimmed: boolean // this session ran the ledger cleanup (cleanupSteps)
   totals: Totals // this project across chats, from router.db's last flush
   routeModels: boolean
+  chatMode: ChatMode | null // Settings > This chat, when set: it wins over the routing.json switches for this chat
   ask: Ask | undefined // a model or effort named in this prompt (or kept "from now on")
   stickyAsk: Ask | undefined
   seenPrompt: boolean // a prompt reached the router in this session (the first one may pick the chat's model)
@@ -277,6 +279,7 @@ async function load($: EngineInterface, s: State) {
   const v = await read($, view)
   s.routeModels = v.routeModels
   s.baseEffort ||= v.pickerEffort ?? ''
+  if (s.chatMode) await applyChat($, s, s.chatMode) // this chat's own switch beats the files just read
 }
 
 async function definition($: EngineInterface, s: State, type: string): Promise<Def> {
@@ -845,8 +848,9 @@ async function setUnits($: EngineInterface, u: 'usd' | 'plan') {
   await $.store.set('units', u)
 }
 
-async function setChatAwake($: EngineInterface, isOn: boolean) {
+async function setChatAwake($: EngineInterface, s: State, isOn: boolean) {
   await update($, chatAwake, () => isOn)
+  await keepChat($, s, { awake: isOn })
 }
 
 async function setAwakeHours($: EngineInterface, h: number) {
@@ -915,7 +919,7 @@ async function rateSwitch($: EngineInterface, s: State, id: string, label: 'good
     if (usd > WARN_UNDO_USD) $.ui.toast(`router: back to ${pretty(w.fromModel)}; the next request re-reads this chat once, about ${money(usd)}`)
     await update($, chat, (x): ChatModel => ({ ...x, model: null, by: 'you', routed: false, from: null }))
   }
-  if (w.kind === 'effort' && w.fromEffort && !c.effort) await update($, chat, (x): ChatModel => ({ ...x, effort: w.fromEffort }))
+  if (w.kind === 'effort' && w.fromEffort && !c.effort) await setChatEffort($, s, w.fromEffort)
 }
 
 // Turns routing on or off in the global or the project routing.json, keeping the rest of the file as written.
@@ -945,6 +949,9 @@ async function setScope($: EngineInterface, s: State, scope: 'global' | 'project
     $.ui.toast(`router: could not update ${path} (is it valid JSON?)`)
     return
   }
+  // switched from this chat: it should follow the switch just made, not its own older choice
+  s.chatMode = null
+  await keepChat($, s, { mode: null })
   s.defs.clear()
   await load($, s)
 }
@@ -991,7 +998,7 @@ async function facts($: EngineInterface, s: State) {
   const where = m.project === 'off' ? 'in this project' : m.global === 'off' && m.project !== 'on' ? 'everywhere' : 'in this chat'
   const now = main ? `${pretty(main.model)} ${main.effort || ''}${main.asked ? ' (you asked)' : main.auto ? ' (auto)' : ''}`.trim() : `${pretty(s.cfg.main.model)} ${s.cfg.main.effort}`
   const since = new Date(s.totals.since ?? (await $.clock.now())).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
-  const chatMode: 'off' | 'effort' | 'models' | 'both' = !v.isOn ? 'off' : !v.autoEffort ? 'models' : v.routeModels ? 'both' : 'effort'
+  const chatMode: ChatMode = !v.isOn ? 'off' : !v.autoEffort ? 'models' : v.routeModels ? 'both' : 'effort'
   const cost = (await $.session.usage().catch(() => undefined))?.cost?.usd // the app's own total, /cost's, every request included
   const spend = await read($, mix)
   const hit = hitPct(Object.values(spend).reduce((a: Cache | undefined, x) => addCache(a, x.cache), undefined)) // this chat, main and subagents
@@ -1066,12 +1073,49 @@ async function setRouteModels($: EngineInterface, s: State, isOn: boolean) {
   await update($, view, (v): RouterView => ({ ...v, routeModels: isOn }))
 }
 
-// This chat's routing: off, effort only, models only, or both.
-async function setChat($: EngineInterface, s: State, mode: 'off' | 'effort' | 'models' | 'both') {
+// This chat's routing: off, effort only, models only, or both. Kept in the store, so a restart that resumes the chat
+// and a routing.json reload (load, after another session's switch) both put it back.
+async function applyChat($: EngineInterface, s: State, mode: ChatMode) {
   await setMode($, s, mode !== 'off')
   if (mode === 'off') return
   await setAutoEffort($, s, mode !== 'models')
   await setRouteModels($, s, mode !== 'effort')
+}
+async function setChat($: EngineInterface, s: State, mode: ChatMode) {
+  s.chatMode = mode
+  await keepChat($, s, { mode })
+  await applyChat($, s, mode)
+}
+
+// This chat's own settings (routing mode, keep awake, compact point, effort pick) go to the plugin store per session:
+// $.state survives a hot reload but not a restart, and a resumed chat should come back as it was left.
+type ChatPrefs = { mode?: ChatMode | null; awake?: boolean; compactAt?: number | null; effort?: string | null }
+const CHATS_KEPT = 50 // sessions; older ones are dropped
+async function keepChat($: EngineInterface, s: State, patch: ChatPrefs) {
+  if (!s.session || s.session === 'session') return
+  try {
+    const key = `chat:${s.session}`
+    await $.store.set(key, { ...(((await $.store.get(key)) ?? {}) as ChatPrefs), ...patch })
+    const index = (((await $.store.get('chats')) as Array<string> | undefined) ?? []).filter(id => id !== s.session)
+    index.push(s.session)
+    for (const id of index.splice(0, Math.max(0, index.length - CHATS_KEPT))) await $.store.delete(`chat:${id}`)
+    await $.store.set('chats', index)
+  } catch { /* a full or broken store only costs the settings after a restart */ }
+}
+async function restoreChat($: EngineInterface, s: State) {
+  const p = ((await $.store.get(`chat:${s.session}`).catch(() => undefined)) ?? {}) as ChatPrefs
+  if (typeof p.awake === 'boolean') await update($, chatAwake, () => p.awake ?? true)
+  if (typeof p.compactAt === 'number') await update($, compactAt, () => p.compactAt ?? null)
+  if (typeof p.effort === 'string') await update($, chat, (c): ChatModel => ({ ...c, effort: p.effort ?? null }))
+  if (p.mode) { s.chatMode = p.mode; await applyChat($, s, p.mode) }
+}
+async function setCompactAt($: EngineInterface, s: State, at: number | null) {
+  await update($, compactAt, () => at)
+  await keepChat($, s, { compactAt: at })
+}
+async function setChatEffort($: EngineInterface, s: State, effort: string | null) {
+  await update($, chat, (c): ChatModel => ({ ...c, effort }))
+  await keepChat($, s, { effort })
 }
 
 // Only two steps on the same model, with no compaction or /clear between them (both reset prev), say anything about effort.
@@ -1131,7 +1175,7 @@ export const register: Register = on => {
     cfg: BUILTIN, home: '', root: '', project: 'unknown', sources: 'built-in only', lastClass: null, lastHintModel: null,
     hasClassified: false, hadClass: false, aside: false, asideAgents: new Set(), headless: false, agentEffort: new Map(), defs: new Map(),
     prev: NO_PREV, lastContext: 0, mainSteps: 0, mainOut: 0, cleanChanges: 0, baseEffort: '', rerouted: 0, lastRerouted: '', lastSwitch: '', lastEffortSwitch: '', lastQuick: '', agentType: new Map(), agentAsked: new Map(), agentSpend: new Map(), briefRun: new Map(), wastedRuns: new Set(), paneOpened: false, pasted: false, coldTimer: undefined, minuteTick: undefined, awakeSince: 0, pinging: false, gapStart: 0, doneChecked: 0, awakeStop: '', ownPrompt: false, scopeAt: 0, scopeQueued: false, openTurn: '', seg: { ctx: 0, steps: 0 },
-    session: 'session', label: '', lastLedgerTurn: '', pending: [], scheduled: false, warned: false, trimmed: false, totals: { proj: EMPTY_TALLY, since: undefined }, routeModels: true, sure: false, switchTurn: false,
+    session: 'session', label: '', lastLedgerTurn: '', pending: [], scheduled: false, warned: false, trimmed: false, totals: { proj: EMPTY_TALLY, since: undefined }, routeModels: true, chatMode: null, sure: false, switchTurn: false,
     ask: undefined, stickyAsk: undefined, v: undefined, seenPrompt: false, samples: [], turnCount: 0, quietUntil: 0, declined: null, switching: false,
     briefs: new Map(), queue: Promise.resolve(), savedAgents: NO_AGENTS, unhappy: 0,
   }
@@ -1141,6 +1185,7 @@ export const register: Register = on => {
     await load($, s)
     s.gapStart = (await gapsOf($)).find(g => g.s === s.session && g.end === null)?.start ?? 0 // a gap left open before a restart
     await restoreAgents($, s)
+    await restoreChat($, s)
     await seedMix($).catch(() => undefined)
     const kept = ((await $.store.get('features').catch(() => undefined)) ?? {}) as Partial<Features>
     // only today's switches: an older version's key (0.8.1's "idle") is dropped
@@ -1674,7 +1719,7 @@ export const register: Register = on => {
       ? (
           <Box key="router-away-row" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} width={e.props.bodyColumns}>
             <Text key="router-away" dimColor wrap="wrap">{awayWords(kept, await read($, awakeHours))}</Text>
-            {!kept.back && !kept.compacted && !kept.stop && (await read($, chatAwake)) && <Button key="router-away-stop" plain dimColor label="Stop for this chat" onPress={() => setChatAwake($, false)} />}
+            {!kept.back && !kept.compacted && !kept.stop && (await read($, chatAwake)) && <Button key="router-away-stop" plain dimColor label="Stop for this chat" onPress={() => setChatAwake($, s, false)} />}
           </Box>
         )
       : null
@@ -1795,18 +1840,18 @@ export const register: Register = on => {
         {group('router-g-chat',
           field('router-chat', 'This chat', choices('router-chat', [['off', 'Off'], ['effort', 'Effort'], ['models', 'Models'], ['both', 'Both']], f.chatMode, v => setChat($, s, v))),
           note('router-chat-note', 'Effort follows each task. Models picks subagent models and suggests a chat switch. Lasts until the session ends.'),
-          field('router-compact', 'Compact at', choices('router-compact', [['off', 'Claude Code'] as [string, string], ...points.map(p => [String(p), p === best ? `${kt(p)}, cheapest` : kt(p)] as [string, string])], at ? String(at) : 'off', v => update($, compactAt, () => (v === 'off' ? null : Number(v))), acDot), true),
+          field('router-compact', 'Compact at', choices('router-compact', [['off', 'Claude Code'] as [string, string], ...points.map(p => [String(p), p === best ? `${kt(p)}, cheapest` : kt(p)] as [string, string])], at ? String(at) : 'off', v => setCompactAt($, s, v === 'off' ? null : Number(v)), acDot), true),
           note('router-compact-note', acNote),
           <Box key="router-compact-default" marginLeft={LABEL + 1}>
             {at
               ? <Button key="router-compact-default-set" plain label={`Make ${kt(at)} my default (every chat, in settings.json)`} onPress={() => setDefaultWindow($, s, at)} />
               : bd?.autocompactSource === 'settings' && <Button key="router-compact-default-clear" plain label="Back to Claude Code's own window (settings.json)" onPress={() => setDefaultWindow($, s, null)} />}
           </Box>,
-          f.feats.awake && field('router-chat-awake', 'Keep awake', choices('router-chat-awake', ONOFF, (await read($, chatAwake)) ? 'on' : 'off', v => setChatAwake($, v === 'on'))),
+          f.feats.awake && field('router-chat-awake', 'Keep awake', choices('router-chat-awake', ONOFF, (await read($, chatAwake)) ? 'on' : 'off', v => setChatAwake($, s, v === 'on'))),
           f.feats.awake && note('router-chat-awake-note', 'Off: no nudges for this chat only, for example one you are done with.'))}
         {group('router-g-pick',
           field('router-model', 'Model', choices('router-model', [['auto', 'Auto'], ['haiku', 'Haiku'], ['sonnet', 'Sonnet'], ['opus', 'Opus'], ['fable', 'Fable']], picked.by === 'you' ? family(picked.model ?? s.cfg.main.model) : 'auto', v => pickModel($, v), v => (v === 'auto' ? undefined : modelColor(v)))),
-          field('router-effort', 'Effort', choices('router-effort', [['auto', 'Auto'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra high'], ['max', 'Max']], picked.effort ?? 'auto', v => update($, chat, (c): ChatModel => ({ ...c, effort: v === 'auto' ? null : v })), v => (v === 'auto' ? undefined : shade(f.main?.model ?? s.cfg.main.model, v, 'dark')))),
+          field('router-effort', 'Effort', choices('router-effort', [['auto', 'Auto'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra high'], ['max', 'Max']], picked.effort ?? 'auto', v => setChatEffort($, s, v === 'auto' ? null : v), v => (v === 'auto' ? undefined : shade(f.main?.model ?? s.cfg.main.model, v, 'dark')))),
           note('router-pick-note', 'A pick locks this chat to it, and savings count against it. Auto lets the router choose per task.'),
           field('router-units', 'Units', choices('router-units', [['usd', 'Dollars'], ['plan', 'Plan %']], f.units, v => setUnits($, v === 'plan' ? 'plan' : 'usd'))),
           note('router-units-note', !f.plan?.week ? 'No plan usage reported here (an API key, or no reply yet), so figures stay in dollars.'
