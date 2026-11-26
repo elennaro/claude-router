@@ -1,7 +1,7 @@
 # Plan: a small local routing classifier
 
-Status: data work, nothing trained. Written 2026-11-25; on 2026-11-26 Claude-made training data was ruled out (Usage
-Policy, decision 4), so the data is public sets plus the owner's own labels. The open decisions 5 and 6 come next.
+Status: public-data heads trained and scored (2026-11-26, step 3-4 result below): they do not transfer to our prompts.
+Next source: the owner's own labels, collected by *Training* since 0.9.6. Claude-made data is ruled out (decision 4).
 
 ## The goal
 
@@ -166,7 +166,7 @@ weights and checkpoints on D: only, one copy. Only the head (and, if fine-tuned,
    (e.g. ... model distillation) without prior authorization from Anthropic", with no "competing" condition (the
    Consumer and Commercial terms only bar competing models). So no Claude output trains the classifier: no Haiku labels,
    no Haiku-written prompts. Owner's choice: public data plus the owner's own labels. Haiku stays the eval baseline.
-5. **Text for the owner's labels (open).** The Switches log keeps no prompt text (repo rule 5), so a 👍/👎 row has
+5. **Text for the owner's labels (settled 2026-11-26, 0.9.6).** The Switches log keeps no prompt text (repo rule 5), so a 👍/👎 row has
    nothing to train a text classifier on. Options: an opt-in local-only text column for Training rows (never
    published; the head trained from it would be the owner's own), or label public pool prompts by hand.
 6. **How to cover the empty classes (open).** With public data only, 14 of the 25 labels have no rows (below). Options:
@@ -234,13 +234,57 @@ Scripts in `evals/classifier/`; output in the private `evals/work/classifier/` (
 
 What it means: a 25-label head cannot be trained on this. Decisions 5 and 6 come first.
 
+## Step 3-4 result (2026-11-26, $0): public data does not transfer
+
+Decision 5 settled: with *Training* on (0.9.6) the Switches log keeps the prompt locally, logs kept turns, and reads
+👍/👎 from the owner's next message, unlabelled rows trimmed to 2 per labelled one. The hand-label page was dropped.
+
+Data added, all human-written, no model text: WildChat user turns (ODC-By, flagged rows skipped), OpenAssistant first
+prompts (Apache-2.0), sql-create-context (CC-BY-4.0) as data-analysis, clinc intents (CC-BY-3.0) as default, explore
+and mechanical. Untagged human prompts are labelled by the router's own rules, only when 400 characters or shorter (in
+a long paste a word like "logo" names the paste, not the task) and once per opening (one pasted template repeated
+hundreds of times). 8,614 rows over 17 labels.
+
+A second head learns the model size needed from Arena's human votes (`votes.mjs`): the cheaper side winning or tying
+means its size was enough, the dearer side winning means its size was needed, both bad means the biggest. Sizes come
+from the model names (small, mid, big). Every pair with a Claude model is dropped, so no label rests on an Anthropic
+answer. 10,474 prompts, about a third per size.
+
+Scored on the eval cases (`train.mjs`, potion embeddings plus a softmax head, trained in 5 s on a CPU):
+
+| Task class (211 cases) | Right |
+|---|---|
+| Today: rules, then Haiku | 51% |
+| Rules, then the local head | 22% |
+| Local head alone | 11% |
+
+On the 141 prompts no rule names, Haiku is right on 55%, the local head on 11%, and it is "sure" (p >= 0.7) on 109 of
+them while right on 12%. Held-out public rows: 82%. So the head learns the public sets and the skill does not carry
+to coding-assistant prompts.
+
+| Model size (279 cases with a measured need) | Right | Too small | Too big |
+|---|---|---|---|
+| Today: first-prompt model | 52% | 0% | 48% |
+| Local strength head | 23% | 64% | 13% |
+| Always Opus | 50% | 0% | 50% |
+
+Held-out votes: 35%, against 33% for a coin. A person's pick between two answers says little about how hard the
+prompt was, so the votes carry almost no size signal.
+
+What it means:
+1. Neither head can stand in for Haiku, not even in a cascade: the class head is confidently wrong.
+2. The gap is the data, not the embedding: 82% on public rows, 11% on our prompts. A bigger base (e5) would not close
+   it.
+3. The owner's own labels (0.9.6) are now the only promising source. Re-run `train.mjs` with them after a week of use;
+   the scripts take a new row source in a few lines.
+
 ## Steps and cost
 
 | Step | What | Cost |
 |---|---|---|
 | 1 | Download e5-small int8 (D:), measure CPU latency in Node for options (a) and (c) | $0 |
 | 2 | Public layer: **done**, 5.5k rows over 11 labels (the Haiku synthetic layer was dropped) | $1.04 Haiku, unused |
-| 3 | Cover the empty labels (decisions 5 and 6); add the owner's labels when they land | $0 |
+| 3-4 | **Done**: public heads trained and scored; they miss (11% class, 23% size). Owner labels next | $0 |
 | 4 | Train the head, `CLASSIFIER=local` replay, gates | $0 (CPU or local GPU) |
 | 5 | Fine-tune only if 4 misses | $0 local GPU; paid measure runs only if new tiers appear (owner's OK) |
 | 6 | Shadow setting in the plugin, a week of real use | $0 |
