@@ -277,6 +277,9 @@ What it means:
    it.
 3. The owner's own labels (0.9.6) are now the only promising source. Re-run `train.mjs` with them after a week of use;
    the scripts take a new row source in a few lines.
+4. Pivot under way (owner, 2026-11-26): first survey how others route (`research-routers.md`), then pick an approach
+   and a small decision model, and train only if that approach needs it. Production routers answer narrow questions
+   about difficulty, not task classes.
 
 ## Steps and cost
 

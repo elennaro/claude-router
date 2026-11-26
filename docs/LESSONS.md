@@ -97,6 +97,15 @@ Newest at the bottom. Each entry: what we did, what happened, what we learned. N
     saved $2, which lowered the overspend), but the display made a correct number read backwards, and the band already
     said "saved $x" or "$x extra" in words. Lesson: a figure that can go either way says which way in words, the same
     words on every surface, and a check enforces it (ui.check now fails on a bare sign).
+25. **Picking training data by what exists, not by what it looks like.** The local classifier was trained on public
+    sets whose labels could be mapped onto our 24 classes: Dolly questions, clinc assistant commands, SQL questions,
+    Arena prompts. It scored 82% on held-out public rows and 11% on our eval cases; only about 800 of 8,614 rows looked
+    like coding-assistant prompts. A second head on Arena votes (which model size people preferred) scored 35% against
+    33% for chance, the same weakness RouteLLM reported. Only then did we look at how others route: production routers
+    (Gemini CLI, vLLM Semantic Router, LiteLLM, Google's own tests) don't learn task classes at all; a small model
+    answers a few narrow questions about difficulty, and a table maps the answers to a model and an effort. Lesson:
+    survey how others solve the problem before building, and before training count how many rows look like the
+    prompts the model will see. (`research-routers.md`)
 
 ## Right moves
 
