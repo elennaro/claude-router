@@ -170,6 +170,28 @@ weights and checkpoints on D: only, one copy. Only the head (and, if fine-tuned,
 4. **Anthropic terms**: training a 33-label router classifier on Haiku's labels is not building a competing model, but
    read the usage terms once before layer 2.
 
+## Step 1 result (2026-11-26, $0)
+
+Measured `Xenova/multilingual-e5-small` int8 (`model_quantized.onnx`, 118 MB, plus a 17 MB tokenizer) with
+`@huggingface/transformers` 3.8 on a 12-core desktop CPU (Windows, Node 24), 40 runs each:
+
+| Input | Median | p95 |
+|---|---|---|
+| Short prompt (~10 tokens, English or Russian) | 2.7 ms | 3.8 ms |
+| Paragraph (~120 tokens, English or Russian) | 13 ms | 15 ms |
+| Long paste (cut at 512 tokens) | 134-150 ms | 146-187 ms |
+| Fresh process per prompt (start Node, load, one short prompt) | ~950 ms | |
+
+What this changes:
+1. Speed is fine once the model is loaded: well under the 100 ms gate for normal prompts. Long pastes miss it; cut the
+   input at 256 tokens (the class shows in the first lines) or accept ~150 ms there.
+2. Option (a) is not "a few MB, WASM": in Node the package installs the native `onnxruntime-node` (208 MB) plus
+   `onnxruntime-web` (91 MB), 379 MB in all, and its Node build would not run the model on WASM. Native binaries per
+   OS are what CI must check.
+3. The mod cannot load Node code, so the runner is a separate process. Spawning it per prompt costs ~1 s (still faster
+   than three Haiku samples); a runner that stays alive for the session costs 3-15 ms but holds ~850 MB of RAM.
+4. Not measured yet: option (c), the static potion model, and a mid laptop or the CI runners.
+
 ## Steps and cost
 
 | Step | What | Cost |
