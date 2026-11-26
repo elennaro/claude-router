@@ -279,7 +279,10 @@ What it means:
    the scripts take a new row source in a few lines.
 4. Pivot under way (owner, 2026-11-26): first survey how others route (`research-routers.md`), then pick an approach
    and a small decision model, and train only if that approach needs it. Production routers answer narrow questions
-   about difficulty, not task classes.
+   about difficulty, not task classes. **Owner's pick: narrow yes/no questions answered by a small model, mapped by a
+   table to a model and an effort, thresholds set on the eval, no training at the start.** The 24 classes stay only
+   where they carry floors. Next: the decision model (Haiku, a local Vela-2.0-0.8B or Gemma; Jev is cheap at
+   $0.042 per million input tokens but would send every prompt to a third party).
 
 ## Steps and cost
 
