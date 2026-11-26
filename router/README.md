@@ -28,6 +28,7 @@ Every row is detailed under *What it does* below.
 
 ## What's new
 
+- **0.9.6** *Training* learns from your own use: with it on, the prompt is kept with each switch on this machine only (masked, up to 2000 characters), turns the router kept are logged too, and your next message labels the turn before (unhappy 👎, a short thanks 👍). Unrated rows are trimmed to 2 per rated one.
 - **0.9.5** *Compact at* fixes: the slider runs to the model's own limit (it stopped at the compaction window from settings.json); its colours and the cheapest point show right after a restart (this chat's growth per step is kept); the chat's size shows as ◀ at the left end when it is under the smallest point.
 - **0.9.4** *Compact at* colours go both ways as a gradient: purple where it would compact too often (detail lost), green at the cheapest, amber then red where it costs more.
 - **0.9.3** *Compact at* on the desktop: a drawn slider (cost colours, a tick every 100K, the knob at your pick, ★ cheapest, │ Claude Code) over a row of points to press, each with its cost dot. Settings get air between rows on the desktop, and each feature's note sits under its switch. The chat's growth shows to a tenth (0.4K, not 0K).

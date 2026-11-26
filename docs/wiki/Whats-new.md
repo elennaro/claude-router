@@ -2,6 +2,10 @@
 
 Newest first. Update with `/plugin marketplace update claude-router`, then `/plugin update router@claude-router`, then restart Claude Code.
 
+## 0.9.6: Training learns from your own use
+
+With Settings → *Training* on, the router now keeps what a local model needs to learn your routing: the prompt with each switch (masked like the Board labels, up to 2000 characters, only in `router.db` on this machine; never a subagent brief), a row for each turn it kept as it was (unless you named or picked the model or effort), and labels from your next message: an unhappy reply marks the turn before 👎, a short "thanks" or "good" 👍. Your 👍/👎 buttons always win. Unrated rows are trimmed after their day to 2 per rated one, so the data stays small and balanced. With Training off nothing changes.
+
 ## 0.9.5: Compact at fixes
 
 - The slider runs to the model's own context limit, not to the compaction window set in settings.json.
