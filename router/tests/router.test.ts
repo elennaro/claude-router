@@ -1066,9 +1066,20 @@ test('Compact at after a restart: colours and the cheapest point from the kept g
   expect(p.max).toBe(1_000_000) // the model's limit, not settings.json's 400K window
   expect(p.marks.find(m => m[1] === '★')?.[0]).toBe(300_000)
   expect(p.zones[0]?.[1]).toBe('#9061c2') // coloured at once
-  expect(await panel.find({ type: 'Text', text: /This chat grows 5\.0K a step/ })).toBeTruthy()
+  expect(await panel.find({ type: 'Text', text: /This chat grows 5K a step/ })).toBeTruthy()
   for (const r of [181_000, 191_000, 201_000, 211_000, 221_000]) { opts.read = r; await step($, 'medium') }
   expect(Math.round((store.get('chat:sess-1') as { growth: number }).growth)).toBe(10_000) // measured again and kept every 5th step
+  await panel.unmount()
+})
+
+test('a chat that grows under 1K a step says so in tokens, never as 0K or with decimals on K (owner case 2026-11-26)', async (engine, on) => {
+  const $ = engine as any
+  wire(on, { sent: [], store: new Map<string, unknown>([['chat:sess-1', { growth: 412 }]]), read: 171_000, write: 0, window: 1_000_000 })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await step($, 'medium')
+  const panel = await $.ui.mount({ ...PANEL, surface: 'terminal' })
+  await panel.press({ key: 'router-tab-settings' })
+  expect(await panel.find({ type: 'Text', text: /This chat grows 410 tokens a step\./ })).toBeTruthy()
   await panel.unmount()
 })
 
@@ -1569,6 +1580,29 @@ test('cache sheet and reasons: what losing the cache costs, and where saved and 
   expect(whyWords(undefined).value).toBe('Nothing moved yet')
 })
 
+test('the band says the cache in the longest words that fit, and "Cache expired" fits at every width (owner ask 2026-11-26)', async (engine, on) => {
+  const $ = engine as any
+  wire(on, { sent: [], haiku: 'engineering 0.95', tokens: 100_000, read: 100_000, ownClock: true })
+  const clock = mock.clock(on, { now: 1_000 })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: 'set up the release pipeline for the app' })
+  await step($, 'medium')
+  const at = async (cols: number) => {
+    const band = await $.ui.mount({ ...BAND_SITE, surface: 'terminal', props: { ...BAND_SITE.props, bodyColumns: cols } })
+    const b = await band.find({ key: 'router-cache' })
+    const label = String(b?.props.label ?? JSON.stringify(b?.children))
+    const hit = Boolean(await band.find({ type: 'Text', text: /^hit [\d.]+%$/ }))
+    await band.unmount()
+    return { label, hit }
+  }
+  const warm = await Promise.all([140, 100, 72, 40].map(at))
+  expect(warm.map(w => w.label)).toEqual(['Cache 100K · 60 min left', 'Cache 100K · 60 min left', '60m left', 'Cache'])
+  expect([warm[0]!.hit, warm[3]!.hit]).toEqual([true, false]) // the hit only where room is left over
+  await clock.advance(61 * 60_000)
+  for (const cols of [140, 72, 40]) expect((await at(cols)).label).toContain('expired') // the warning always fits
+  expect((await at(40)).label).toContain('Cache expired')
+})
+
 test('with a real cache the widget and the Stats card show its size, what losing it costs and what each switch costs', async (engine, on) => {
   const $ = engine as any
   wire(on, { sent: [], haiku: 'engineering 0.95', tokens: 100_000, read: 100_000 })
@@ -1592,7 +1626,7 @@ test('with a real cache the widget and the Stats card show its size, what losing
   const sheet = (await band.panel.findAll({ type: 'Text' })).map((x: { text: string }) => x.text)
   for (const t of ['Cache: 100K of 200K', 'Lose the cache', '$0.80', 'Switch to Haiku', '$0.10', 'Switch to Sonnet', '$0.40', 'Switch to Fable', '$1.60', 'Compact now', 'about $0.60', 'Keep it warm', 'about $0.02']) expect(sheet).toContain(t)
   expect(await band.panel.find({ type: 'Text', text: 'Cache time left 60 min left' })).toBeTruthy() // the hour left, as a bar
-  expect(await band.band.find({ type: 'Text', text: 'cache 100K, 60 min left' })).toBeTruthy() // and in the band's one row
+  expect((await band.band.find({ key: 'router-cache' }))?.props.label).toBe('Cache 100K · 60 min left') // the cache is the Cache button itself, in the band's one row
   // compact and proportional (owner ask 2026-11-26): a heading opens each block, blank lines only between blocks; the
   // note sits beside its price when there is room and under it when narrow
   type N = { type: string; props?: Record<string, unknown>; children?: Array<N | string> }
@@ -2081,7 +2115,7 @@ test('auto-compact Settings: the slider is coloured by cost and marks the cheape
   expect(props.zones.find(z => z[0] >= 300_000)?.[1]).toBe('#4f9a5c') // green at the cheapest
   expect(hues.length > 10).toBe(true) // a gradient, not three bands
   expect(await band.find({ type: 'Text', text: /★ cheapest 300K/ })).toBeTruthy()
-  expect(await band.find({ type: 'Text', text: /^Compacting at 1000K: about \$0\.\d\d a step; at 300K: about \$0\.\d\d\. This chat grows 5\.0K a step\.$/ })).toBeTruthy()
+  expect(await band.find({ type: 'Text', text: /^Compacting at 1000K: about \$0\.\d\d a step; at 300K: about \$0\.\d\d\. This chat grows 5K a step\.$/ })).toBeTruthy()
   await band.panel.post({ value: 400_000 }, { in: 'router-compact-slider' })
   expect(await band.find({ type: 'Text', text: '400K' })).toBeTruthy()
   await band.press({ key: 'router-compact-default-set' })

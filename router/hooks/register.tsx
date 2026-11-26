@@ -1696,27 +1696,41 @@ export const register: Register = on => {
     const board = () => openBoard($, s).catch(() => $.ui.toast('router: could not open the board'))
     const picked = await read($, chat)
     const undo = () => update($, chat, (c): ChatModel => ({ ...c, model: null, by: 'you', routed: false, from: null })) // back to the default; auto stays off for this chat
-    // under 72 cells the row leaves the cache to the panel; narrower still, the buttons wrap onto a second line
+    // under 72 cells the row drops the word "Router" (the dot stays); narrower still, the buttons wrap onto a second line
     // instead of running off the edge. Gaps stay 2 cells: at 1, plain buttons read as one phrase (tests/ui.test.ts)
     const narrow = e.props.bodyColumns < 72
     // the cache's hour counts down in the row: redraw once a minute while it is warm (text changes, the height never)
     const left = s.lastContext >= 1000 ? minutesLeft(s.prev.at, f.at, 60) : undefined
     if (left && !s.minuteTick) s.minuteTick = $.clock.after(60_000, () => { s.minuteTick = undefined; $.ui.invalidate('ui.render') })
 
+    // What fits decides the words (owner ask 2026-11-26: "cache expired" must fit): the fixed parts are counted, then the
+    // cache takes the longest form that fits, then the hit. The cache is the Cache button itself, so it costs no extra cells.
+    const behind = Object.values((await read($, tools))?.tools ?? {}).some(x => x.isBehind)
+    const undoLabel = f.v.isOn && picked.by === 'auto' && picked.model ? `Picked ${pretty(picked.model)} for this chat · Undo` : ''
+    const net = netWords(f.chat, f.fmt)
+    const fixed = [narrow ? '●' : '● Router', ...(f.v.isOn ? [`■ ${f.now}`, net] : [`off ${f.where}`]), undoLabel, behind ? 'Update available' : '', f.feats.labels ? 'Switches' : '', 'Board', 'Stats', 'Settings']
+      .filter(Boolean).reduce((n, t) => n + t.length + 2, 0)
+    const room = e.props.bodyColumns - fixed
+    const K = kt(s.lastContext)
+    const forms = !f.v.isOn || left === undefined ? ['Cache'] : left === 0 ? ['Cache expired'] : [`Cache ${K} · ${left} min left`, `Cache ${K} · ${left}m`, `${left}m left`, 'Cache']
+    const cacheLabel = forms.find(t => t.length + 2 <= room) ?? forms[forms.length - 1]!
+    const hitLabel = f.v.isOn && f.hit !== undefined && `Hit ${f.hit}%`.length + 2 <= room - cacheLabel.length - 2 ? `hit ${f.hit}%` : ''
+    const warn = left !== undefined && left <= 10 && f.v.isOn
     const row = (
       <Box key="router-row" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} width={e.props.bodyColumns}>
-        <Text><Text color={f.v.isOn ? 'success' : 'inactive'}>●</Text> Router</Text>
+        <Text><Text color={f.v.isOn ? 'success' : 'inactive'}>●</Text>{narrow ? '' : ' Router'}</Text>
         {f.v.isOn && <Text wrap="truncate-end"><Text color={modelColor(f.main?.model ?? s.cfg.main.model)}>■</Text> {f.now}</Text>}
-        {f.v.isOn && picked.by === 'auto' && picked.model && <Button key="router-chat-undo" plain dimColor label={`Picked ${pretty(picked.model)} for this chat · Undo`} onPress={undo} />}
-        {f.v.isOn && <Text dimColor={!isExtra(f.chat)} color={isExtra(f.chat) ? 'warning' : undefined} wrap="truncate-end">{netWords(f.chat, f.fmt)}</Text>}
-        {f.v.isOn && left !== undefined && !narrow && <Text dimColor={left > 10} color={left > 10 ? undefined : 'warning'} wrap="truncate-end">{left ? `cache ${kt(s.lastContext)}, ${left} min left` : `cache ${kt(s.lastContext)} expired`}</Text>}
-        {f.v.isOn && f.hit !== undefined && e.props.bodyColumns >= 110 && <Text dimColor wrap="truncate-end">hit {f.hit}%</Text>}
+        {!!undoLabel && <Button key="router-chat-undo" plain dimColor label={undoLabel} onPress={undo} />}
+        {f.v.isOn && <Text dimColor={!isExtra(f.chat)} color={isExtra(f.chat) ? 'warning' : undefined} wrap="truncate-end">{net}</Text>}
         {!f.v.isOn && <Text dimColor wrap="truncate-end">off {f.where}</Text>}
-        {Object.values((await read($, tools))?.tools ?? {}).some(x => x.isBehind) && <Button key="router-update-tip" plain label="Update available" onPress={open('settings')} />}
+        {behind && <Button key="router-update-tip" plain label="Update available" onPress={open('settings')} />}
         <Box flexGrow={1} />
+        {!!hitLabel && <Text dimColor>{hitLabel}</Text>}
+        {warn
+          ? <Button key="router-cache" plain onPress={open('cache')}><Text color="warning">{cacheLabel}</Text></Button>
+          : <Button key="router-cache" plain dimColor={cacheLabel !== 'Cache'} label={cacheLabel} onPress={open('cache')} />}
         {f.feats.labels && <Button key="router-switches" plain label="Switches" onPress={open('switches')} />}
         <Button key="router-board" plain label="Board" onPress={board} />
-        <Button key="router-cache" plain label="Cache" onPress={open('cache')} />
         <Button key="router-stats" plain label="Stats" onPress={open('stats')} />
         <Button key="router-settings" plain label="Settings" onPress={open('settings')} />
       </Box>
@@ -2000,7 +2014,7 @@ export const register: Register = on => {
     const src = bd?.autocompactSource === 'env' ? ' (CLAUDE_CODE_AUTO_COMPACT_WINDOW)' : bd?.autocompactSource === 'settings' ? ' (your settings.json)' : ''
     const legend = [`▲ now ${kt(s.lastContext)}`, best ? `★ cheapest ${kt(best)}` : '', `│ Claude Code ${kt(engineAt)}${src}`].filter(Boolean).join('   ')
     const here = at ?? engineAt
-    const grows = growth === undefined ? '' : growth < 10_000 ? `${(growth / 1000).toFixed(1)}K` : kt(growth) // "0K" read as no growth
+    const grows = growth === undefined ? "" : growth < 1000 ? `${Math.round(growth / 10) * 10} tokens` : kt(growth) // "0K" read as no growth; the house style has no decimals on K
     const acCost = growth === undefined
       ? 'The cheapest point shows after a few steps.'
       : `Compacting at ${kt(here)}: ${about(compactStepUsd(model, here, growth))} a step${best && best !== here ? `; at ${kt(best)}: ${about(compactStepUsd(model, best, growth))}` : ''}. This chat grows ${grows} a step.`

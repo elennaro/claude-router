@@ -2,6 +2,12 @@
 
 Newest first. Update with `/plugin marketplace update claude-router`, then `/plugin update router@claude-router`, then restart Claude Code.
 
+## 0.9.7: the band fits its words
+
+- The cache is the **Cache** button itself, in the longest words that fit: `Cache 96K · 60 min left`, `Cache 96K · 60m`, `60m left`, or `Cache`.
+- **Cache expired** shows at every width, in the warning colour.
+- A chat that grows under 1K a step says so in tokens (410 tokens), not 0K.
+
 ## 0.9.6: Training learns from your own use
 
 With Settings → *Training* on, the router now keeps what a local model needs to learn your routing: the prompt with each switch (masked like the Board labels, up to 2000 characters, only in `router.db` on this machine; never a subagent brief), a row for each turn it kept as it was (unless you named or picked the model or effort), and labels from your next message: an unhappy reply marks the turn before 👎, a short "thanks" or "good" 👍. Your 👍/👎 buttons always win. Unrated rows are trimmed after their day to 2 per rated one, so the data stays small and balanced. With Training off nothing changes.
