@@ -82,7 +82,13 @@ export type Versions = { at: number; tools: Record<Tool, ToolState> }
 // The saving features (docs/PLAN-v3.md slices 1-3), each switchable in Settings.
 // autoSwitch: move the chat down by itself when the cache rebuild pays; sizing: size the reader and researcher;
 // pastes: read big pastes first; awake: keep an idle chat's cache warm for some hours, then compact it.
-export type Features = { autoSwitch: boolean; sizing: boolean; pastes: boolean; awake: boolean }
+// labels: log the router's switches for 👍/👎 training labels (off by default).
+export type Features = { autoSwitch: boolean; sizing: boolean; pastes: boolean; awake: boolean; labels: boolean }
+
+// One switch the router made (training data, Settings > Training): no prompt text, only what moved and why.
+// kind: pick (the chat's model), quick (one turn on another model), effort (the main chat's effort), agent (a subagent spawn).
+// from: the no-router model and effort ('' effort: as the engine sends it). undoUsd: the cache rebuild going back costs.
+export type Switch = { id: string; at: number; who: string; kind: 'pick' | 'quick' | 'effort' | 'agent'; fromModel: string; fromEffort: string; toModel: string; toEffort: string; cls: string; why: string; undoUsd: number; label: 'good' | 'bad' | null }
 // The offer after the cache lapsed anyway: what resuming re-reads, what compacting first adds, and what it saves per step.
 export type Cold = { cache: number; resume: number; extra: number; perStep: number; payback: number }
 // While you are away: the nudges sent since your last step, what they cost, what a rebuild would have cost, and whether
@@ -105,7 +111,7 @@ declare module 'claude-code' {
       view: Shaped<RouterView>
       log: Shaped<Array<TurnLog>>
       mix: Mix // this chat's spend per model and effort
-      panel: 'none' | 'stats' | 'settings' // what the band has expanded under its row
+      panel: 'none' | 'stats' | 'settings' | 'switches' // what the band has expanded under its row
       isWidgetOpen: boolean
       modes: { global: string | null; project: string | null; isProject: boolean } // "mode" as written in each routing.json
       tools: Versions | null
@@ -119,6 +125,7 @@ declare module 'claude-code' {
       compactAt: number | null // this chat's own auto-compact point in tokens (Settings), null: Claude Code's own window
       plan: Plan | null // the plan's usage windows as Claude Code reports them, and the dollars per weekly point learned here
       units: 'usd' | 'plan' // how savings and costs read (Settings, kept across sessions)
+      switches: Array<Switch> // this chat's last switches, newest last, with their labels (Settings > Training on)
       chatAwake: boolean // keep-awake for this chat (Settings, This chat; the away report's button): off stops nudges here only
     }
   }

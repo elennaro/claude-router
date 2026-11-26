@@ -1,7 +1,7 @@
 // The ledger in one SQLite file, ~/.claude/router/router.db. A mod has no Node, so a fixed runner (node's built-in
 // node:sqlite) takes a batch of statements on stdin and runs them in one transaction; every statement lives here.
 import type { EngineInterface } from 'claude-code'
-import type { AgentTally, Bucket, Cache, Tally } from '../types'
+import type { AgentTally, Bucket, Cache, Switch, Tally } from '../types'
 import type { Life } from './policy'
 
 // Deletes the files in a folder whose name starts with a prefix and that are at least `age` ms old; a missing folder is
@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS usage (day TEXT, session TEXT, who TEXT, model TEXT, 
 CREATE TABLE IF NOT EXISTS spawns (day TEXT, session TEXT, type TEXT, runs INTEGER NOT NULL, routed INTEGER NOT NULL, respawned INTEGER NOT NULL, PRIMARY KEY (day, session, type)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS efforts (day TEXT, session TEXT, who TEXT, model TEXT, effort TEXT, asked TEXT, cls TEXT, why TEXT, steps INTEGER NOT NULL, usd REAL NOT NULL, base REAL NOT NULL, extra REAL NOT NULL, PRIMARY KEY (day, session, who, model, effort, asked, cls, why)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS switches (id TEXT PRIMARY KEY, day TEXT NOT NULL, at INTEGER NOT NULL, session TEXT NOT NULL, who TEXT NOT NULL, kind TEXT NOT NULL, from_model TEXT NOT NULL, from_effort TEXT NOT NULL, to_model TEXT NOT NULL, to_effort TEXT NOT NULL, cls TEXT NOT NULL, why TEXT NOT NULL, undo_usd REAL NOT NULL, label TEXT, source TEXT, labelled INTEGER) WITHOUT ROWID;
 `
 
 // 0.4's ledger had no `extra`: older rows get 0 (their extra spend was never split out).
@@ -124,13 +125,25 @@ export const effortRow = (day: string, session: string, who: string, model: stri
   params: [day, session, who, model, d.effort, d.asked, d.cls, d.why, usd, base, extra],
 })
 
+// switches (training data, opt-in): one row per router switch (Switch in types), its label filled in later.
+// label 'good' | 'bad'; source 'button' (👍/👎 in the band) or, planned, 'reply' (read from the person's next message).
+// A reply label must never overwrite a button one: write it with `AND source IS NULL`.
+export const switchRow = (day: string, session: string, w: Switch): Step => ({
+  sql: 'INSERT OR IGNORE INTO switches VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)',
+  params: [w.id, day, w.at, session, w.who, w.kind, w.fromModel, w.fromEffort, w.toModel, w.toEffort, w.cls, w.why, w.undoUsd],
+})
+export const labelRow = (id: string, label: 'good' | 'bad', at: number): Step => ({
+  sql: `UPDATE switches SET label = ?, source = 'button', labelled = ? WHERE id = ?`,
+  params: [label, at, id],
+})
+
 // The ledger stays small: per-effort detail for EFFORTS_DAYS (enough to tune routing), the rest for LEDGER_DAYS (the
 // Board's longest range is a year), and a session with no day left goes too. Run with each session's first batch.
 export const EFFORTS_DAYS = 60
 export const LEDGER_DAYS = 400
 export const cleanupSteps = (dayBefore: (days: number) => string): Array<Step> => [
   { sql: 'DELETE FROM efforts WHERE day < ?', params: [dayBefore(EFFORTS_DAYS)] },
-  ...['usage', 'days', 'spawns'].map(t => ({ sql: `DELETE FROM ${t} WHERE day < ?`, params: [dayBefore(LEDGER_DAYS)] })),
+  ...['usage', 'days', 'spawns', 'switches'].map(t => ({ sql: `DELETE FROM ${t} WHERE day < ?`, params: [dayBefore(LEDGER_DAYS)] })),
   { sql: 'DELETE FROM sessions WHERE id NOT IN (SELECT session FROM days)' },
 ]
 

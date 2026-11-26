@@ -967,9 +967,9 @@ test('the ledger keeps each session per day; the classifier counts as spend with
   expect(eff.map(r => r[9])).toEqual([Number(main[6]), Number(main[6])])
   // the session's first batch trims the ledger: effort detail after 60 days, the rest after 400, sessions with no day
   const trim = batches.flat().filter(x => x.sql.startsWith('DELETE FROM'))
-  expect(trim.map(x => x.sql.split(' ')[2])).toEqual(['efforts', 'usage', 'days', 'spawns', 'sessions'])
+  expect(trim.map(x => x.sql.split(' ')[2])).toEqual(['efforts', 'usage', 'days', 'spawns', 'switches', 'sessions'])
   const ago = (n: number) => { const t = new Date(1_000 - n * 86_400_000); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}` }
-  expect(trim.map(x => x.params?.[0])).toEqual([ago(60), ago(400), ago(400), ago(400), undefined])
+  expect(trim.map(x => x.params?.[0])).toEqual([ago(60), ago(400), ago(400), ago(400), ago(400), undefined])
   // once per session, after the waiting rows
   const first = batches.findIndex(b => b.some(x => x.sql.startsWith('DELETE FROM')))
   expect(batches[first]!.findIndex(x => x.sql.startsWith('DELETE')) > batches[first]!.findIndex(x => x.sql.startsWith('INSERT INTO usage'))).toBe(true)
@@ -1094,6 +1094,189 @@ test('the first prompt picks the chat model only when all 3 samples agree; Undo 
   await band.unmount()
 })
 
+// the Switches list's rating buttons with this label (findAll matches by type only)
+const thumbs = async (band: any, label: string): Promise<Array<{ props: { key: string } }>> => (await band.findAll({ type: 'Button' })).filter((b: { props: { label?: string } }) => b.props.label === label)
+
+test('Training on: a model pick and its effort log once each, no prompt text; 👎 on the pick goes back as Undo, effort routing stays', async (engine, on) => {
+  const $ = engine as any
+  const models: Array<string> = []
+  const efforts: Array<unknown> = []
+  const batches: Array<Array<Step>> = []
+  const store = new Map<string, unknown>([['features', { labels: true }]])
+  wire(on, { sent: efforts, models, batches, store, files: { '/home/.claude/routing.json': ROUTING }, haiku: 'mechanical 0.95' })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const ask = async (text: string) => { await $.prompt.submit({ text }); await step($, 'high') }
+  await ask('Swap every variable called foo for bar in the utils module and the tests too')
+  await ask('ok, do it') // the same switches again: no new entries
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await band.press({ key: 'router-switches' })
+  expect(await thumbs(band, '👍')).toHaveLength(2) // newest first: the effort, then the pick
+  await band.press({ key: (await thumbs(band, '👎'))[1]!.props.key })
+  expect(await band.find({ type: 'Text', text: '👎 went back' })).toBeTruthy()
+  expect(await thumbs(band, '👎')).toHaveLength(1) // labelled once
+  await ask('ok, and the docs too')
+  expect(models.at(-1)).toBe('claude-opus-5-5') // back on the chat's model, as Undo
+  expect(efforts.at(-1)).toBe('medium') // the class's effort on Opus, not the picker's high: a pick's 👎 pins nothing (review 2026-11-25)
+  await band.unmount()
+  await $.session.end({ reason: 'other', sessionId: 'sess-1', resume: { sessionId: 'sess-1' } })
+  const all = batches.flat()
+  const rows = all.filter(x => x.sql.includes('INTO switches')).map(x => x.params ?? [])
+  expect(rows.map(r => r.slice(3, 12))).toEqual([
+    ['sess-1', 'main', 'pick', 'opus', 'high', 'haiku', 'low', 'mechanical', 'pick'],
+    ['sess-1', 'main', 'effort', 'opus', 'high', 'haiku', 'low', 'mechanical', 'class'],
+    ['sess-1', 'main', 'effort', 'opus', 'high', 'opus', 'medium', 'mechanical', 'class'], // back on Opus: a new effort switch
+  ])
+  expect(JSON.stringify(rows)).not.toMatch(/foo|utils|docs/) // never prompt text (rule 5)
+  const label = all.find(x => x.sql.startsWith('UPDATE switches'))
+  expect(label?.params?.slice(0, 1)).toEqual(['bad'])
+  expect(label?.params?.[2]).toBe(rows[0]![0])
+})
+
+test('Training: a quick turn on Haiku logs once as quick, its 👎 only notes it; a model named in the prompt is never logged', async (engine, on) => {
+  const $ = engine as any
+  const batches: Array<Array<Step>> = []
+  const store = new Map<string, unknown>([['features', { labels: true }]])
+  const opts: Parameters<typeof wire>[1] = { sent: [], models: [], batches, store, tokens: 5_000, files: { '/home/.claude/routing.json': JSON.stringify({ classes: { explore: { model: 'haiku', effort: 'medium' } } }) }, haiku: 'explore 0.9' }
+  wire(on, opts)
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: 'tell me the weather' })
+  await step($, 'medium')
+  await step($, 'medium') // a second step of the same turn: still one row
+  expect(opts.models).toEqual(['haiku', 'haiku'])
+  await $.prompt.submit({ text: 'use haiku for this: tell me the weather in Porto' })
+  await step($, 'medium')
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await band.press({ key: 'router-switches' })
+  await band.press({ key: (await thumbs(band, '👎')).at(-1)!.props.key })
+  expect(await band.find({ type: 'Text', text: '👎 noted' })).toBeTruthy()
+  await band.unmount()
+  await $.session.end({ reason: 'other', sessionId: 'sess-1', resume: { sessionId: 'sess-1' } })
+  const rows = batches.flat().filter(x => x.sql.includes('INTO switches')).map(x => x.params ?? [])
+  expect(rows.filter(r => r[5] !== 'effort').map(r => [r[5], r[6], r[8]])).toEqual([['quick', 'opus', 'haiku']]) // "use haiku" is yours
+})
+
+test('Training: 👎 on an effort switch pins the chat back to the effort it had with no router', async (engine, on) => {
+  const $ = engine as any
+  const sent: Array<unknown> = []
+  const batches: Array<Array<Step>> = []
+  const store = new Map<string, unknown>([['features', { labels: true }]])
+  wire(on, { sent, batches, store, tokens: 5_000, files: { '/home/.claude/routing.json': ROUTING }, haiku: 'mechanical 0.95' })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await $.command.run({ command: 'route', args: 'models off' }) // effort only
+  const ask = async (text: string) => { await $.prompt.submit({ text }); await step($, 'high') }
+  await ask('Swap every variable called foo for bar in the utils module and the tests too')
+  expect(sent.at(-1)).toBe('medium') // the class lowers the picker's high
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await band.press({ key: 'router-switches' })
+  await band.press({ key: (await thumbs(band, '👎'))[0]!.props.key })
+  await ask('Rename the helper called bar to baz in the same module and its tests')
+  expect(sent.at(-1)).toBe('high')
+  await band.unmount()
+  await $.session.end({ reason: 'other', sessionId: 'sess-1', resume: { sessionId: 'sess-1' } })
+  const rows = batches.flat().filter(x => x.sql.includes('INTO switches')).map(x => x.params ?? [])
+  expect(rows.map(r => [r[5], r[7], r[9], r[11]])).toEqual([['effort', 'high', 'medium', 'class']])
+})
+
+test('Training: 👎 on an old pick leaves a model you chose since in Settings', async (engine, on) => {
+  const $ = engine as any
+  const store = new Map<string, unknown>([['features', { labels: true }]])
+  const models: Array<string> = []
+  wire(on, { sent: [], models, store, haiku: 'mechanical 0.95' })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: 'Swap every variable called foo for bar in the utils module and the tests too' })
+  await step($, 'medium')
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await band.press({ key: 'router-settings' })
+  await band.press({ key: 'router-model-sonnet' })
+  await band.press({ key: 'router-settings' })
+  await band.press({ key: 'router-switches' })
+  for (const b of await thumbs(band, '👎')) await band.press({ key: b.props.key })
+  await $.prompt.submit({ text: 'ok, do it' })
+  await step($, 'medium')
+  expect(models.at(-1)).toBe('sonnet')
+  await band.unmount()
+})
+
+test('Training: claude -p runs (evals, scripts) log nothing', async (engine, on) => {
+  const $ = engine as any
+  const batches: Array<Array<Step>> = []
+  const store = new Map<string, unknown>([['features', { labels: true }]])
+  wire(on, { sent: [], batches, store, surfaces: [], files: { '/home/.claude/routing.json': ROUTING }, haiku: 'explore 0.95' })
+  on('agent.spawn', (_: unknown, e: { model?: string }) => ({ model: e.model ?? 'inherit', agentId: 'sub1' }))
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: false })
+  await $.agent.spawn({ prompt: 'find where the config is loaded', parentModel: 'claude-opus-5-5', subagentType: 'Explore' }) // routed to Haiku
+  await $.session.end({ reason: 'other', sessionId: 'sess-1', resume: { sessionId: 'sess-1' } })
+  expect(batches.flat().some(x => x.sql.includes('INTO switches'))).toBe(false)
+})
+
+test('Training: an ultrathink turn is yours and logs nothing', async (engine, on) => {
+  const $ = engine as any
+  const store = new Map<string, unknown>([['features', { labels: true }]])
+  const interactive: Array<Array<Step>> = []
+  wire(on, { sent: [], batches: interactive, store, tokens: 5_000, files: { '/home/.claude/routing.json': ROUTING }, haiku: 'mechanical 0.95' })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await band.press({ key: 'router-settings' })
+  await band.press({ key: 'router-effort-medium' }) // your pick; ultrathink then runs at the picker's high (review 2026-11-25)
+  await band.unmount()
+  await $.prompt.submit({ text: 'ultrathink: swap every variable called foo for bar in the utils module and the tests too' })
+  await step($, 'high')
+  await $.session.end({ reason: 'other', sessionId: 'sess-1', resume: { sessionId: 'sess-1' } })
+  expect(interactive.flat().some(x => x.sql.includes('INTO switches'))).toBe(false)
+})
+
+test('Training off (the default): no switch rows and no Switches button', async (engine, on) => {
+  const $ = engine as any
+  const batches: Array<Array<Step>> = []
+  wire(on, { sent: [], models: [], batches, files: { '/home/.claude/routing.json': ROUTING }, haiku: 'mechanical 0.95' })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: 'Swap every variable called foo for bar in the utils module and the tests too' })
+  await step($, 'medium')
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await band.find({ key: 'router-switches' })).toBeFalsy()
+  await band.unmount()
+  await $.session.end({ reason: 'other', sessionId: 'sess-1', resume: { sessionId: 'sess-1' } })
+  expect(batches.flat().some(x => x.sql.includes('INTO switches') || x.sql.startsWith('UPDATE switches'))).toBe(false) // the trim still runs
+})
+
+test('Training: a subagent the router moves logs one entry; its 👎 only records the label', async (engine, on) => {
+  const $ = engine as any
+  const batches: Array<Array<Step>> = []
+  const store = new Map<string, unknown>([['features', { labels: true }]])
+  wire(on, { sent: [], batches, store, files: { '/home/.claude/routing.json': ROUTING }, haiku: 'explore 0.95' })
+  on('agent.spawn', (_: unknown, e: { model?: string }) => ({ model: e.model ?? 'inherit', agentId: 'sub1' }))
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await $.agent.spawn({ prompt: 'Where is the config loaded from? List the files.', subagentType: 'general-purpose', parentModel: 'claude-opus-5-5' })
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await band.press({ key: 'router-switches' })
+  await band.press({ key: (await thumbs(band, '👎'))[0]!.props.key })
+  expect(await band.find({ type: 'Text', text: '👎 noted' })).toBeTruthy()
+  await band.unmount()
+  await $.session.end({ reason: 'other', sessionId: 'sess-1', resume: { sessionId: 'sess-1' } })
+  const rows = batches.flat().filter(x => x.sql.includes('INTO switches')).map(x => x.params ?? [])
+  expect(rows.map(r => [r[4], r[5], r[6]])).toEqual([['general-purpose', 'agent', 'opus']])
+})
+
+test('Training: 👎 on a model pick over $0.10 of cache says the price first, still goes back', async (engine, on) => {
+  const $ = engine as any
+  const toasts: Array<string> = []
+  const store = new Map<string, unknown>([['features', { labels: true }]])
+  const opts: Parameters<typeof wire>[1] = { sent: [], models: [], store, haiku: 'mechanical 0.95' }
+  wire(on, opts)
+  on('ui.toast', (_: unknown, e: { text: string }) => { toasts.push(e.text); return { value: undefined } })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: 'Swap every variable called foo for bar in the utils module and the tests too' })
+  await step($, 'medium')
+  opts.read = 200_000 // the chat has grown: going back to Opus re-reads 200K once
+  await $.prompt.submit({ text: 'ok, do it' })
+  await step($, 'medium')
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await band.press({ key: 'router-switches' })
+  await band.press({ key: (await thumbs(band, '👎')).at(-1)!.props.key })
+  await band.unmount()
+  expect(toasts.join('\n')).toMatch(/back to Opus; the next request re-reads this chat once, about \$/)
+})
+
 test('first prompt: split samples keep the default; the auto pick steps back for a floor task', async (engine, on) => {
   const $ = engine as any // the test engine fills origin, wait and the other session-set fields
   const models: Array<string> = []
@@ -1202,7 +1385,7 @@ test('Settings switches the saving features off and on; the choice is kept for l
   expect((await $.prompt.submit({ text: big, origin: { kind: 'composer' }, wait: false })).text).toBe(big)
   await $.agent.spawn({ prompt: 'Find the timeouts in logs/a.log', subagentType: 'router:document-reader', parentModel: 'claude-opus-5-5' })
   expect(spawned).toEqual([undefined]) // the agent's own model, no sizing
-  expect(store.get('features')).toEqual({ autoSwitch: true, sizing: false, pastes: false, awake: true })
+  expect(store.get('features')).toEqual({ autoSwitch: true, sizing: false, pastes: false, awake: true, labels: false })
   await band.press({ key: 'router-f-pastes-on' })
   expect((await $.prompt.submit({ text: big, origin: { kind: 'composer' }, wait: false })).text).not.toBe(big)
   await band.unmount()
@@ -1573,7 +1756,7 @@ test('a nudge is dropped when the chat was just used, and a nudge that finds the
   opts.read = 0
   opts.write = 200_000 // the cache was gone: the nudge wrote the whole chat again (a 5-minute cache)
   await step($, 'medium')
-  expect(store.get('features')).toEqual({ autoSwitch: true, sizing: true, pastes: true, awake: false })
+  expect(store.get('features')).toEqual({ autoSwitch: true, sizing: true, pastes: true, awake: false, labels: false })
   expect(toasts.some(t => t.includes('keep-awake found the cache already gone'))).toBe(true)
 })
 
