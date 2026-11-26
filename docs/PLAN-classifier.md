@@ -284,6 +284,26 @@ What it means:
    where they carry floors. Next: the decision model (Haiku, a local Vela-2.0-0.8B or Gemma; Jev is cheap at
    $0.042 per million input tokens but would send every prompt to a third party).
 
+## Narrow-questions result (2026-11-26, $0.29 Haiku)
+
+`evals/classifier/narrow.mjs`: Haiku gives a probability for 7 questions (steps, cause, design, risk, public, huge,
+simple); a table maps them to a tier. Only the 531 runs Haiku classified today are replaced, so the comparison isolates
+the classifier. Scored with `EVAL_RUNS=results/classifier-narrow.jsonl node report.mjs`.
+
+| Gate | Narrow | Today |
+|---|---|---|
+| Floor downgrades / production investigation below Opus high | 0 / 0 | 0 / 0 |
+| Measured quality, the 253 cases both score | +20.5% | +16.6% |
+| Measured spend | 129.7% | 122.2% |
+| False cheap / false dear / unstable | 6.4% / 46.6% / 12.4% | 12.7% / 47.7% / 11.3% |
+
+1. Better and safer, but dearer: 197 of 283 cases land on Opus high. "steps" fires on 233 of 531 runs, "public" on 145.
+2. Without the doubt guard (Sonnet only when every up answer < 0.2), two production cases went to Sonnet (hard fail).
+3. A stricter "steps" (0.7-0.9) saved 4-5 points of spend, cost 3 points of quality and left false dear unchanged, so
+   the dear picks are not one loose question. Not tuned further on 283 cases (overfitting).
+4. Still unmeasured: a cheaper rung than Opus high for "steps" alone (Opus medium or Sonnet high), Russian vs English
+   split, and the decision models other than Haiku.
+
 ## Steps and cost
 
 | Step | What | Cost |
