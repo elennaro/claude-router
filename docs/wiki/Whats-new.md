@@ -2,6 +2,12 @@
 
 Newest first. Update with `/plugin marketplace update claude-router`, then `/plugin update router@claude-router`, then restart Claude Code.
 
+## 0.9.3: a real Compact at slider on the desktop
+
+- **Compact at** is drawn: cost colours along the track, a tick every 100K, the knob at your pick, ★ for the cheapest point and a line for Claude Code's own. Under it, a row of points to press, each with its cost dot.
+- **Settings breathe** on the desktop: air between rows, and each feature's note on its own line under its switch.
+- The chat's growth per step shows to a tenth (0.4K), not as 0K.
+
 ## 0.9.2: one quiet band, a Router panel, settings that stay
 
 - **The band is one row** and never grows with what you open, so the chat no longer jumps and the mouse wheel scrolls the chat again. It shows the cache's size and minutes left.

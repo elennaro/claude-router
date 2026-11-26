@@ -4,7 +4,7 @@ import type { EngineInterface, Register, SessionMessage } from 'claude-code'
 import type { Advice, Away, Bucket, Cache, ChatModel, Cold, Features, Hint, Mix, Plan, Switch, Tally, RouterView, TurnLog, Why } from '../types'
 import { BOARD, SWEEP, cleanupSteps, effortRow, type EffortOf, type EffortWhy, livesQuery, livesOf, type Step, type Totals, IMPORTED, addCache, bucketsOf, dayRow, isAlreadyImported, labelOf, legacySteps, run, sessionRow, spawnRow, spendOf, spendSinceQuery, totalsOf, totalsQuery, usageRow, switchRow, labelRow } from './db'
 import { shield } from './guard'
-import type { SliderProps } from './slider'
+import { type SliderProps, sliderSvg } from './slider'
 import { claudeFamily } from './latest'
 import {
   type AgentName, type Call, type Env, type PriceCheck, type Tool, type Versions, ROLES, agyModels, checkPrices, checkVersions, codexModels,
@@ -1770,17 +1770,23 @@ export const register: Register = on => {
         if (heads.has(it as object)) blocks.push([it])
         else blocks[blocks.length - 1]!.push(it)
       }
+      // the desktop's rows are taller (chips): a little air between rows there, and more between blocks
+      const air = e.surface === 'desktop' ? 1 : 0
       return (
-        <Box flexDirection="column" gap={1} width={W}>
+        <Box flexDirection="column" gap={1 + air} width={W}>
           {tabRow}
-          {blocks.filter(b => b.length).map((b, i) => <Box key={`router-block-${i}`} flexDirection="column">{b}</Box>)}
+          {blocks.filter(b => b.length).map((b, i) => <Box key={`router-block-${i}`} flexDirection="column" {...(air ? { gap: air } : {})}>{b}</Box>)}
         </Box>
       )
     }
 
     // a label column, so every control starts at the same place
     const LABEL = 12
-    const heading = (key: string, text: string) => { const el = <Box key={key}><Text bold>{text}</Text></Box>; heads.add(el as object); return el }
+    const heading = (key: string, text: string, sub?: string) => {
+      const el = <Box key={key} flexDirection="row" columnGap={2} flexWrap="wrap"><Text bold>{text}</Text>{sub && <Text dimColor>{sub}</Text>}</Box>
+      heads.add(el as object)
+      return el
+    }
     const field = (key: string, label: string, kids: Array<ReturnType<typeof h> | false | null> | ReturnType<typeof h>) => (
       <Box key={key} flexDirection="row" alignItems="flex-start" gap={1}>
         <Box key={`${key}-label`} width={LABEL} flexShrink={0}><Text dimColor>{label}</Text></Box>
@@ -1931,7 +1937,13 @@ export const register: Register = on => {
         </Box>
       )
     }
-    const feat = (k: keyof Features, label: string, text: string) => field(`router-f-${k}`, label, [...choices(`router-f-${k}`, ONOFF, f.feats[k] ? 'on' : 'off', v => setFeature($, k, v === 'on')), note(text)])
+    // the switch, and what it does on its own line under it: one shape for every feature, however wide the panel
+    const feat = (k: keyof Features, label: string, text: string) => field(`router-f-${k}`, label, (
+      <Box key={`router-f-${k}-col`} flexDirection="column" flexShrink={1}>
+        <Box flexDirection="row" columnGap={2}>{choices(`router-f-${k}`, ONOFF, f.feats[k] ? 'on' : 'off', v => setFeature($, k, v === 'on'))}</Box>
+        {note(text)}
+      </Box>
+    ))
 
     // Compact at: this chat's own point (the router compacts it between turns), on a slider coloured by cost
     const engineAt = bd?.autoCompactThreshold ?? limit
@@ -1950,32 +1962,50 @@ export const register: Register = on => {
     const sliderProps: SliderProps = { min, max: limit, step, value, zones, marks }
     const Client = 'Client' in el ? el.Client : undefined
     const Select = 'Select' in el ? el.Select : undefined
-    const slider = Client
-      ? <Client key="router-compact-slider" module="./slider.tsx" props={sliderProps} width={Math.max(12, Math.min(72, W - LABEL - 2))} height={3} />
-      : Select
-        ? <Select key="router-compact-select" label="Compact at" options={[{ value: 'off', label: `Claude Code (${kt(engineAt)})` }, ...points.map(p => ({ value: String(p), label: p === best ? `${kt(p)}, cheapest` : kt(p) }))]} value={at ? String(at) : 'off'} onSelect={v => setCompactAt($, s, v === 'off' ? null : Number(v))} />
-        : null
+    const slideW = Math.max(12, Math.min(72, W - LABEL - 2))
+    // the desktop: the slider as a picture (its font is proportional) over a row of points to press, each dot in its
+    // cost colour; a terminal: the text slider to drag; elsewhere a list
+    const dots = choices('router-compact-dot', [['off', 'Claude Code'] as [string, string], ...points.map(p => [String(p), p === best ? `${kt(p)} ★` : kt(p)] as [string, string])], at ? String(at) : 'off', v => setCompactAt($, s, v === 'off' ? null : Number(v)), v => (v === 'off' ? '#8a8f98' : look(Number(v))))
+    const pic = Svg && e.surface === 'desktop' && sliderSvg(sliderProps, Math.max(200, Math.min(560, slideW * 8)))
+    const slider = Svg && pic
+      ? [<Svg key="router-compact-pic" source={pic} {...svgSize(pic)} alt={`Compact at ${kt(value)}, from ${kt(min)} to ${kt(limit)}`} />, <Box key="router-compact-dots" flexDirection="row" flexWrap="wrap" columnGap={2}>{dots}</Box>]
+      : Client
+        ? [<Client key="router-compact-slider" module="./slider.tsx" props={sliderProps} width={slideW} height={3} />]
+        : Select
+          ? [<Select key="router-compact-select" label="Compact at" options={[{ value: 'off', label: `Claude Code (${kt(engineAt)})` }, ...points.map(p => ({ value: String(p), label: p === best ? `${kt(p)}, cheapest` : kt(p) }))]} value={at ? String(at) : 'off'} onSelect={v => setCompactAt($, s, v === 'off' ? null : Number(v))} />]
+          : []
     const src = bd?.autocompactSource === 'env' ? ' (CLAUDE_CODE_AUTO_COMPACT_WINDOW)' : bd?.autocompactSource === 'settings' ? ' (your settings.json)' : ''
     const legend = [`▲ now ${kt(s.lastContext)}`, best ? `★ cheapest ${kt(best)}` : '', `│ Claude Code ${kt(engineAt)}${src}`].filter(Boolean).join('   ')
-    const acCost = (growth === undefined ? 'The cheapest point shows after a few steps.' : `Compacting at ${kt(at ?? engineAt)} averages ${about(compactStepUsd(model, at ?? engineAt, growth))} a step; this chat grows about ${kt(growth)} a step.`)
-      + (at && at >= engineAt ? ` Claude Code compacts at ${kt(engineAt)} first, so make ${kt(at)} your default to reach it.` : '')
+    const here = at ?? engineAt
+    const grows = growth === undefined ? '' : growth < 10_000 ? `${(growth / 1000).toFixed(1)}K` : kt(growth) // "0K" read as no growth
+    const acCost = growth === undefined
+      ? 'The cheapest point shows after a few steps.'
+      : `Compacting at ${kt(here)}: ${about(compactStepUsd(model, here, growth))} a step${best && best !== here ? `; at ${kt(best)}: ${about(compactStepUsd(model, best, growth))}` : ''}. This chat grows ${grows} a step.`
+    const reach = at && at >= engineAt ? `Claude Code compacts at ${kt(engineAt)} first: make ${kt(at)} your default to reach it.` : ''
 
     return page([
-      heading('router-h-chat', 'This chat'),
+      heading('router-h-chat', 'This chat', 'kept after a restart'),
       field('router-chat', 'Routing', choices('router-chat', [['off', 'Off'], ['effort', 'Effort'], ['models', 'Models'], ['both', 'Both']], f.chatMode, v => setChat($, s, v))),
       field('router-model', 'Model', choices('router-model', [['auto', 'Auto'], ['haiku', 'Haiku'], ['sonnet', 'Sonnet'], ['opus', 'Opus'], ['fable', 'Fable']], picked.by === 'you' ? family(picked.model ?? s.cfg.main.model) : 'auto', v => pickModel($, v), v => (v === 'auto' ? undefined : modelColor(v)))),
       field('router-effort', 'Effort', choices('router-effort', [['auto', 'Auto'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra high'], ['max', 'Max']], picked.effort ?? 'auto', v => setChatEffort($, s, v === 'auto' ? null : v), v => (v === 'auto' ? undefined : shade(model, v, 'dark')))),
       f.feats.awake && field('router-chat-awake', 'Keep awake', choices('router-chat-awake', ONOFF, f.chatAwake ? 'on' : 'off', v => setChatAwake($, s, v === 'on'))),
-      field('router-compact', 'Compact at', [<Text key="router-compact-value" bold>{at ? kt(at) : `Claude Code's own (${kt(engineAt)})`}</Text>, ...(at ? [<Button key="router-compact-off" plain dimColor label="Use Claude Code's" onPress={() => setCompactAt($, s, null)} />] : [])]),
-      slider && <Box key="router-compact-slider-row" marginLeft={LABEL + 1} flexDirection="column">{slider}<Text dimColor wrap="wrap">{legend}</Text><Text dimColor wrap="wrap">{acCost}</Text></Box>,
-      (!!at || bd?.autocompactSource === 'settings') && (
-        <Box key="router-compact-default" marginLeft={LABEL + 1}>
+      field('router-compact', 'Compact at', (
+        <Box key="router-compact-col" flexDirection="column" flexShrink={1} {...(e.surface === 'desktop' ? { gap: 1 } : {})}>
+          <Box flexDirection="row" columnGap={2} alignItems="center">
+            <Text key="router-compact-value" bold>{at ? kt(at) : `Claude Code's own, ${kt(engineAt)}`}</Text>
+            {!!at && <Button key="router-compact-off" plain dimColor label="Use Claude Code's" onPress={() => setCompactAt($, s, null)} />}
+          </Box>
+          {slider}
+          <Box flexDirection="column">
+            <Text dimColor wrap="wrap">{legend}</Text>
+            <Text dimColor wrap="wrap">{acCost}</Text>
+            {reach && <Text color="warning" wrap="wrap">{reach}</Text>}
+          </Box>
           {at
-            ? <Button key="router-compact-default-set" plain label={`Make ${kt(at)} my default (every chat)`} onPress={() => setDefaultWindow($, s, at)} />
-            : <Button key="router-compact-default-clear" plain label="Back to Claude Code's own window" onPress={() => setDefaultWindow($, s, null)} />}
+            ? <Box key="router-compact-default"><Button key="router-compact-default-set" plain label={`Make ${kt(at)} my default (every chat)`} onPress={() => setDefaultWindow($, s, at)} /></Box>
+            : bd?.autocompactSource === 'settings' && <Box key="router-compact-default"><Button key="router-compact-default-clear" plain label="Back to Claude Code's own window" onPress={() => setDefaultWindow($, s, null)} /></Box>}
         </Box>
-      ),
-      <Box key="router-chat-note" marginLeft={LABEL + 1}>{note('Kept for this chat, also after a restart.')}</Box>,
+      )),
       ...(f.m.isProject
         ? [
             heading('router-h-project', `This project: ${s.project}`),

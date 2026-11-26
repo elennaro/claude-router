@@ -6,7 +6,7 @@ import {
 import { addWhy, cacheClock, minutesLeft, whoWords, whyWords, boardHtml, cacheStrength, cardLayout, hitPct, svgSize, switchCost, netWords, planFmt, planRate, savedUsd, shade, statsSvg, withMode } from '../hooks/view'
 import { RUNNER, type Step, bucketsOf, labelOf, livesOf } from '../hooks/db'
 import { shield } from '../hooks/guard'
-import { type SliderProps, scale } from '../hooks/slider'
+import { type SliderProps, scale, sliderSvg } from '../hooks/slider'
 
 test("the router's own error never blocks the person's work: the event passes once, one warning", async () => {
   const toasts: Array<string> = []
@@ -1008,7 +1008,7 @@ test('the band is one row; Stats opens the card; Settings turns routing off for 
   expect(card?.props.alt).toMatch(/Now Haiku low \(auto\), you picked high/)
 
   await band.press({ key: 'router-settings' })
-  expect(await band.find({ type: 'Svg' })).toBeFalsy()
+  expect((await band.find({ type: 'Svg' }))?.props.alt).toMatch(/^Compact at /) // the card is gone; the one picture is the Compact at slider
   await band.press({ key: 'router-project-off' })
   expect(JSON.parse(files['/proj/.claude/routing.json'] ?? '{}')).toEqual({ mode: 'off' })
   expect(await band.find({ type: 'Text', text: 'off in this project' })).toBeTruthy()
@@ -1549,10 +1549,12 @@ test('with a real cache the widget and the Stats card show its size, what losing
   const tree = await band.panel.drawn() as N
   const firstKeys = [0, 1, 2].map(i => { const b = find(tree, `router-block-${i}`); const c = b?.children?.[0]; return typeof c === 'object' ? c.props?.key : undefined })
   expect(firstKeys).toEqual(['router-cache-h', 'router-cost-h', 'router-awake-h'])
-  expect(find(tree, 'router-block-1')?.props?.gap).toBeUndefined()
+  expect(find(tree, 'router-block-1')?.props?.gap).toBe(1) // the desktop: a little air between rows
   expect(find(tree, 'router-cost-lose')?.props?.flexDirection).toBe('row')
   const narrow = await $.ui.mount({ ...PANEL, surface: 'terminal', props: { ...PANEL.props, bodyColumns: 50 } })
-  expect(find(await narrow.drawn() as N, 'router-cost-lose')?.props?.flexDirection).toBe('column')
+  const small = await narrow.drawn() as N
+  expect(find(small, 'router-cost-lose')?.props?.flexDirection).toBe('column')
+  expect(find(small, 'router-block-1')?.props?.gap).toBeUndefined() // a terminal: rows packed
   await narrow.unmount()
   await band.unmount()
 })
@@ -1982,7 +1984,7 @@ test('auto-compact: the chat compacts after the turn that passes its own point, 
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
   const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await band.press({ key: 'router-settings' })
-  await band.panel.post({ value: 300_000 }, { in: 'router-compact-slider' }) // the slider let go at 300K
+  await band.press({ key: 'router-compact-dot-300000' }) // the desktop: the 300K point pressed
   await step($, 'medium')
   await done()
   expect(compacted.length).toBe(0) // 250K: under the point
@@ -2008,7 +2010,7 @@ test('auto-compact Settings: the slider is coloured by cost and marks the cheape
   const opts = { sent: [] as Array<unknown>, files, read: 150_000, write: 0, window: 1_000_000 }
   wire(on, opts)
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'terminal' }) // a terminal: the text slider
   await band.press({ key: 'router-settings' })
   expect(await band.find({ type: 'Text', text: /The cheapest point shows after a few steps/ })).toBeTruthy()
   expect(await band.find({ key: 'router-compact-default-set' })).toBeFalsy() // no point picked: nothing to make default
@@ -2018,7 +2020,7 @@ test('auto-compact Settings: the slider is coloured by cost and marks the cheape
   expect(props.marks.find(m => m[1] === '★')?.[0]).toBe(300_000) // 5K a step on Opus
   expect(props.zones.map(z => z[1])).toEqual(['#c8553d', '#c9932e', '#4f9a5c', '#c9932e', '#c8553d']) // red too early, green around the cheapest, red where it costs too much
   expect(await band.find({ type: 'Text', text: /★ cheapest 300K/ })).toBeTruthy()
-  expect(await band.find({ type: 'Text', text: /Compacting at 1000K averages about \$0\.\d\d a step; this chat grows about 5K a step/ })).toBeTruthy()
+  expect(await band.find({ type: 'Text', text: /^Compacting at 1000K: about \$0\.\d\d a step; at 300K: about \$0\.\d\d\. This chat grows 5\.0K a step\.$/ })).toBeTruthy()
   await band.panel.post({ value: 400_000 }, { in: 'router-compact-slider' })
   expect(await band.find({ type: 'Text', text: '400K' })).toBeTruthy()
   await band.press({ key: 'router-compact-default-set' })
@@ -2033,11 +2035,11 @@ test('auto-compact Settings: a point past Claude Code\'s own window can be picke
   const $ = engine as any
   wire(on, { sent: [], read: 150_000, write: 0, window: 1_000_000, engineAt: 400_000 })
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'terminal' })
   await band.press({ key: 'router-settings' })
   await band.panel.post({ value: 600_000 }, { in: 'router-compact-slider' })
   expect(await band.find({ type: 'Text', text: /│ Claude Code 400K \(your settings\.json\)/ })).toBeTruthy()
-  expect(await band.find({ type: 'Text', text: /Claude Code compacts at 400K first, so make 600K your default to reach it/ })).toBeTruthy()
+  expect(await band.find({ type: 'Text', text: /Claude Code compacts at 400K first: make 600K your default to reach it/ })).toBeTruthy()
   expect(await band.find({ key: 'router-compact-default-set' })).toBeTruthy()
   await band.panel.post({ value: 300_000 }, { in: 'router-compact-slider' })
   expect(await band.find({ type: 'Text', text: /your default to reach it/ })).toBeFalsy() // under the window: the router reaches it itself
@@ -2057,11 +2059,42 @@ test('the Compact at slider has a scale every 100K: every tick labelled when the
   }
 })
 
+test('Compact at on the desktop: a picture with a tick every 100K, the knob at the pick and the marks, over coloured points to press (owner case 2026-11-26)', async (engine, on) => {
+  const p: SliderProps = { min: 200_000, max: 1_000_000, step: 25_000, value: 400_000, zones: [[300_000, '#c8553d'], [1_000_000, '#4f9a5c']], marks: [[367_000, '│', '#8a8f98'], [300_000, '★', '#4f9a5c'], [171_000, '▲', '#5b8def']] }
+  const svg = sliderSvg(p, 410) // 10 px each side, 390 px for 800K
+  expect(svg.match(/<line [^>]*y1="33"/g)?.length).toBe(9) // 200K to 1000K
+  expect(svg).toContain('<circle cx="107.5"') // the knob at 400K
+  expect(svg).toContain('fill="#c8553d"/><rect x="58.8"') // red to 300K, then green
+  expect(svg).toContain('>★</text>')
+  expect(svg).not.toContain('▲') // under the track's start: left out, the legend still says it
+  const labels = [...svg.matchAll(/>(\d+K)</g)].map(m => m[1])
+  expect(labels).toEqual(['200K', '300K', '400K', '500K', '600K', '700K', '800K', '900K', '1000K']) // 50 px apart: all fit
+  expect([...sliderSvg(p, 200).matchAll(/>(\d+K)</g)].map(m => m[1])).toEqual(['200K', '400K', '600K', '800K', '1000K']) // narrow: every 2nd
+
+  const $ = engine as any
+  const opts = { sent: [] as Array<unknown>, read: 150_000, write: 0, window: 1_000_000 }
+  wire(on, opts)
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  for (const r of [150_000, 155_000, 160_000, 165_000]) { opts.read = r; await step($, 'medium') }
+  const panel = await $.ui.mount({ ...PANEL, surface: 'desktop' })
+  await panel.press({ key: 'router-tab-settings' })
+  expect(await panel.find({ type: 'Client' })).toBeFalsy() // the desktop's font is proportional: no text slider
+  expect((await panel.find({ type: 'Svg' }))?.props.alt).toBe('Compact at 1000K, from 200K to 1000K')
+  const dot = async (k: string) => (await panel.find({ key: `router-compact-dot-${k}` }))
+  expect(JSON.stringify((await dot('300000'))?.children)).toContain('300K ★') // the cheapest point says so
+  expect((await dot('300000'))?.children?.[0]?.props?.color).toBe('#4f9a5c') // green near the cheapest
+  expect((await dot('200000'))?.children?.[0]?.props?.color).toBe('#c8553d') // red: compacts too often
+  await panel.press({ key: 'router-compact-dot-400000' })
+  expect(await panel.find({ type: 'Text', text: '400K' })).toBeTruthy()
+  expect((await panel.find({ type: 'Svg' }))?.props.alt).toBe('Compact at 400K, from 200K to 1000K')
+  await panel.unmount()
+})
+
 test('the Compact at slider: a press at the left end picks the smallest point, and only letting go saves it', async (engine, on) => {
   const $ = engine as any
   wire(on, { sent: [], read: 150_000, write: 0, window: 1_000_000 })
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-  const panel = await $.ui.mount({ ...PANEL, surface: 'desktop' })
+  const panel = await $.ui.mount({ ...PANEL, surface: 'terminal' })
   await panel.press({ key: 'router-tab-settings' })
   const slider = (await panel.find({ type: 'Client' }))?.props.props as SliderProps
   expect(slider.value).toBe(1_000_000) // nothing picked: Claude Code's own window
