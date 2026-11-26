@@ -442,7 +442,7 @@ test("the main model's words in a brief win: its effort beats the tier, its mode
   expect(sent).toEqual(['high', 'high', 'medium'])
 })
 
-test('generic subagents go by their brief: sure and cheap moves, unsure gets the Sonnet default, a repeat climbs, siblings share', async (engine, on) => {
+test('generic subagents go by their brief: sure and cheap moves, unsure gets the Sonnet default, a repeat climbs, workflow agents run as asked', async (engine, on) => {
   const $ = engine as any // the test engine fills origin, wait and the other session-set fields
   const sent: Array<unknown> = []
   const files: Record<string, string> = { '/home/.claude/routing.json': ROUTING }
@@ -465,7 +465,7 @@ test('generic subagents go by their brief: sure and cheap moves, unsure gets the
   await spawn('please review this PR for bugs and missing edge cases', { workflow: { runId: 'wf_1', agentIndex: 1 } })
   await spawn('Swap every variable called baz for qux across the app folder', { workflow: { runId: 'wf_1', agentIndex: 2 } })
 
-  expect(spawned).toEqual(['haiku', 'sonnet', 'sonnet', undefined, undefined]) // repeat: Haiku -> Sonnet; critique and its sibling: the parent's Opus
+  expect(spawned).toEqual(['haiku', 'sonnet', 'sonnet', undefined, undefined]) // repeat: Haiku -> Sonnet; a workflow's agents: as asked (the router steps aside)
   expect(sent).toEqual(['low', 'high'])
   await end($)
   // per run: [day, session, type, routed, respawned]; the brief itself is never stored
@@ -480,6 +480,68 @@ test('generic subagents go by their brief: sure and cheap moves, unsure gets the
   expect(Number(back![6])).toBe(-Number(sub1![6]))
   expect(Number(back![7])).toBe(Number(sub1![5]) - Number(sub1![7]))
   expect(JSON.stringify(batches)).not.toContain('Swap every variable')
+})
+
+test('ultrathink and ultracode: the router steps aside for the turn and every agent under it, and only measures (owner case 2026-11-26)', async (engine, on) => {
+  const $ = engine as any
+  const sent: Array<unknown> = []
+  const models: Array<string> = []
+  const batches: Array<Array<Step>> = []
+  const asked = { n: 0 }
+  wire(on, { sent, models, batches, asked, files: { '/home/.claude/routing.json': ROUTING }, haiku: 'mechanical 0.95' }) // a new chat: the first prompt picks Haiku for it
+  const spawned: Array<string | undefined> = []
+  let n = 0
+  on('agent.spawn', (_: unknown, e: { model?: string }) => { spawned.push(e.model); return { model: e.model ?? 'inherit', agentId: `sub${++n}` } })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const spawn = (prompt: string, more = {}) => $.agent.spawn({ prompt, subagentType: 'general-purpose', parentModel: 'claude-opus-5-5', ...more })
+
+  await $.prompt.submit({ text: 'Swap every variable called foo for bar in the utils module and the tests too' })
+  await step($, 'high') // routed: the chat's Haiku pick, low effort
+  const calls = asked.n
+  await $.prompt.submit({ text: 'ultrathink: swap every variable called foo for bar in the scripts folder' })
+  expect(asked.n).toBe(calls) // no classifier on an aside turn
+  await step($, 'high') // as the engine sent it: the picker's Opus, high
+  await spawn('Swap every variable called foo for bar across the utils folder, use high effort') // sub1: as asked, the brief's words too
+  await step($, 'medium', 'sub1')
+  await spawn('Swap every variable called baz for qux across the app folder', { parentAgentId: 'sub1' }) // sub2, its child
+  await $.prompt.submit({ text: 'ULTRACODE swap every variable called baz for qux in the app folder' })
+  await step($, 'high')
+  await $.prompt.submit({ text: 'Swap every variable called foo for bar in the docs folder' }) // a plain turn: routed again
+  await step($, 'high')
+  await spawn('Swap every variable called foo for bar across the docs folder') // sub3: routed
+  await spawn('Swap every variable called foo for bar across the tests folder', { workflow: { runId: 'wf_9', agentIndex: 1 } }) // sub4
+  await spawn('Swap every variable called foo for bar across the bin folder', { parentAgentId: 'sub4' }) // sub5, a workflow agent's child
+  await end($)
+
+  expect(models).toEqual(['haiku', 'claude-opus-5-5', 'claude-opus-5-5', 'claude-opus-5-5', 'haiku'])
+  expect(sent).toEqual(['low', 'high', 'medium', 'high', 'low'])
+  expect(spawned).toEqual([undefined, undefined, 'haiku', undefined, undefined])
+  // measured all the same: an aside step's no-router cost is what it spent, nothing saved, nothing extra
+  const aside = rows(batches, 'usage').filter(r => r[2] !== 'router').filter((_, i) => i === 1 || i === 2 || i === 3)
+  expect(aside.map(r => [r[2], r[3]])).toEqual([['main', 'opus'], ['general-purpose', 'opus'], ['main', 'opus']])
+  expect(aside.every(r => Number(r[5]) > 0 && r[6] === r[5] && r[7] === 0)).toBe(true)
+})
+
+test('an aside turn keeps the model and effort you picked in Settings, and its baseline is what ran (owner case 2026-11-26)', async (engine, on) => {
+  const $ = engine as any
+  const models: Array<string> = []
+  const sent: Array<unknown> = []
+  const batches: Array<Array<Step>> = []
+  wire(on, { sent, models, batches, files: { '/home/.claude/routing.json': ROUTING }, haiku: 'mechanical 0.95', tokens: 5_000 })
+  on('ui.toast', () => ({ value: undefined }))
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  await band.press({ key: 'router-settings' })
+  await band.press({ key: 'router-model-sonnet' })
+  await band.press({ key: 'router-effort-low' })
+  await $.prompt.submit({ text: 'ultrathink about why the retry loop never ends' })
+  await step($, 'max') // the engine's own ultrathink effort: kept, not lowered to your Settings pick
+  await band.unmount()
+  await end($)
+  expect(models).toEqual(['sonnet'])
+  expect(sent).toEqual(['max'])
+  const main = rows(batches, 'usage').filter(r => r[2] === 'main')
+  expect(main.map(r => [r[3], r[6] === r[5], r[7]])).toEqual([['sonnet', true, 0]])
 })
 
 test('paste size: tokens counted per character kind, the skip words, and which model reads it (docs/PLAN-v3.md, slice 3)', () => {

@@ -105,7 +105,8 @@ type State = {
   lastHintModel: string | null
   hasClassified: boolean // any prompt classified yet (continuations skip Haiku after that)
   hadClass: boolean // any class found yet (the first one may show a hint)
-  skipEffortThisTurn: boolean
+  aside: boolean // an ultrathink or ultracode turn: the router steps aside for it and its agents, and only measures (owner 2026-11-26)
+  asideAgents: Set<string> // agents started while the router stood aside (a workflow's, an aside turn's): their children too
   sure: boolean // the last class came from a rule or a confident (>= 0.85) classifier answer
   switchTurn: boolean // this prompt's own turn may run on its class model (a follow-up goes back to the picked model)
   headless: boolean // claude -p runs (scripts, agent harnesses): their frontmatter decides, the router only counts
@@ -158,18 +159,17 @@ type State = {
   switching: boolean // a switch button is compacting or clearing: its own compaction is no trigger
   queue: Promise<unknown> // serial(): router.db batches, one at a time
   briefs: Map<string, string> // brief hash -> the model its subagent ran on: a repeat goes one tier up
-  siblings: Map<string, string> // workflow run -> the highest model its routed agents got: siblings share it (and its cache)
   savedAgents: string // the subagent memory last written to the store (keepAgents)
   unhappy: number // replies in this task Haiku read as unhappy with the answer: each raises the turn's effort a step
   v: Env | undefined
 }
 
-// The subagent memory (which runs were moved, their type, effort and spend, repeats, siblings) lives in this process.
+// The subagent memory (which runs were moved, their type, effort and spend, repeats) lives in this process.
 // It goes to the plugin store per session, so a restart or a reload that resumes the chat still knows what it moved.
 // The chat's Stats (tally, turn rows, model mix) go with it: $.state survives a hot reload, not a restart.
 const AGENTS_KEPT = 30 // sessions; older ones are dropped
 const AGENTS_MAX = 400 // entries per map; shortcut: a longer session forgets its oldest runs, raise if that ever shows
-type AgentMemory = Record<'asked' | 'type' | 'effort' | 'briefRun' | 'briefs' | 'siblings', Array<[string, string]>> & {
+type AgentMemory = Record<'asked' | 'type' | 'effort' | 'briefRun' | 'briefs', Array<[string, string]>> & {
   spend: Array<[string, { usd: number; base: number; extra: number; model: string }]>
   wasted: Array<string>
   stats: { tally: Tally; log: Array<TurnLog>; mix: Mix }
@@ -178,7 +178,7 @@ async function agentMemory($: EngineInterface, s: State): Promise<AgentMemory> {
   const last = <T,>(it: Iterable<T>) => [...it].slice(-AGENTS_MAX)
   return {
     asked: last(s.agentAsked), type: last(s.agentType), effort: last(s.agentEffort), briefRun: last(s.briefRun),
-    briefs: last(s.briefs), siblings: last(s.siblings), spend: last(s.agentSpend), wasted: last(s.wastedRuns),
+    briefs: last(s.briefs), spend: last(s.agentSpend), wasted: last(s.wastedRuns),
     stats: { tally: await read($, tally), log: await read($, log), mix: await read($, mix) },
   }
 }
@@ -223,7 +223,7 @@ async function restoreAgents($: EngineInterface, s: State) {
     if (!m) return
     const fill = <V,>(map: Map<string, V>, rows?: Array<[string, V]>) => { for (const [k, v] of rows ?? []) if (!map.has(k)) map.set(k, v) }
     fill(s.agentAsked, m.asked); fill(s.agentType, m.type); fill(s.agentEffort, m.effort); fill(s.briefRun, m.briefRun)
-    fill(s.briefs, m.briefs); fill(s.siblings, m.siblings); fill(s.agentSpend, m.spend)
+    fill(s.briefs, m.briefs); fill(s.agentSpend, m.spend)
     for (const w of m.wasted ?? []) s.wastedRuns.add(w)
     // a fresh process starts from zero; after a hot reload the atoms already hold this chat
     const st = m.stats
@@ -472,7 +472,7 @@ const typicalOut = (s: State) => (s.mainSteps ? s.mainOut / s.mainSteps : 1000)
 // The model this step runs on in the main chat: the class model for a sure AUTO class on the prompt's own turn,
 // only ever cheaper than the requested one, never a floor class, never on ultrathink.
 function stepModel(s: State, requested: string): string | undefined {
-  if (s.cfg.mode === 'off' || s.headless || !s.routeModels || !s.switchTurn || s.skipEffortThisTurn || !s.lastClass) return undefined
+  if (s.cfg.mode === 'off' || s.headless || !s.routeModels || !s.switchTurn || s.aside || !s.lastClass) return undefined
   return autoModel(s.lastClass, s.lastContext, requested, s.cfg, typicalOut(s))
 }
 
@@ -740,7 +740,7 @@ async function clearChat($: EngineInterface, s: State) {
     hadClass: false, lastClass: null, lastHintModel: null, switchTurn: false, sure: false, samples: [], turnCount: 0, quietUntil: 0, declined: null, unhappy: 0,
     prev: NO_PREV, lastContext: 0, mainSteps: 0, mainOut: 0, rerouted: 0, lastRerouted: '', lastSwitch: '', lastEffortSwitch: '', lastQuick: '',
   })
-  for (const m of [s.briefs, s.siblings, s.agentEffort, s.agentType, s.agentAsked, s.agentSpend, s.briefRun, s.wastedRuns]) m.clear()
+  for (const m of [s.briefs, s.asideAgents, s.agentEffort, s.agentType, s.agentAsked, s.agentSpend, s.briefRun, s.wastedRuns]) m.clear()
   s.savedAgents = NO_AGENTS // the old chat's memory stays in the store, for a resume of it
   s.coldTimer?.cancel()
   s.awakeSince = 0
@@ -1129,11 +1129,11 @@ async function answer($: EngineInterface, s: State, agent: AgentName, call: Call
 export const register: Register = on => {
   const s: State = {
     cfg: BUILTIN, home: '', root: '', project: 'unknown', sources: 'built-in only', lastClass: null, lastHintModel: null,
-    hasClassified: false, hadClass: false, skipEffortThisTurn: false, headless: false, agentEffort: new Map(), defs: new Map(),
+    hasClassified: false, hadClass: false, aside: false, asideAgents: new Set(), headless: false, agentEffort: new Map(), defs: new Map(),
     prev: NO_PREV, lastContext: 0, mainSteps: 0, mainOut: 0, cleanChanges: 0, baseEffort: '', rerouted: 0, lastRerouted: '', lastSwitch: '', lastEffortSwitch: '', lastQuick: '', agentType: new Map(), agentAsked: new Map(), agentSpend: new Map(), briefRun: new Map(), wastedRuns: new Set(), paneOpened: false, pasted: false, coldTimer: undefined, minuteTick: undefined, awakeSince: 0, pinging: false, gapStart: 0, doneChecked: 0, awakeStop: '', ownPrompt: false, scopeAt: 0, scopeQueued: false, openTurn: '', seg: { ctx: 0, steps: 0 },
     session: 'session', label: '', lastLedgerTurn: '', pending: [], scheduled: false, warned: false, trimmed: false, totals: { proj: EMPTY_TALLY, since: undefined }, routeModels: true, sure: false, switchTurn: false,
     ask: undefined, stickyAsk: undefined, v: undefined, seenPrompt: false, samples: [], turnCount: 0, quietUntil: 0, declined: null, switching: false,
-    briefs: new Map(), siblings: new Map(), queue: Promise.resolve(), savedAgents: NO_AGENTS, unhappy: 0,
+    briefs: new Map(), queue: Promise.resolve(), savedAgents: NO_AGENTS, unhappy: 0,
   }
 
   on('session.start', async ($, e, next) => {
@@ -1326,8 +1326,11 @@ export const register: Register = on => {
     const asked = explicitAsk(e.text)
     if (asked?.sticky) s.stickyAsk = asked
     if (!midTurn || asked) s.ask = asked ?? s.stickyAsk
-    const ultra = /\bultrathink\b/i.test(e.text)
-    s.skipEffortThisTurn = midTurn ? s.skipEffortThisTurn || ultra : ultra
+    // ultrathink or ultracode: the owner runs the turn as they set it; no classifier, no tip, no move, only the ledger.
+    // shortcut: a session-wide ultracode switch is not seen by plugins (only the word in the prompt), workflow agents still are
+    const ultra = /\bultra(think|code)\b/i.test(e.text)
+    s.aside = midTurn ? s.aside || ultra : ultra
+    if (s.aside) { s.switchTurn = false; return go(e) } // the owner's own words in the prompt (s.ask) still hold
     s.sure = false
     s.samples = []
     // the chat's first prompt: no answer yet, so no cache to lose by picking the chat's model now
@@ -1369,10 +1372,14 @@ export const register: Register = on => {
   on('agent.spawn', async ($, e, next) => shield($, e, next, async go => {
     // the main model's own words in the brief ("high effort", "use opus") win over the router's pick: the spawn event
     // carries no effort, so the brief is the only place a master's effort can come from (owner 2026-11-21)
-    const said = s.cfg.mode === 'off' ? undefined : explicitAsk(e.prompt)
+    // an agent of an ultrathink/ultracode turn, of a workflow run (only the owner starts one) or under such an agent: as asked
+    // shortcut: the aside agents are kept in this process only, so after a restart a workflow agent's own children are routed again
+    const aside = s.aside || Boolean(e.workflow) || Boolean(e.parentAgentId && s.asideAgents.has(e.parentAgentId))
+    const said = s.cfg.mode === 'off' || aside ? undefined : explicitAsk(e.prompt)
     // every started run counts on the Board (a denied one does not); a resume is the same run going on
     const named = async (x: typeof e, routed = false, respawned = false) => {
       const r = await go(x)
+      if (r.agentId && aside) s.asideAgents.add(r.agentId)
       if (r.agentId && said?.effort) s.agentEffort.set(r.agentId, said.effort)
       if (r.agentId) s.agentType.set(r.agentId, e.subagentType) // for the dashboard log
       if (!r.deny && !e.resume) await countAgent($, s, e.subagentType, routed, respawned)
@@ -1380,6 +1387,7 @@ export const register: Register = on => {
     }
     if (s.cfg.mode === 'off' || e.fork || e.resume) return named(e)
     if (s.ask?.agents) return named({ ...e, model: s.ask.agents }) // the prompt asked for this model's subagents
+    if (aside) return named(e)
     // an exact version means its family: the newest model of it runs
     if (e.model) return named(claudeFamily(e.model) ? { ...e, model: claudeFamily(e.model)! } : e) // explicit model on the call wins
     if (said?.model) return named({ ...e, model: said.model }) // a model named in the brief, next
@@ -1400,9 +1408,7 @@ export const register: Register = on => {
     if (def.model && def.model !== 'inherit') return named(e) // pinned to a family in frontmatter
     // a type in the table by its entry; any other (general-purpose, claude, an unpinned agent of yours) by its brief
     const inTable = Boolean(s.cfg.agents[e.subagentType])
-    const run = e.workflow?.runId
-    // a workflow may hide its script behind one placeholder prompt, so its agents are matched as siblings, never as repeats
-    const hash = run ? undefined : briefHash(e.prompt)
+    const hash = briefHash(e.prompt)
     const before = hash ? s.briefs.get(hash) : undefined
     const brief = inTable ? undefined : await briefClass($, s, e.prompt, e.parentModel).then(b => ({ ...b, cls: longRun(b.cls, e.prompt, s.cfg) }))
     const { model, tier } = spawnPick({
@@ -1412,12 +1418,10 @@ export const register: Register = on => {
       parentModel: e.parentModel,
       personChose: (await read($, chat)).by === 'you',
       prior: before,
-      sibling: run ? s.siblings.get(run) : undefined,
     }, s.cfg)
     const moved = s.routeModels && model !== family(e.parentModel)
     const started = await named(moved ? { ...e, model } : e, moved, Boolean(before)) // effort-only, or the parent's model: as asked
     if (started.deny) return started
-    if (run) s.siblings.set(run, model)
     if (hash) s.briefs.set(hash, model)
     const routedEffort = tier?.effort && !def.effort && !said?.effort ? tier.effort : ''
     if (started.agentId && routedEffort) s.agentEffort.set(started.agentId, routedEffort)
@@ -1449,7 +1453,9 @@ export const register: Register = on => {
     // then the chat's model, and under it a sure quick task's one-turn move, unless the person chose the model
     const base = picked?.model && family(picked.model) !== family(e.model) ? picked.model : undefined
     // a named model always wins, also when it is the chat's own: "use opus" on an Opus chat keeps the turn on Opus (audit 2026-11-19)
-    const model = ask?.model ? asked : (e.agentId === undefined && !probe && picked?.by !== 'you' ? stepModel(s, base ?? e.model) ?? base : base)
+    // an aside turn (ultrathink, ultracode) keeps only the person's own picks: no router pick of the chat's model, no move
+    const aside = isMain && s.aside
+    const model = ask?.model ? asked : aside && picked?.by !== 'you' ? undefined : (e.agentId === undefined && !probe && picked?.by !== 'you' ? stepModel(s, base ?? e.model) ?? base : base)
     if (e.agentId === undefined && e.effort !== undefined) {
       if (probe) {
         effort = probe as typeof effort // measurement mode (evals): force one effort on the main loop
@@ -1464,13 +1470,13 @@ export const register: Register = on => {
         const target = raiseEffort(turnEffort(s.lastClass, s.cfg, model ?? e.model) ?? s.cfg.main.effort, raiseSteps(s.unhappy))
         // the starting effort is the app picker's default and gets routed; one the person changes to later (/effort, ultrathink) is theirs
         const isDefault = String(e.effort) === s.baseEffort
-        if (s.cfg.mode !== 'off' && !s.headless && s.cfg.autoEffort && isDefault && v.perMessage !== 'unsupported' && !s.skipEffortThisTurn && target) { effort = target as typeof effort; why = raiseSteps(s.unhappy) > 0 ? 'unhappy' : 'class' }
+        if (s.cfg.mode !== 'off' && !s.headless && s.cfg.autoEffort && isDefault && v.perMessage !== 'unsupported' && !s.aside && target) { effort = target as typeof effort; why = raiseSteps(s.unhappy) > 0 ? 'unhappy' : 'class' }
       }
     } else if (e.agentId && e.effort !== undefined && s.agentEffort.has(e.agentId)) {
       effort = s.agentEffort.get(e.agentId) as typeof effort
       why = 'agent'
     }
-    if (picked?.effort && e.effort !== undefined && !s.skipEffortThisTurn) { effort = picked.effort as typeof effort; why = 'pick' }
+    if (picked?.effort && e.effort !== undefined && !s.aside) { effort = picked.effort as typeof effort; why = 'pick' }
     if (ask?.effort && e.effort !== undefined) { effort = ask.effort as typeof effort; why = 'asked' }
     // the router's own keep-awake nudge: the lowest effort (the cache stays, the reply is one word), never another model
     if (isMain && s.pinging && e.effort !== undefined && (await read($, view)).perMessage !== 'unsupported') { effort = 'low' as typeof effort; why = 'nudge' }
@@ -1482,7 +1488,8 @@ export const register: Register = on => {
     // router's); a moved subagent on its parent's model (audit 2026-11-19: Opus was the baseline even on a Sonnet session)
     const nudge = isMain && s.pinging
     const who = e.agentId ? (s.agentType.get(e.agentId) ?? 'agent') : nudge ? 'awake' : 'main'
-    const noRouter = {
+    // an aside turn ran as the person set it: with no router it would have run the same
+    const noRouter = aside ? { model: model ?? e.model, effort: effort as string | undefined } : {
       // a model reached through a router tip or offer is the router's doing: the baseline stays on the model before it (owner 2026-11-21)
       model: e.agentId ? (s.agentAsked.get(e.agentId) ?? u.model) : (asked ?? (picked?.routed ? (picked.from ?? e.model) : picked?.by === 'you' ? base : undefined) ?? e.model),
       effort: (ask?.effort ?? picked?.effort ?? e.effort) as string | undefined,
@@ -1501,7 +1508,7 @@ export const register: Register = on => {
     }
     const sent = String(effort ?? '')
     // training data: the main chat's switches away from no router; an ultrathink turn is yours, so it logs nothing
-    if (isMain && !nudge && !s.skipEffortThisTurn) {
+    if (isMain && !nudge && !s.aside) {
       const from = { model: family(noRouter.model), effort: String(noRouter.effort ?? '') }
       const to = { model: family(u.model), effort: sent }
       const row = { who: 'main', fromModel: from.model, fromEffort: from.effort, toModel: to.model, toEffort: to.effort, cls: s.lastClass ?? 'default' }
