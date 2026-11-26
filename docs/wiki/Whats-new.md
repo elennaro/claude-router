@@ -2,6 +2,14 @@
 
 Newest first. Update with `/plugin marketplace update claude-router`, then `/plugin update router@claude-router`, then restart Claude Code.
 
+## 0.9.2: one quiet band, a Router panel, settings that stay
+
+- **The band is one row** and never grows with what you open, so the chat no longer jumps and the mouse wheel scrolls the chat again. It shows the cache's size and minutes left.
+- **Router panel**: Cache, Stats, Settings and Switches are tabs of one panel beside the chat.
+- **Cache tab**: what is in the cache, the minutes left, and what losing it, a switch, compacting and `/clear` cost now.
+- **Compact at** is a slider coloured by cost, with a mark every 100K and marks for now, the cheapest point and Claude Code's own.
+- **This chat's settings stay**: Routing, Effort, Keep awake and Compact at come back after a restart. Routing can be turned off for one project.
+
 ## 0.9.1: rate the router, and it steps aside for ultrathink
 
 - **Training** (Settings, off by default): the router logs each switch it makes (the chat's model, its effort, a quick turn on Haiku, a routed subagent) to `router.db` on this machine, with no prompt text. **Switches** on the band lists this chat's last 10; rate each 👍 or 👎. 👎 on a model pick goes back like **Undo** (a toast first if re-reading the chat costs over $0.10); 👎 on an effort pins the chat's own effort back. The labels are training data for a future local router.

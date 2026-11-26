@@ -62,7 +62,8 @@ function audit(tree: Node, state: string, surface: string, width: number): Array
 // Findings seen when the kit landed and not fixed yet: a ratchet. A fix deletes its line; nothing is ever added here.
 const KNOWN: Array<RegExp> = []
 
-// One session per state, the band mounted at every width on both surfaces that draw it.
+// One session per state, the band and the Router panel mounted at every width on both surfaces that draw them. A press
+// goes wherever its key is drawn; the band is checked to stay one row (an offer adds one), the panel at each width.
 async function states($: any, on: any, routing: string, setup: ($: any) => Promise<void>, presses: Array<[string, string | undefined]>): Promise<Array<string>> {
   wire(on, { '/home/.claude/routing.json': routing })
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
@@ -71,13 +72,17 @@ async function states($: any, on: any, routing: string, setup: ($: any) => Promi
   for (const surface of SURFACES) {
     for (const width of WIDTHS) {
       const band = await $.ui.mount({ plugin: 'router', component: 'AbovePrompt', surface, props: { hasSurvey: false, isWorking: false, maxRows: 12, bodyColumns: width, scroll: { offset: 0, bodyRows: 12 }, view: {} } })
+      const panel = await $.ui.mount({ plugin: 'router', component: 'Pane', requestId: 'router-panel', surface, props: { title: 'Router', isFocused: true, bodyColumns: width, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} } })
       for (const [state, key] of presses) {
-        if (key) await band.press({ key })
-        issues.push(...audit(await band.drawn(), state, surface, width))
+        if (key) await ((await band.find({ key })) ? band : panel).press({ key })
+        const row = await band.drawn()
+        issues.push(...audit(row, `${state} (band)`, surface, width))
+        // the band never grows with what is open (owner case 2026-11-26: a tall band made the chat jump); only an offer adds a row
+        walk(row, n => { const k = String(n.props?.key ?? ''); if (n.type === 'Svg' || /^router-(card|f-|compact|tab-|cost-|cache-|sw-|model-|effort-|global|project|units|chat-awake)/.test(k)) issues.push(`${state} · ${surface} · ${width}: the band grew: ${k || n.type}`) })
+        issues.push(...audit(await panel.drawn(), `${state} (panel)`, surface, width))
       }
-      const open = presses.map(p => p[1]).filter(k => k === 'router-stats' || k === 'router-settings' || k === 'router-switches').at(-1)
-      if (open && (await band.find({ key: open }))) await band.press({ key: open }) // close the panel left open
       await band.unmount()
+      await panel.unmount()
     }
   }
   return issues
@@ -89,12 +94,12 @@ const stepped = async ($: any) => {
 }
 
 test('the band, Stats and Settings fit 40 to 120 cells, with sentence-case labels and clean numbers', async (engine, on) => {
-  const issues = await states(engine as any, on, ROUTING, stepped, [['band', undefined], ['stats', 'router-stats'], ['settings', 'router-settings']])
+  const issues = await states(engine as any, on, ROUTING, stepped, [['band', undefined], ['cache', 'router-cache'], ['stats', 'router-stats'], ['settings', 'router-settings']])
   expect(issues).toEqual([])
 })
 
 test('Training on: the Switches list with its 👍 👎 fits every width', async (engine, on) => {
-  const presses: Array<[string, string | undefined]> = [['settings', 'router-settings'], ['training on', 'router-f-labels-on'], ['band', 'router-settings'], ['switches', 'router-switches']]
+  const presses: Array<[string, string | undefined]> = [['settings', 'router-settings'], ['training on', 'router-f-labels-on'], ['switches', 'router-switches']]
   expect(await states(engine as any, on, ROUTING, stepped, presses)).toEqual([])
 })
 

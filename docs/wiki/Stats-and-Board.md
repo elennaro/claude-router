@@ -2,11 +2,17 @@
 
 ## The band
 
-`● Router · ■ <model> <effort> · saved $x · cache hit N%`
+`● Router · ■ <model> <effort> · saved $x · cache 96K, 60 min left · hit N%`, then **Board**, **Cache**, **Stats**, **Settings**.
 
 - **saved $x** or **$x extra**: this chat against no router.
-- **cache hit**: the share of prompt tokens read from the cache. High is cheap.
+- **cache 96K, 60 min left**: the cache's size and the minutes before it expires (warning colour at 10 and under).
+- **hit**: the share of prompt tokens read from the cache. High is cheap.
 - The coloured square is the model: Haiku green, Sonnet teal, Opus clay, Fable ruby. A darker shade means a higher effort.
+- The band is one row and never grows; an offer, a tip or the away report adds one row. **Cache**, **Stats**, **Settings** and **Switches** open as tabs of one **Router** panel beside the chat.
+
+## Cache
+
+The cache's size against the model's limit, the minutes left, a bar of what is in it, and what it costs now, prices in one column: losing the cache, a switch to each other model, compacting now, `/clear`, keeping it warm. Keep awake On/Off for this chat sits under them.
 
 ## Stats
 

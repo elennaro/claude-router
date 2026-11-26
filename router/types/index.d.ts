@@ -111,7 +111,7 @@ declare module 'claude-code' {
       view: Shaped<RouterView>
       log: Shaped<Array<TurnLog>>
       mix: Mix // this chat's spend per model and effort
-      panel: 'none' | 'stats' | 'settings' | 'switches' // what the band has expanded under its row
+      panel: Shaped<'cache' | 'stats' | 'settings' | 'switches'> // the Router panel's tab (the band's buttons open the panel on one)
       isWidgetOpen: boolean
       modes: { global: string | null; project: string | null; isProject: boolean } // "mode" as written in each routing.json
       tools: Versions | null

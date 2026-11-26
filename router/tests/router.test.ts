@@ -6,6 +6,7 @@ import {
 import { addWhy, cacheClock, minutesLeft, whoWords, whyWords, boardHtml, cacheStrength, cardLayout, hitPct, svgSize, switchCost, netWords, planFmt, planRate, savedUsd, shade, statsSvg, withMode } from '../hooks/view'
 import { RUNNER, type Step, bucketsOf, labelOf, livesOf } from '../hooks/db'
 import { shield } from '../hooks/guard'
+import { type SliderProps, scale } from '../hooks/slider'
 
 test("the router's own error never blocks the person's work: the event passes once, one warning", async () => {
   const toasts: Array<string> = []
@@ -530,7 +531,7 @@ test('an aside turn keeps the model and effort you picked in Settings, and its b
   wire(on, { sent, models, batches, files: { '/home/.claude/routing.json': ROUTING }, haiku: 'mechanical 0.95', tokens: 5_000 })
   on('ui.toast', () => ({ value: undefined }))
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await band.press({ key: 'router-settings' })
   await band.press({ key: 'router-model-sonnet' })
   await band.press({ key: 'router-effort-low' })
@@ -732,7 +733,7 @@ test('subagents: a Haiku move needs two sure samples; rules raise a table type; 
   await spawn('Look into the nightly export job and the numbers it sends', { parentModel: 'claude-sonnet-5-5' }) // unsure on a Sonnet parent: the main default
   expect(spawned).toEqual(['sonnet', 'haiku', 'opus', 'opus'])
 
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await band.press({ key: 'router-settings' })
   await band.press({ key: 'router-model-sonnet' }) // the person chose Sonnet for this chat
   await spawn('Look into the weekly export job and the numbers it sends', { parentModel: 'claude-sonnet-5-5' })
@@ -941,10 +942,32 @@ const PANE = {
   props: { title: 'Router', isFocused: false, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} },
 } as const
 
-const BAND = {
+const BAND_SITE = {
   plugin: 'router', component: 'AbovePrompt',
   props: { hasSurvey: false, isWorking: false, maxRows: 12, bodyColumns: 100, scroll: { offset: 0, bodyRows: 12 }, view: {} },
 } as const
+const PANEL = {
+  plugin: 'router', component: 'Pane', requestId: 'router-panel',
+  props: { title: 'Router', isFocused: true, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} },
+} as const
+// The band and the Router panel its buttons open, mounted together: a press goes wherever the key is drawn, a find
+// looks in the band first. `band` alone is the row above the prompt.
+const BAND = { ...BAND_SITE, both: true } as const
+async function mountBoth($: any, spec: any) {
+  const { both, ...site } = spec
+  const band = await $.ui.mount(site)
+  if (!both) return band
+  const panel = await $.ui.mount({ ...PANEL, surface: site.surface })
+  const where = async (q: any) => ((await band.find(q)) ? band : panel)
+  return {
+    band,
+    panel,
+    find: async (q: any) => (await band.find(q)) ?? (await panel.find(q)),
+    findAll: async (q: any) => [...(await band.findAll(q)), ...(await panel.findAll(q))],
+    press: async (q: any) => (await where(q)).press(q),
+    unmount: async () => { await band.unmount(); await panel.unmount() },
+  }
+}
 
 test('the Board never runs text from a prompt, a project name or an agent type as markup', async () => {
   const evil = '</script><img src=x onerror=alert(1)>'
@@ -973,7 +996,7 @@ test('the band is one row; Stats opens the card; Settings turns routing off for 
   await $.prompt.submit({ text: 'Swap every variable called foo for bar in the utils module and the tests too' })
   await step($, 'high')
 
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   expect(await band.find({ type: 'Text', text: 'Haiku low (auto)' })).toBeTruthy()
   expect(await band.find({ type: 'Text', text: 'saved $0.00' })).toBeTruthy()
   expect(await band.find({ type: 'Text', text: /fits this task better/ })).toBeFalsy() // the turn moved by itself: no tip
@@ -1008,12 +1031,12 @@ test("this chat's own settings come back after a restart and outlast another ses
   wire(on, { sent: [], files, store, ownClock: true })
   const clock = mock.clock(on, { now: 1_000 })
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   expect(await band.find({ type: 'Text', text: 'off in this chat' })).toBeTruthy()
   files['/home/.claude/routing.json'] = JSON.stringify({ ...JSON.parse(ROUTING), mode: 'on' }) // another session's Settings wrote it
   await clock.advance(11_000)
   await band.unmount()
-  const again = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const again = await mountBoth($, { ...BAND, surface: 'desktop' })
   await clock.advance(1_000)
   expect(await again.find({ type: 'Text', text: 'off in this chat' })).toBeTruthy() // still this chat's choice
   await again.press({ key: 'router-settings' })
@@ -1035,12 +1058,12 @@ test('routing turned on for the project in another session reaches this one: the
   wire(on, { sent: [], files, ownClock: true })
   const clock = mock.clock(on, { now: 1_000 })
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   expect(await band.find({ type: 'Text', text: 'off in this project' })).toBeTruthy()
   files['/proj/.claude/routing.json'] = JSON.stringify({ mode: 'on' }) // another session's Settings wrote it
   await clock.advance(11_000)
   await band.unmount()
-  const again = await $.ui.mount({ ...BAND, surface: 'desktop' }) // a redraw notices the change and draws again
+  const again = await mountBoth($, { ...BAND, surface: 'desktop' }) // a redraw notices the change and draws again
   await clock.advance(1_000)
   expect(await again.find({ type: 'Text', text: 'off in this project' })).toBeFalsy()
   await again.unmount()
@@ -1048,7 +1071,7 @@ test('routing turned on for the project in another session reaches this one: the
   files['/proj/.claude/routing.json'] = JSON.stringify({ mode: 'off' })
   await clock.advance(11_000)
   await $.prompt.submit({ text: 'please review this PR for bugs and missing edge cases', origin: { kind: 'composer' }, wait: false })
-  const fourth = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const fourth = await mountBoth($, { ...BAND, surface: 'desktop' })
   expect(await fourth.find({ type: 'Text', text: 'off in this project' })).toBeTruthy()
   await fourth.unmount()
 })
@@ -1061,7 +1084,7 @@ test('one prompt never proposes a cheaper model for the chat; a stronger one is 
   })
   wire(on, { sent: [], files: { '/home/.claude/routing.json': routing } })
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await $.prompt.submit({ text: 'The billing build finished, check it and fix the failing test' }) // scoped-code -> Sonnet, below the Opus chat
   expect(await band.find({ type: 'Text', text: /fits this task better/ })).toBeFalsy()
   await $.prompt.submit({ text: 'Plan the migration of the whole billing service to the new ledger' }) // rare-hard -> Fable, above it
@@ -1235,7 +1258,7 @@ test('the first prompt picks the chat model only when all 3 samples agree; Undo 
   const ask = async (text: string) => { await $.prompt.submit({ text }); await step($, 'medium') }
   await ask('Swap every variable called foo for bar in the utils module and the tests too')
   await ask('ok, do it') // the chat itself moved: a follow-up stays there
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   expect(await band.find({ type: 'Button', label: 'Picked Haiku for this chat · Undo' })).toBeTruthy()
   await band.press({ key: 'router-chat-undo' })
   await ask('ok, and the docs too')
@@ -1258,7 +1281,7 @@ test('Training on: a model pick and its effort log once each, no prompt text; �
   const ask = async (text: string) => { await $.prompt.submit({ text }); await step($, 'high') }
   await ask('Swap every variable called foo for bar in the utils module and the tests too')
   await ask('ok, do it') // the same switches again: no new entries
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await band.press({ key: 'router-switches' })
   expect(await thumbs(band, '👍')).toHaveLength(2) // newest first: the effort, then the pick
   await band.press({ key: (await thumbs(band, '👎'))[1]!.props.key })
@@ -1295,7 +1318,7 @@ test('Training: a quick turn on Haiku logs once as quick, its 👎 only notes it
   expect(opts.models).toEqual(['haiku', 'haiku'])
   await $.prompt.submit({ text: 'use haiku for this: tell me the weather in Porto' })
   await step($, 'medium')
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await band.press({ key: 'router-switches' })
   await band.press({ key: (await thumbs(band, '👎')).at(-1)!.props.key })
   expect(await band.find({ type: 'Text', text: '👎 noted' })).toBeTruthy()
@@ -1316,7 +1339,7 @@ test('Training: 👎 on an effort switch pins the chat back to the effort it had
   const ask = async (text: string) => { await $.prompt.submit({ text }); await step($, 'high') }
   await ask('Swap every variable called foo for bar in the utils module and the tests too')
   expect(sent.at(-1)).toBe('medium') // the class lowers the picker's high
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await band.press({ key: 'router-switches' })
   await band.press({ key: (await thumbs(band, '👎'))[0]!.props.key })
   await ask('Rename the helper called bar to baz in the same module and its tests')
@@ -1335,7 +1358,7 @@ test('Training: 👎 on an old pick leaves a model you chose since in Settings',
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
   await $.prompt.submit({ text: 'Swap every variable called foo for bar in the utils module and the tests too' })
   await step($, 'medium')
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await band.press({ key: 'router-settings' })
   await band.press({ key: 'router-model-sonnet' })
   await band.press({ key: 'router-settings' })
@@ -1365,7 +1388,7 @@ test('Training: an ultrathink turn is yours and logs nothing', async (engine, on
   const interactive: Array<Array<Step>> = []
   wire(on, { sent: [], batches: interactive, store, tokens: 5_000, files: { '/home/.claude/routing.json': ROUTING }, haiku: 'mechanical 0.95' })
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await band.press({ key: 'router-settings' })
   await band.press({ key: 'router-effort-medium' }) // your pick; ultrathink then runs at the picker's high (review 2026-11-25)
   await band.unmount()
@@ -1382,7 +1405,7 @@ test('Training off (the default): no switch rows and no Switches button', async 
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
   await $.prompt.submit({ text: 'Swap every variable called foo for bar in the utils module and the tests too' })
   await step($, 'medium')
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   expect(await band.find({ key: 'router-switches' })).toBeFalsy()
   await band.unmount()
   await $.session.end({ reason: 'other', sessionId: 'sess-1', resume: { sessionId: 'sess-1' } })
@@ -1397,7 +1420,7 @@ test('Training: a subagent the router moves logs one entry; its 👎 only record
   on('agent.spawn', (_: unknown, e: { model?: string }) => ({ model: e.model ?? 'inherit', agentId: 'sub1' }))
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
   await $.agent.spawn({ prompt: 'Where is the config loaded from? List the files.', subagentType: 'general-purpose', parentModel: 'claude-opus-5-5' })
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await band.press({ key: 'router-switches' })
   await band.press({ key: (await thumbs(band, '👎'))[0]!.props.key })
   expect(await band.find({ type: 'Text', text: '👎 noted' })).toBeTruthy()
@@ -1420,7 +1443,7 @@ test('Training: 👎 on a model pick over $0.10 of cache says the price first, s
   opts.read = 200_000 // the chat has grown: going back to Opus re-reads 200K once
   await $.prompt.submit({ text: 'ok, do it' })
   await step($, 'medium')
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await band.press({ key: 'router-switches' })
   await band.press({ key: (await thumbs(band, '👎')).at(-1)!.props.key })
   await band.unmount()
@@ -1507,13 +1530,30 @@ test('with a real cache the widget and the Stats card show its size, what losing
   expect(texts).toContain('100K · losing it $0.80')
   expect(texts).toContain('Haiku $0.10, Sonnet $0.40, Fable $1.60') // just over 100K: Haiku's long-prompt price, x5
   await widget.unmount()
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await band.press({ key: 'router-stats' })
   const card = await band.find({ type: 'Svg' })
   expect(card?.props.alt).toContain('Cache 100K tokens, warm 60 min · rebuild $0.80')
   expect([cacheClock(0, 5), cacheClock(1_000, 1_000 + 20 * 60_000), cacheClock(1_000, 1_000 + 61 * 60_000), minutesLeft(1_000, 1_000 + 20 * 60_000, 50)]).toEqual(['', 'warm 40 min', 'expired', 30])
   expect(card?.props.alt).toMatch(/Where it went .*\+\$[0-9.]+ effort/) // engineering raised Opus to high
-  expect(await band.find({ type: 'Text', text: /Switching model writes the chat once on the new one: Haiku \$0\.10, Sonnet \$0\.40, Fable \$1\.60\. Compacting: about \$0\.60\. Keeping it warm while you are away: about \$0\.02 a nudge/ })).toBeTruthy()
+  // the Cache tab: size, the hour's clock, and what each move costs, a row each (owner case 2026-11-26)
+  await band.press({ key: 'router-cache' })
+  const sheet = (await band.panel.findAll({ type: 'Text' })).map((x: { text: string }) => x.text)
+  for (const t of ['Cache: 100K of 200K', 'Lose the cache', '$0.80', 'Switch to Haiku', '$0.10', 'Switch to Sonnet', '$0.40', 'Switch to Fable', '$1.60', 'Compact now', 'about $0.60', 'Keep it warm', 'about $0.02']) expect(sheet).toContain(t)
+  expect(await band.panel.find({ type: 'Text', text: 'Cache time left 60 min left' })).toBeTruthy() // the hour left, as a bar
+  expect(await band.band.find({ type: 'Text', text: 'cache 100K, 60 min left' })).toBeTruthy() // and in the band's one row
+  // compact and proportional (owner ask 2026-11-26): a heading opens each block, blank lines only between blocks; the
+  // note sits beside its price when there is room and under it when narrow
+  type N = { type: string; props?: Record<string, unknown>; children?: Array<N | string> }
+  const find = (n: N | string, key: string): N | undefined => typeof n === 'string' ? undefined : n.props?.key === key ? n : (n.children ?? []).map(c => find(c, key)).find(Boolean)
+  const tree = await band.panel.drawn() as N
+  const firstKeys = [0, 1, 2].map(i => { const b = find(tree, `router-block-${i}`); const c = b?.children?.[0]; return typeof c === 'object' ? c.props?.key : undefined })
+  expect(firstKeys).toEqual(['router-cache-h', 'router-cost-h', 'router-awake-h'])
+  expect(find(tree, 'router-block-1')?.props?.gap).toBeUndefined()
+  expect(find(tree, 'router-cost-lose')?.props?.flexDirection).toBe('row')
+  const narrow = await $.ui.mount({ ...PANEL, surface: 'terminal', props: { ...PANEL.props, bodyColumns: 50 } })
+  expect(find(await narrow.drawn() as N, 'router-cost-lose')?.props?.flexDirection).toBe('column')
+  await narrow.unmount()
   await band.unmount()
 })
 
@@ -1527,7 +1567,7 @@ test('Settings switches the saving features off and on; the choice is kept for l
   on('fs.stat', () => ({ value: { kind: 'file', size: 4_000, mtimeMs: 0, isLink: false } }))
   on('ui.toast', () => ({ value: undefined }))
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await band.press({ key: 'router-settings' })
   await band.press({ key: 'router-f-pastes-off' })
   await band.press({ key: 'router-f-sizing-off' })
@@ -1629,7 +1669,7 @@ test('keep awake stops when, by past gaps, a return is too unlikely to pay; "Sto
   await clock.advance(3_000_000)
   expect(nudges.length).toBe(1)
   await step($, 'medium') // the nudge's turn
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await band.press({ key: 'router-away-stop' })
   await clock.advance(3_000_000)
   expect(nudges.length).toBe(1)
@@ -1643,7 +1683,7 @@ test('keep awake: a stopped chat still gets the compact-first offer once the cac
   wire(on, { sent: [], nudges, store: new Map(), messages, haiku: 'done 0.95', files: {}, read: 200_000, write: 0, ownClock: true })
   const clock = mock.clock(on, { now: 1_000 })
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await step($, 'medium')
   await clock.advance(3_000_000)
   expect(nudges.length).toBe(0)
@@ -1681,7 +1721,7 @@ test('keep awake: an unlikely-back stop with no nudge compacts as a handoff and 
   await clock.advance(3_000_000)
   expect(nudges.length).toBe(0)
   expect(compacted.length).toBe(1)
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   expect(await band.find({ type: 'Text', text: /sent no nudges: a return at these hours is too unlikely.*compacted the chat into a handoff/ })).toBeTruthy()
   await band.unmount()
 })
@@ -1695,7 +1735,7 @@ test('units: the week starts at its reset time, not at the start of that day (re
   wire(on, { sent: [], files: {}, store, rateLimits: [{ kind: 'seven_day', percentUsed: 3, resetsAt: new Date(reset).toISOString() }], select: (sql, p) => (/SUM\(usd\)/.test(sql) ? [{ usd: p?.[0] === '' ? 506 : 56 }] : []) })
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
   await step($, 'medium')
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await band.press({ key: 'router-stats' })
   expect((await band.find({ type: 'Svg' }))?.props.alt).toMatch(/1% ≈ \$2\.00/) // $6 since the reset over 3 points, not $56
   await band.unmount()
@@ -1719,7 +1759,7 @@ test('units: the plan\'s real usage shows in Stats, and Plan % turns the band\'s
   wire(on, { sent: [], files: {}, rateLimits: [{ kind: 'seven_day', percentUsed: 20, resetsAt: reset }, { kind: 'five_hour', percentUsed: 7 }], select: sql => (/SUM\(usd\)/.test(sql) ? [{ usd: 80 }] : []) })
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
   await step($, 'medium')
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await band.press({ key: 'router-stats' })
   const card = await band.find({ type: 'Svg' })
   expect(card?.props.alt).toMatch(/Plan week 20%/)
@@ -1749,7 +1789,7 @@ test('keep awake: a nudge every 50 minutes at low effort on the same model, book
   wire(on, { sent, models, asked, batches, nudges, files: {}, read: 200_000, write: 0, ownClock: true })
   const clock = mock.clock(on, { now: 1_000 })
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await step($, 'medium')
   await clock.advance(2_900_000)
   expect(nudges.length).toBe(0)
@@ -1789,7 +1829,7 @@ test('keep awake: a turn after the nudge that no prompt of yours started (a noti
   on('turn.complete', () => ({ text: '' }))
   const clock = mock.clock(on, { now: 1_000 })
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await step($, 'medium')
   await clock.advance(3_000_000)
   expect(nudges.length).toBe(1)
@@ -1841,7 +1881,7 @@ test('keep awake ends after the hours you set: the chat is compacted while warm 
   const clock = mock.clock(on, { now: 1_000 })
   on('session.compact', (_: unknown, e: { instructions?: string }) => { compacted.push(e); return { messages: [{ role: 'user', text: 'summary', toolUses: [] }] } })
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await band.press({ key: 'router-settings' })
   await band.press({ key: 'router-awake-hours-2' })
   await band.press({ key: 'router-settings' })
@@ -1868,7 +1908,7 @@ test('the away window counts from your last step, not a nudge; back within the h
   const clock = mock.clock(on, { now: 1_000 })
   on('session.compact', (_: unknown, e: unknown) => { compacted.push(e); return { messages: [{ role: 'user', text: 'summary', toolUses: [] }] } })
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await band.press({ key: 'router-settings' })
   await band.press({ key: 'router-awake-hours-2' })
   await band.press({ key: 'router-settings' })
@@ -1940,9 +1980,9 @@ test('auto-compact: the chat compacts after the turn that passes its own point, 
   on('turn.complete', () => ({ text: '' }))
   const done = async (agentId?: string) => { await $.turn.complete({ turnId: 't', answer: '', durationMs: 1, isAborted: false, reason: 'answer', ...(agentId ? { agentId } : {}) }); await clock.advance(1_000) }
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await band.press({ key: 'router-settings' })
-  await band.press({ key: 'router-compact-300000' })
+  await band.panel.post({ value: 300_000 }, { in: 'router-compact-slider' }) // the slider let go at 300K
   await step($, 'medium')
   await done()
   expect(compacted.length).toBe(0) // 250K: under the point
@@ -1962,29 +2002,25 @@ test('auto-compact: the chat compacts after the turn that passes its own point, 
   await band.unmount()
 })
 
-test('auto-compact Settings: the cheapest point and the costs show once the chat has grown a few steps; the default goes into settings.json, other keys kept', async (engine, on) => {
+test('auto-compact Settings: the slider is coloured by cost and marks the cheapest point once the chat has grown a few steps; the default goes into settings.json, other keys kept (owner case 2026-11-26)', async (engine, on) => {
   const $ = engine as any
   const files: Record<string, string> = { '/home/.claude/routing.json': ROUTING, '/home/.claude/settings.json': '{"model":"opus"}' }
   const opts = { sent: [] as Array<unknown>, files, read: 150_000, write: 0, window: 1_000_000 }
   wire(on, opts)
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await band.press({ key: 'router-settings' })
   expect(await band.find({ type: 'Text', text: /The cheapest point shows after a few steps/ })).toBeTruthy()
   expect(await band.find({ key: 'router-compact-default-set' })).toBeFalsy() // no point picked: nothing to make default
   for (const r of [150_000, 155_000, 160_000, 165_000]) { opts.read = r; await step($, 'medium') }
-  await band.press({ key: 'router-settings' })
-  await band.press({ key: 'router-settings' })
-  expect((await band.find({ key: 'router-compact-300000' }))?.props.label).toBe('● 300K, cheapest') // 5K a step on Opus
-  expect((await band.find({ key: 'router-compact-200000' }))?.props.label).toBe('● 200K')
-  expect(await band.find({ key: 'router-compact-900000' })).toBeTruthy() // up to the model's limit (1M), not a fixed cap
-  // the compact row's dots, 200K to 900K: red, three greens, amber, then red as the price climbs
-  const looks = ['#c8553d', '#4f9a5c', '#c9932e']
-  const dots = (await band.findAll({ type: 'Text', text: '●' })).map((d: { props: { color?: string } }) => d.props.color).filter((c: string | undefined) => looks.includes(c ?? ''))
-  expect(dots).toEqual(['#c8553d', '#4f9a5c', '#4f9a5c', '#4f9a5c', '#c9932e', '#c8553d', '#c8553d', '#c8553d'])
-  expect(await band.find({ type: 'Text', text: /grows about 5K a step; a step reads \$0\.03 now, and compacting at 300K averages about \$0\.07 a step/ })).toBeTruthy()
-  expect(await band.find({ type: 'Text', text: /Every 100 steps: 200K compacts 5\.7 times, \$\d+\.\d\d; 300K compacts 2\.7 times, \$7\.0\d;/ })).toBeTruthy()
-  await band.press({ key: 'router-compact-400000' })
+  const props = (await band.panel.find({ type: 'Client' }))?.props.props as SliderProps
+  expect(props.max).toBe(1_000_000) // up to the model's limit, not a fixed cap
+  expect(props.marks.find(m => m[1] === '★')?.[0]).toBe(300_000) // 5K a step on Opus
+  expect(props.zones.map(z => z[1])).toEqual(['#c8553d', '#c9932e', '#4f9a5c', '#c9932e', '#c8553d']) // red too early, green around the cheapest, red where it costs too much
+  expect(await band.find({ type: 'Text', text: /★ cheapest 300K/ })).toBeTruthy()
+  expect(await band.find({ type: 'Text', text: /Compacting at 1000K averages about \$0\.\d\d a step; this chat grows about 5K a step/ })).toBeTruthy()
+  await band.panel.post({ value: 400_000 }, { in: 'router-compact-slider' })
+  expect(await band.find({ type: 'Text', text: '400K' })).toBeTruthy()
   await band.press({ key: 'router-compact-default-set' })
   expect(JSON.parse(files['/home/.claude/settings.json']!)).toEqual({ model: 'opus', autoCompactWindow: 400_000 })
   files['/home/.claude/settings.json'] = '{ broken'
@@ -1993,19 +2029,47 @@ test('auto-compact Settings: the cheapest point and the costs show once the chat
   await band.unmount()
 })
 
-test('auto-compact Settings: a point past Claude Code\'s own window is offered up to the model\'s limit, and the note says it needs the default', async (engine, on) => {
+test('auto-compact Settings: a point past Claude Code\'s own window can be picked up to the model\'s limit, and the note says it needs the default', async (engine, on) => {
   const $ = engine as any
   wire(on, { sent: [], read: 150_000, write: 0, window: 1_000_000, engineAt: 400_000 })
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await band.press({ key: 'router-settings' })
-  await band.press({ key: 'router-compact-600000' })
-  expect(await band.find({ type: 'Text', text: /Claude Code itself compacts at 400K \(your settings\.json\)/ })).toBeTruthy()
-  expect(await band.find({ type: 'Text', text: /Claude Code compacts at 400K first, so make it your default to reach 600K/ })).toBeTruthy()
+  await band.panel.post({ value: 600_000 }, { in: 'router-compact-slider' })
+  expect(await band.find({ type: 'Text', text: /│ Claude Code 400K \(your settings\.json\)/ })).toBeTruthy()
+  expect(await band.find({ type: 'Text', text: /Claude Code compacts at 400K first, so make 600K your default to reach it/ })).toBeTruthy()
   expect(await band.find({ key: 'router-compact-default-set' })).toBeTruthy()
-  await band.press({ key: 'router-compact-300000' })
-  expect(await band.find({ type: 'Text', text: /make it your default to reach/ })).toBeFalsy() // under the window: the router reaches it itself
+  await band.panel.post({ value: 300_000 }, { in: 'router-compact-slider' })
+  expect(await band.find({ type: 'Text', text: /your default to reach it/ })).toBeFalsy() // under the window: the router reaches it itself
   await band.unmount()
+})
+
+test('the Compact at slider has a scale every 100K: every tick labelled when there is room, fewer when narrow, none cut or touching (owner ask 2026-11-26)', async () => {
+  const words = (cols: number) => scale(200_000, 1_000_000, cols).labels.trim().split(/\s+/)
+  expect(scale(200_000, 1_000_000, 60).ticks).toEqual([200_000, 300_000, 400_000, 500_000, 600_000, 700_000, 800_000, 900_000, 1_000_000])
+  expect(words(100)).toEqual(['200K', '300K', '400K', '500K', '600K', '700K', '800K', '900K', '1000K'])
+  expect(words(60)).toEqual(['200K', '400K', '600K', '800K', '1000K'])
+  for (const cols of [12, 20, 26, 40, 72]) {
+    const { labels } = scale(200_000, 1_000_000, cols)
+    expect(labels.length <= cols).toBe(true)
+    expect(/\S {0,1}\S/.test(labels.replace(/\d+K/g, 'x'))).toBe(false) // two labels never closer than 2 cells
+    expect(words(cols).every(w => /^\d+00K$/.test(w))).toBe(true) // whole labels only
+  }
+})
+
+test('the Compact at slider: a press at the left end picks the smallest point, and only letting go saves it', async (engine, on) => {
+  const $ = engine as any
+  wire(on, { sent: [], read: 150_000, write: 0, window: 1_000_000 })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const panel = await $.ui.mount({ ...PANEL, surface: 'desktop' })
+  await panel.press({ key: 'router-tab-settings' })
+  const slider = (await panel.find({ type: 'Client' }))?.props.props as SliderProps
+  expect(slider.value).toBe(1_000_000) // nothing picked: Claude Code's own window
+  await panel.pointer({ type: 'down', x: 0, y: 0, button: 'left', in: 'router-compact-slider' })
+  expect(await panel.find({ type: 'Text', text: /Claude Code's own/ })).toBeTruthy() // a drag alone saves nothing
+  await panel.pointer({ type: 'up', x: 0, y: 0, button: 'left', in: 'router-compact-slider' })
+  expect(await panel.find({ type: 'Text', text: `${Math.round(slider.min / 1000)}K` })).toBeTruthy() // the left end: the smallest point
+  await panel.unmount()
 })
 
 test('with keep-awake off, once the cache lapses the band offers to compact first, with the costs; a prompt or Keep clears it', async (engine, on) => {
@@ -2016,7 +2080,7 @@ test('with keep-awake off, once the cache lapses the band offers to compact firs
   const clock = mock.clock(on, { now: 1_000 })
   on('session.compact', (_: unknown, e: unknown) => { compacted.push(e); return { messages: [{ role: 'user', text: 'summary', toolUses: [] }] } })
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await band.press({ key: 'router-settings' })
   await band.press({ key: 'router-f-awake-off' })
   await band.press({ key: 'router-settings' })
@@ -2051,7 +2115,7 @@ test('no compact offer and no nudge for a small chat or a subagent', async (engi
   wire(on, opts)
   const clock = mock.clock(on, { now: 1_000 })
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await step($, 'medium') // 15K: a rebuild costs cents
   await clock.advance(3_700_000)
   opts.read = 300_000
@@ -2073,7 +2137,7 @@ test('a switched-off feature stays off in the next session', async (engine, on) 
   on('session.compact', () => ({ messages: [{ role: 'user', text: 'summary', toolUses: [] }] }))
   on('session.messages', () => ({ value: [{ role: 'user', text: 'set up the release pipeline for the app', toolUses: [] }, { role: 'user', text: 'now just fix the typo in the README title', toolUses: [] }] }))
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await step($, 'medium')
   await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'summary', toolUses: [] }] })
   await clock.advance(600)
@@ -2088,7 +2152,7 @@ test('Edit rules never opens an empty file: an empty routing.json gets a note, t
   const argv: Array<Array<string>> = []
   wire(on, { sent: [], files, argv, tokens: 5_000 })
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await band.press({ key: 'router-settings' })
   await band.press({ key: 'router-rules' })
   const note = JSON.parse(files['/home/.claude/routing.json']!)
@@ -2252,7 +2316,7 @@ test('Settings: a model and an effort picked for the chat win over the router; A
   wire(on, { sent, models, haiku: 'mechanical 0.95', tokens: 5_000 })
   on('ui.toast', () => ({ value: undefined }))
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await band.press({ key: 'router-settings' })
   await band.press({ key: 'router-model-sonnet' })
   await band.press({ key: 'router-effort-high' })
@@ -2360,7 +2424,7 @@ test('after a compaction the same work moves to a lighter model by itself: the c
   on('session.compact', () => ({ messages: [{ role: 'user', text: 'summary', toolUses: [] }] }))
   on('session.messages', () => ({ value: [{ role: 'user', text: 'set up the release pipeline for the app', toolUses: [] }, { role: 'user', text: 'now just fix the typo in the README title', toolUses: [] }] }))
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await step($, 'medium') // 40K tokens cached on Opus
   await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'summary', toolUses: [] }] })
   await clock.advance(600)
@@ -2384,7 +2448,7 @@ test('lighter work in mid-chat stays put when the cache rebuild would not pay ba
   on('tool.call', () => ({ result: { content: 'ok' } }))
   on('session.messages', () => ({ value: [{ role: 'user', text: 'set up the release pipeline for the app', toolUses: [] }, { role: 'user', text: 'now just fix the typo in the README title', toolUses: [] }] }))
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await step($, 'medium') // one step: far fewer than break-even
   await $.tool.call({ tool: 'ExitPlanMode', plan: 'ship it' })
   await clock.advance(600)
@@ -2403,7 +2467,7 @@ test('a move at a free switch point books no extra spend: the old model would ha
   on('session.compact', () => ({ messages: [{ role: 'user', text: 'summary', toolUses: [] }] }))
   on('session.messages', () => ({ value: [{ role: 'user', text: 'set up the release pipeline for the app', toolUses: [] }, { role: 'user', text: 'now just fix the typo in the README title', toolUses: [] }] }))
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await step($, 'medium')
   await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'summary', toolUses: [] }] })
   await clock.advance(600)
@@ -2427,7 +2491,7 @@ test('after a move down in mid-chat, a harder prompt keeps the cheaper model and
   on('session.compact', () => ({ messages: [{ role: 'user', text: 'summary', toolUses: [] }] }))
   on('session.messages', () => ({ value: [{ role: 'user', text: 'set up the release pipeline for the app', toolUses: [] }, { role: 'user', text: 'now just fix the typo in the README title', toolUses: [] }] }))
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await step($, 'medium')
   await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'summary', toolUses: [] }] })
   await clock.advance(600)
@@ -2449,7 +2513,7 @@ test("an hour's pause is a free switch point: lighter same work moves on the nex
   on('tool.call', () => ({ result: { content: 'ok' } }))
   on('session.messages', () => ({ value: [{ role: 'user', text: 'set up the release pipeline for the app', toolUses: [] }, { role: 'user', text: 'now just fix the typo in the README title', toolUses: [] }] }))
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await step($, 'medium')
   await clock.advance(3_700_000)
   await $.tool.call({ tool: 'ExitPlanMode', plan: 'ship it' })
@@ -2473,7 +2537,7 @@ test('with enough past chats that ran long, lighter same work moves early in a c
   on('tool.call', () => ({ result: { content: 'ok' } }))
   on('session.messages', () => ({ value: [{ role: 'user', text: 'set up the release pipeline for the app', toolUses: [] }, { role: 'user', text: 'now just fix the typo in the README title', toolUses: [] }] }))
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await step($, 'medium') // age 1: the classic rule alone would wait ~40 steps
   await $.tool.call({ tool: 'ExitPlanMode', plan: 'ship it' })
   await clock.advance(600)
@@ -2488,7 +2552,7 @@ test('lighter work on a new topic keeps the offer (starting fresh is your call);
   on('session.compact', () => ({ messages: [{ role: 'user', text: 'summary', toolUses: [] }] }))
   on('session.messages', () => ({ value: [{ role: 'user', text: 'set up the release pipeline for the app', toolUses: [] }, { role: 'user', text: 'unrelated: what is a good name for a cat', toolUses: [] }] }))
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await step($, 'medium')
   await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'summary', toolUses: [] }] })
   await clock.advance(600)
@@ -2512,7 +2576,7 @@ test('the offer button compacts, then the chat runs on the offered model; the of
   on('tool.call', () => ({ result: { content: 'ok' } }))
   on('session.messages', () => ({ value: [{ role: 'user', text: 'set up the release pipeline for the app', toolUses: [] }, { role: 'user', text: 'now write the changelog entries', toolUses: [] }] }))
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await step($, 'medium') // 100K tokens cached on Opus: Fable writes them at $16/M, about $1.60
   const said = await $.command.run({ command: 'route', args: '' })
   expect(said.text).toMatch(/Cache: 100K tokens\. Switching model re-reads it once: .*Sonnet \$0\.40.*Fable \$1\.60/)
@@ -2536,7 +2600,7 @@ test("a model reached through the router's own offer is measured against the mod
   on('ui.toast', () => ({ value: undefined }))
   on('session.compact', () => ({ messages: [{ role: 'user', text: 'summary', toolUses: [] }] }))
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await $.prompt.submit({ text: 'write the launch post for the new product, for our blog' })
   await band.press({ key: 'router-tip-switch' }) // the Opus chat goes to Fable on the router's tip
   await step($, 'medium')
@@ -2588,7 +2652,7 @@ test('unhappy replies keep the task class; the 2nd raises effort, the 4th raises
   const batches: Array<Array<Step>> = []
   wire(on, { sent, haiku, tokens: 5_000, model: 'claude-sonnet-5-5', messages: EXCHANGE, batches, files: {} })
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   const turn = async (text: string) => { await $.prompt.submit({ text }); await step($, 'medium') }
   await turn('please review this PR for bugs and missing edge cases') // critique: high
   await turn('that did not help, the refund still never shows up in the ledger') // 1st unhappy: kept critique, no raise (one misread costs nothing)
@@ -2610,7 +2674,7 @@ test('unhappy on Opus raises effort but never offers Fable', async (engine, on) 
   const sent: Array<unknown> = []
   wire(on, { sent, haiku: e => (e.system?.startsWith('You read one exchange') ? 'unhappy 0.95' : 'default 0.9'), tokens: 5_000, messages: EXCHANGE })
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   for (const text of ['that is still not what I asked for, try again please', 'still not right, please try once more', 'no, wrong again', 'this is still not it']) {
     await $.prompt.submit({ text })
     await step($, 'medium')
@@ -2624,7 +2688,7 @@ test('Settings: model and effort choices carry their colors as children (a label
   const $ = engine as any // the test engine fills origin, wait and the other session-set fields
   wire(on, { sent: [] })
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
-  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await band.press({ key: 'router-settings' })
   const dots = (await band.findAll({ type: 'Text', text: '●' })).map((d: { props: { color?: string } }) => d.props.color)
   expect(dots).toContain('#2394AE') // Sonnet's teal

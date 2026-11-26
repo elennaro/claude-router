@@ -4,6 +4,7 @@ import type { EngineInterface, Register, SessionMessage } from 'claude-code'
 import type { Advice, Away, Bucket, Cache, ChatModel, Cold, Features, Hint, Mix, Plan, Switch, Tally, RouterView, TurnLog, Why } from '../types'
 import { BOARD, SWEEP, cleanupSteps, effortRow, type EffortOf, type EffortWhy, livesQuery, livesOf, type Step, type Totals, IMPORTED, addCache, bucketsOf, dayRow, isAlreadyImported, labelOf, legacySteps, run, sessionRow, spawnRow, spendOf, spendSinceQuery, totalsOf, totalsQuery, usageRow, switchRow, labelRow } from './db'
 import { shield } from './guard'
+import type { SliderProps } from './slider'
 import { claudeFamily } from './latest'
 import {
   type AgentName, type Call, type Env, type PriceCheck, type Tool, type Versions, ROLES, agyModels, checkPrices, checkVersions, codexModels,
@@ -14,7 +15,7 @@ import {
   classifyPlan, isCacheBreak, merge, settleAnswers, readLabel, prices, rank, setPrices, turnEffort, briefHash, isHarder, needsSecondSample, spawnPick, withoutRouter,
   type Mood, longRun, moodPrompt, moodSystem, parseMood, raiseEffort, raiseSteps, stepUp, rebuildUsd, stepUsd, switchMath, FAMILIES, coldMath,
   AWAKE_DEFAULT_HOURS, AWAKE_HOURS, AWAKE_MIN, AWAKE_PING_MS, AWAKE_TEXT, AWAY_COMPACT, awakeNext, isNudgeReply, type Gap, GAPS_KEPT, returnCurve, nudgePays, backAtAll, writeOverRead, doneSystem, donePrompt, parseDone, COMPACT_KEEP, compactUsd,
-  type CompactLook, cheapestPoint, compactLook, compactPoints, compactsPer100, compactStepUsd,
+  type CompactLook, cheapestPoint, compactLook, compactPoints, compactStepUsd,
   SIZED, briefPaths, bucket, sizeOf, cacheSheet, PASTE_MIN, estTokens, keepsRaw, pasteModel, pasteSystem, pastePrompt, offloaded,
 } from './policy'
 import { type Cell, NAMES, TOOL_NAMES, about, addWhy, awayWords, cacheClock, minutesLeft, coldWords, whyWords, barsSvg, boardHtml, cardLayout, hitPct, switchCost, svgSize, isExtra, modelColor, money, shade, net, netPct, netWords, planFmt, planRate, savedUsd, statsSvg, withMode } from './view'
@@ -29,7 +30,9 @@ const view = atom({ plugin: 'router', key: 'view' } as const, EMPTY_VIEW, { shap
 const log = atom({ plugin: 'router', key: 'log' } as const, [] as Array<TurnLog>, { shape: 'log-2' })
 const mix = atom({ plugin: 'router', key: 'mix' } as const, {} as Mix)
 const cacheOf = (u: Usage): Cache => ({ input: u.input_tokens, read: u.cache_read_input_tokens, write: u.cache_creation_input_tokens })
-const panel = atom({ plugin: 'router', key: 'panel' } as const, 'none' as 'none' | 'stats' | 'settings')
+const panel = atom({ plugin: 'router', key: 'panel' } as const, 'cache' as Tab, { shape: 'panel-2' }) // 0.9.2: the band no longer expands; a tab of the Router panel
+type Tab = 'cache' | 'stats' | 'settings' | 'switches'
+const PANEL = 'router-panel' // the full panel: tabs for the cache, Stats, Settings and Switches (PANE is the small widget)
 const isWidgetOpen = atom({ plugin: 'router', key: 'isWidgetOpen' } as const, false)
 const modes = atom({ plugin: 'router', key: 'modes' } as const, { global: null as string | null, project: null as string | null, isProject: false })
 const tools = atom({ plugin: 'router', key: 'tools' } as const, null as Versions | null)
@@ -89,6 +92,7 @@ async function fmtOf($: EngineInterface): Promise<(usd: number) => string> {
 const TODO_TOOLS = ['TodoWrite', 'mcp__ccd_turn__update_plan'] // the task list as Claude Code and the desktop app keep it
 
 const pretty = (m: string) => NAMES[family(m)] ?? m
+const kt = (n: number) => `${Math.round(n / 1000)}K`
 
 type Def = { model?: string; effort?: string }
 type ChatMode = 'off' | 'effort' | 'models' | 'both'
@@ -831,6 +835,12 @@ async function seat($: EngineInterface, s: State) {
   if (s.headless || s.paneOpened) return
   s.paneOpened = true
   if ((await $.store.get('widget')) === true) await showWidget($, true)
+}
+
+// The band's buttons open the Router panel on a tab: a pane of its own, so nothing grows above the prompt.
+async function openPanel($: EngineInterface, tab: Tab) {
+  await update($, panel, () => tab)
+  await $.ui.open({ id: PANEL, title: 'Router', focus: true, closeOnEscape: true, rows: 30, columns: 72 })
 }
 
 // The widget is the pane in its small form: the person drags it into the session rail; no call can.
@@ -1645,27 +1655,29 @@ export const register: Register = on => {
     return r
   }))
 
-  // The band: one row above the prompt, in the style of Claude's own, stacked with other mods' bands.
+  // The band: one row above the prompt, in the style of Claude's own, stacked with other mods' bands. It never grows with
+  // content (owner case 2026-11-26: a band that expanded made the chat jump and the wheel scroll the band, not the chat):
+  // the cache, Stats and Settings open in the Router panel. Only an offer that wants a decision takes a second row.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
     // a change from another session shows soon after a draw (a draw itself may only read state, so the check runs on a timer)
     if (!s.scopeQueued) { s.scopeQueued = true; $.clock.after(0, async () => { s.scopeQueued = false; await followScope($, s).catch(() => undefined) }) }
     const below = await next(e).catch(() => undefined) // other mods share this slot: theirs draw below ours
-    const el = $.ui.resolve(e)
-    const { Box, Text, Button } = el
-    const Svg = 'Svg' in el ? el.Svg : undefined // text glyphs break in the desktop's proportional font; an SVG draws real columns
+    const { Box, Text, Button } = $.ui.resolve(e)
     const stack = (mine: NonNullable<typeof below>) => (below ? <Box flexDirection="column">{mine}{below}</Box> : mine)
     const f = await facts($, s)
-    const open = await read($, panel)
     const tip = await read($, hint)
     const isHint = tip !== null && !(await read($, isHidden)) && f.v.isOn
-    const flip = (p: 'stats' | 'settings' | 'switches') => () => update($, panel, x => (x === p ? 'none' : p))
+    const open = (tab: Tab) => () => openPanel($, tab)
     const board = () => openBoard($, s).catch(() => $.ui.toast('router: could not open the board'))
     const picked = await read($, chat)
     const undo = () => update($, chat, (c): ChatModel => ({ ...c, model: null, by: 'you', routed: false, from: null })) // back to the default; auto stays off for this chat
-    // under 72 cells the row leaves the cache hit to Stats; narrower still, the buttons wrap onto a second line
+    // under 72 cells the row leaves the cache to the panel; narrower still, the buttons wrap onto a second line
     // instead of running off the edge. Gaps stay 2 cells: at 1, plain buttons read as one phrase (tests/ui.test.ts)
     const narrow = e.props.bodyColumns < 72
+    // the cache's hour counts down in the row: redraw once a minute while it is warm (text changes, the height never)
+    const left = s.lastContext >= 1000 ? minutesLeft(s.prev.at, f.at, 60) : undefined
+    if (left && !s.minuteTick) s.minuteTick = $.clock.after(60_000, () => { s.minuteTick = undefined; $.ui.invalidate('ui.render') })
 
     const row = (
       <Box key="router-row" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} width={e.props.bodyColumns}>
@@ -1673,14 +1685,16 @@ export const register: Register = on => {
         {f.v.isOn && <Text wrap="truncate-end"><Text color={modelColor(f.main?.model ?? s.cfg.main.model)}>■</Text> {f.now}</Text>}
         {f.v.isOn && picked.by === 'auto' && picked.model && <Button key="router-chat-undo" plain dimColor label={`Picked ${pretty(picked.model)} for this chat · Undo`} onPress={undo} />}
         {f.v.isOn && <Text dimColor={!isExtra(f.chat)} color={isExtra(f.chat) ? 'warning' : undefined} wrap="truncate-end">{netWords(f.chat, f.fmt)}</Text>}
-        {f.v.isOn && f.hit !== undefined && !narrow && <Text dimColor wrap="truncate-end">cache hit {f.hit}%</Text>}
+        {f.v.isOn && left !== undefined && !narrow && <Text dimColor={left > 10} color={left > 10 ? undefined : 'warning'} wrap="truncate-end">{left ? `cache ${kt(s.lastContext)}, ${left} min left` : `cache ${kt(s.lastContext)} expired`}</Text>}
+        {f.v.isOn && f.hit !== undefined && e.props.bodyColumns >= 110 && <Text dimColor wrap="truncate-end">hit {f.hit}%</Text>}
         {!f.v.isOn && <Text dimColor wrap="truncate-end">off {f.where}</Text>}
-        {open !== 'settings' && Object.values((await read($, tools))?.tools ?? {}).some(x => x.isBehind) && <Button key="router-update-tip" plain label="Update available" onPress={flip('settings')} />}
+        {Object.values((await read($, tools))?.tools ?? {}).some(x => x.isBehind) && <Button key="router-update-tip" plain label="Update available" onPress={open('settings')} />}
         <Box flexGrow={1} />
-        {f.feats.labels && <Button key="router-switches" plain label={open === 'switches' ? 'Hide switches' : 'Switches'} onPress={flip('switches')} />}
+        {f.feats.labels && <Button key="router-switches" plain label="Switches" onPress={open('switches')} />}
         <Button key="router-board" plain label="Board" onPress={board} />
-        <Button key="router-stats" plain label={open === 'stats' ? 'Hide stats' : 'Stats'} onPress={flip('stats')} />
-        <Button key="router-settings" plain label={open === 'settings' ? 'Done' : 'Settings'} onPress={flip('settings')} />
+        <Button key="router-cache" plain label="Cache" onPress={open('cache')} />
+        <Button key="router-stats" plain label="Stats" onPress={open('stats')} />
+        <Button key="router-settings" plain label="Settings" onPress={open('settings')} />
       </Box>
     )
     // An offer gets its own row, so the model and the savings above never truncate; buttons do the switch.
@@ -1714,20 +1728,170 @@ export const register: Register = on => {
           </Box>
         )
       : null
+    // the away report: one row once you are back, gone with your next prompt (the Cache tab keeps it too)
     const kept = f.v.isOn && !offerRow && !coldRow ? await read($, away) : null
     const keptRow = kept
       ? (
           <Box key="router-away-row" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} width={e.props.bodyColumns}>
-            <Text key="router-away" dimColor wrap="wrap">{awayWords(kept, await read($, awakeHours))}</Text>
-            {!kept.back && !kept.compacted && !kept.stop && (await read($, chatAwake)) && <Button key="router-away-stop" plain dimColor label="Stop for this chat" onPress={() => setChatAwake($, s, false)} />}
+            <Text key="router-away" dimColor wrap="wrap">{awayWords(kept, f.hours)}</Text>
+            {!kept.back && !kept.compacted && !kept.stop && f.chatAwake && <Button key="router-away-stop" plain dimColor label="Stop for this chat" onPress={() => setChatAwake($, s, false)} />}
           </Box>
         )
       : null
     const extra = offerRow ?? coldRow ?? keptRow
-    const head = extra ? <Box key="router-head" flexDirection="column" width={e.props.bodyColumns}>{row}{extra}</Box> : row
-    if (open === 'none' || (open === 'switches' && !f.feats.labels)) return stack(head)
+    return stack(extra ? <Box key="router-head" flexDirection="column" width={e.props.bodyColumns}>{row}{extra}</Box> : row)
+  }).catch((_, e, next) => next(e))
 
-    if (open === 'switches') {
+  // The Router panel: a pane of its own with tabs, scrolled apart from the chat. Cache: what is in it, how long it stays
+  // warm, what each move would cost. Stats: the card. Settings: this chat, this project, everywhere. Switches: to rate.
+  on('ui.render', { component: 'Pane', requestId: PANEL }, async ($, e) => {
+    const el = $.ui.resolve(e)
+    const { Box, Text, Button } = el
+    const Svg = 'Svg' in el ? el.Svg : undefined
+    const W = e.props.bodyColumns
+    const f = await facts($, s)
+    const tab = await read($, panel)
+    const shown: Tab = tab === 'switches' && !f.feats.labels ? 'cache' : tab
+    const TABS: Array<[Tab, string]> = [['cache', 'Cache'], ['stats', 'Stats'], ['settings', 'Settings'], ...(f.feats.labels ? [['switches', 'Switches'] as [Tab, string]] : [])]
+    const tabRow = (
+      <Box key="router-tabs" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2}>
+        {TABS.map(([t, label]) => <Button key={`router-tab-${t}`} {...(t === shown ? { variant: 'primary' as const } : { plain: true as const })} label={label} onPress={() => update($, panel, () => t)} />)}
+        <Box flexGrow={1} />
+        <Button key="router-panel-board" plain label="Board" onPress={() => openBoard($, s).catch(() => $.ui.toast('router: could not open the board'))} />
+      </Box>
+    )
+    // A block is its heading and its rows packed tight; one blank line between blocks, none inside one.
+    type Item = ReturnType<typeof h> | false | null | undefined
+    const heads = new WeakSet<object>()
+    const page = (body: Item | Array<Item>) => {
+      const blocks: Array<Array<ReturnType<typeof h>>> = [[]]
+      for (const it of [body].flat()) {
+        if (!it) continue
+        if (heads.has(it as object)) blocks.push([it])
+        else blocks[blocks.length - 1]!.push(it)
+      }
+      return (
+        <Box flexDirection="column" gap={1} width={W}>
+          {tabRow}
+          {blocks.filter(b => b.length).map((b, i) => <Box key={`router-block-${i}`} flexDirection="column">{b}</Box>)}
+        </Box>
+      )
+    }
+
+    // a label column, so every control starts at the same place
+    const LABEL = 12
+    const heading = (key: string, text: string) => { const el = <Box key={key}><Text bold>{text}</Text></Box>; heads.add(el as object); return el }
+    const field = (key: string, label: string, kids: Array<ReturnType<typeof h> | false | null> | ReturnType<typeof h>) => (
+      <Box key={key} flexDirection="row" alignItems="flex-start" gap={1}>
+        <Box key={`${key}-label`} width={LABEL} flexShrink={0}><Text dimColor>{label}</Text></Box>
+        <Box key={`${key}-kids`} flexDirection="row" alignItems="center" columnGap={2} flexWrap="wrap" flexShrink={1}>{kids}</Box>
+      </Box>
+    )
+    const note = (text: string) => <Text dimColor wrap="wrap">{text}</Text>
+    const choices = <V extends string>(key: string, options: Array<[V, string]>, value: V, set: (v: V) => unknown, dot?: (v: V) => string | undefined) =>
+      options.map(([v, text]) => {
+        const look = v === value ? { variant: 'primary' as const } : { plain: true as const, dimColor: true }
+        const color = dot?.(v)
+        // no label with a dot: the desktop draws a label in place of the children
+        return color
+          ? <Button key={`${key}-${v}`} {...look} onPress={() => set(v)}><Text color={color}>●</Text> {text}</Button>
+          : <Button key={`${key}-${v}`} label={text} {...look} onPress={() => set(v)} />
+      })
+    const ONOFF: Array<['on' | 'off', string]> = [['on', 'On'], ['off', 'Off']]
+    const model = f.main?.model ?? s.cfg.main.model
+    const usage = await $.session.usage({ breakdown: 'summary' }).catch(() => undefined)
+    const bd = usage?.context.breakdown
+    const limit = bd?.rawMaxTokens ?? usage?.context.window ?? 1_000_000 // the model's own context limit
+    const cached = s.lastContext >= 1000
+
+    if (shown === 'cache') {
+      const left = cached ? minutesLeft(s.prev.at, f.at, 60) : undefined
+      if (left && !s.minuteTick) s.minuteTick = $.clock.after(60_000, () => { s.minuteTick = undefined; $.ui.invalidate('ui.render') })
+      const used = (bd?.categories ?? []).filter(c => c.kind === 'used' && c.tokens >= 500)
+      const usedTotal = used.reduce((a, c) => a + c.tokens, 0)
+      const BAR = Math.max(10, Math.min(60, W - 2))
+      const bar = usedTotal > 0 && (
+        <Box key="router-cache-bar" flexDirection="row" width={BAR}>
+          {used.map(c => <Box key={`router-cache-seg-${c.name}`} width={Math.max(1, Math.round((c.tokens / usedTotal) * BAR))} height={1} backgroundColor={c.color} />)}
+        </Box>
+      )
+      // /clear keeps what every chat starts with (system prompt, tools, memory files) and drops the conversation
+      const base = used.filter(c => !/messag|conversation/i.test(c.name)).reduce((a, c) => a + c.tokens, 0)
+      // label and price in fixed columns (prices right-aligned, so they line up); the note beside them, or under them when narrow
+      const pair = (label: string, value: string) => [
+        <Box key="l" width={17} flexShrink={0}><Text>{label}</Text></Box>,
+        <Box key="v" width={11} flexShrink={0} justifyContent="flex-end"><Text bold>{value}</Text></Box>,
+      ]
+      const cost = (key: string, label: string, value: string, note: string) => W < 64
+        ? (
+            <Box key={key} flexDirection="column">
+              <Box flexDirection="row" gap={1}>{pair(label, value)}</Box>
+              <Box marginLeft={2}><Text dimColor wrap="wrap">{note}</Text></Box>
+            </Box>
+          )
+        : (
+            <Box key={key} flexDirection="row" gap={1}>
+              {pair(label, value)}
+              <Box flexShrink={1} marginLeft={1}><Text dimColor wrap="wrap">{note}</Text></Box>
+            </Box>
+          )
+      const kept = await read($, away)
+      const Progress = 'Progress' in el ? el.Progress : undefined
+      return page([
+        heading('router-cache-h', cached ? `Cache: ${kt(s.lastContext)} of ${kt(limit)}` : 'Cache: empty'),
+        !cached && note('Nothing cached yet: this fills after the first reply.'),
+        cached && (left !== undefined
+          ? Progress
+            ? <Progress key="router-cache-time" label="Cache time left" value={left} max={60} valueText={left ? `${left} min left` : 'expired'} color={left > 10 ? 'success' : 'warning'} />
+            : <Text key="router-cache-time">{left ? `${left} min left before it expires` : 'Expired: the next message re-reads the chat'}</Text>
+          : null),
+        cached && note('Each message, a keep-awake nudge too, starts the hour again.'),
+        bar,
+        ...used.map(c => (
+          <Box key={`router-cache-row-${c.name}`} flexDirection="row" gap={1}>
+            <Text color={c.color}>■</Text>
+            <Box width={15} flexShrink={0}><Text wrap="truncate-end">{c.name}</Text></Box>
+            <Box width={11} flexShrink={0} justifyContent="flex-end"><Text dimColor>{kt(c.tokens)}</Text></Box>
+          </Box>
+        )),
+        heading('router-cost-h', 'What it costs now'),
+        ...(cached
+          ? [
+              cost('router-cost-lose', 'Lose the cache', money(f.sheet.reset), 'an hour idle: the next message rewrites it'),
+              ...f.sheet.switches.map(x => cost(`router-cost-${x.model}`, `Switch to ${pretty(x.model)}`, money(x.usd), 'rewrites the chat on that model')),
+              cost('router-cost-compact', 'Compact now', about(f.sheet.compact), 'a summary replaces the chat'),
+              ...(base ? [cost('router-cost-clear', 'Clear (/clear)', about(rebuildUsd(model, base)), 'a new chat: system prompt and tools only')] : []),
+              cost('router-cost-ping', 'Keep it warm', about(f.sheet.ping), 'a nudge, every 50 min while you are away'),
+            ]
+          : [note('Costs show once something is cached.')]),
+        heading('router-awake-h', 'Keep awake, this chat'),
+        f.feats.awake
+          ? field('router-chat-awake', 'Nudges', [...choices('router-chat-awake', ONOFF, f.chatAwake ? 'on' : 'off', v => setChatAwake($, s, v === 'on')), note(awakeCell(s, f).sub)])
+          : field('router-chat-awake', 'Nudges', [note('Keep awake is off everywhere (Settings).')]),
+        kept && <Text key="router-away-tab" dimColor wrap="wrap">{awayWords(kept, f.hours)}</Text>,
+      ])
+    }
+
+    if (shown === 'stats') {
+      const c = cells(s, f)
+      const fit = cardLayout(W)
+      const src = statsSvg(c, f.turns, fit.width, fit.perRow, f.spend, reroutedNote(f.v))
+      return page(Svg
+        ? <Svg key="router-card" isInteractive source={src} {...svgSize(src)} alt={c.map(x => `${x.label} ${x.value}, ${x.sub}`).join('; ')} />
+        : (
+            <Box key="router-card" flexDirection="row" flexWrap="wrap" gap={2}>
+              {c.map(x => (
+                <Box key={x.label} flexDirection="column" width={Math.max(14, Math.floor(W / 4) - 2)}>
+                  <Text dimColor wrap="truncate-end">{x.label}</Text>
+                  <Text bold wrap="truncate-end">{x.value}</Text>
+                  <Text dimColor wrap="truncate-end">{x.sub}</Text>
+                </Box>
+              ))}
+            </Box>
+          ))
+    }
+
+    if (shown === 'switches') {
       // newest first; a labelled one shows its label, the rest 👍 👎 (Settings > Training)
       const list = [...(await read($, switches))].reverse()
       const side = (m: string, eff: string) => `${pretty(m)}${eff ? ` ${eff}` : ''}`
@@ -1742,62 +1906,16 @@ export const register: Register = on => {
               ]}
         </Box>
       ))
-      const empty = <Text key="router-sw-none" dimColor wrap="wrap">No switches in this chat yet. Each model or effort change the router makes shows here, to rate.</Text>
-      return stack(<Box flexDirection="column" gap={1} width={e.props.bodyColumns}>{head}{rows.length ? rows : empty}</Box>)
+      return page(rows.length ? rows : <Text key="router-sw-none" dimColor wrap="wrap">No switches in this chat yet. Each model or effort change the router makes shows here, to rate.</Text>)
     }
 
-    if (open === 'stats') {
-      // the cache clock counts down: redraw once a minute while the card is open
-      if (!s.minuteTick && s.prev.at) s.minuteTick = $.clock.after(60_000, () => { s.minuteTick = undefined; $.ui.invalidate('ui.render') })
-      const c = cells(s, f)
-      const fit = cardLayout(e.props.bodyColumns)
-      const src = statsSvg(c, f.turns, fit.width, fit.perRow, f.spend, reroutedNote(f.v))
-      const card = Svg
-        ? <Svg key="router-card" isInteractive source={src} {...svgSize(src)} alt={c.map(x => `${x.label} ${x.value}, ${x.sub}`).join('; ')} />
-        : (
-            <Box key="router-card" flexDirection="row" gap={2}>
-              {c.map(x => (
-                <Box key={x.label} flexDirection="column" width={Math.max(14, Math.floor(e.props.bodyColumns / 4) - 2)}>
-                  <Text dimColor wrap="truncate-end">{x.label}</Text>
-                  <Text bold wrap="truncate-end">{x.value}</Text>
-                  <Text dimColor wrap="truncate-end">{x.sub}</Text>
-                </Box>
-              ))}
-            </Box>
-          )
-      const line = sheetLine(s, f)
-      return stack(<Box flexDirection="column" gap={1} width={e.props.bodyColumns}>{head}{card}{line && <Text key="router-sheet" dimColor wrap="wrap">{line}</Text>}</Box>)
-    }
-
-    // Settings: a label column so every control starts at the same place, each group's note right under it, and a
-    // little more space between groups than inside them. In each choice the picked side is the filled button.
-    const LABEL = 11 // cells: the longest label, "This chat", plus room
-    // dot: a model choice carries its color, so the row doubles as the legend for Stats and the Board
-    const choices = <V extends string>(key: string, options: Array<[V, string]>, value: V, set: (v: V) => unknown, dot?: (v: V) => string | undefined) =>
-      options.map(([v, text]) => {
-        const look = v === value ? { variant: 'primary' as const } : { plain: true as const, dimColor: true }
-        const color = dot?.(v)
-        // no label with a dot: the desktop draws a label in place of the children
-        return color
-          ? <Button key={`${key}-${v}`} {...look} onPress={() => set(v)}><Text color={color}>●</Text> {text}</Button>
-          : <Button key={`${key}-${v}`} label={text} {...look} onPress={() => set(v)} />
-      })
-    // top: a row that may wrap to two lines keeps its label on the first one
-    const field = (key: string, label: string, kids: Array<ReturnType<typeof h>> | ReturnType<typeof h>, top = false) => (
-      <Box key={key} flexDirection="row" alignItems={top ? 'flex-start' : 'center'} gap={1}>
-        <Box key={`${key}-label`} width={LABEL} flexShrink={0}><Text dimColor>{label}</Text></Box>
-        <Box key={`${key}-kids`} flexDirection="row" alignItems="center" columnGap={2} flexWrap="wrap" flexShrink={1}>{kids}</Box>
-      </Box>
-    )
-    const note = (key: string, text: string) => <Box key={key} marginLeft={LABEL + 1}><Text dimColor wrap="wrap">{text}</Text></Box>
-    const group = (key: string, ...rows: Array<ReturnType<typeof h> | false>) => <Box key={key} flexDirection="column" rowGap="sm">{rows.filter(Boolean)}</Box>
-    const ONOFF: Array<['on' | 'off', string]> = [['on', 'On'], ['off', 'Off']]
+    // Settings
+    const picked = await read($, chat)
     const globalOn = f.m.global !== 'off'
     const projectOn = f.m.project === null ? globalOn : f.m.project !== 'off'
     const widgetOpen = await read($, isWidgetOpen)
     const t = await read($, tools)
     const busy = await read($, updating)
-    const recheck = () => refreshTools($, s, true)
     const cli = (k: Tool) => {
       const x = t?.tools[k]
       return (
@@ -1813,80 +1931,83 @@ export const register: Register = on => {
         </Box>
       )
     }
-    const feat = (k: keyof Features, label: string) => field(`router-f-${k}`, label, choices(`router-f-${k}`, ONOFF, f.feats[k] ? 'on' : 'off', v => setFeature($, k, v === 'on')))
-    // Auto-compact: this chat's own point (the router compacts it between turns), or Claude Code's window for every chat
-    const usage = await $.session.usage({ breakdown: 'summary' }).catch(() => undefined)
-    const bd = usage?.context.breakdown
-    const engineAt = bd?.autoCompactThreshold ?? bd?.rawMaxTokens ?? usage?.context.window ?? 1_000_000
+    const feat = (k: keyof Features, label: string, text: string) => field(`router-f-${k}`, label, [...choices(`router-f-${k}`, ONOFF, f.feats[k] ? 'on' : 'off', v => setFeature($, k, v === 'on')), note(text)])
+
+    // Compact at: this chat's own point (the router compacts it between turns), on a slider coloured by cost
+    const engineAt = bd?.autoCompactThreshold ?? limit
     const at = await read($, compactAt)
-    const acModel = f.main?.model ?? s.cfg.main.model
     const growth = chatGrowth(s)
-    const limit = bd?.rawMaxTokens ?? usage?.context.window ?? 1_000_000 // the model's own context limit
     const points = compactPoints(limit)
-    const best = growth === undefined ? undefined : cheapestPoint(acModel, growth, limit)
-    const kt = (n: number) => `${Math.round(n / 1000)}K`
-    const src = bd?.autocompactSource === 'env' ? ' (set by CLAUDE_CODE_AUTO_COMPACT_WINDOW, which beats settings.json)' : bd?.autocompactSource === 'settings' ? ' (your settings.json)' : ''
-    const shown = at ?? best
-    const per100 = growth === undefined || best === undefined ? ''
-      : ` Every 100 steps: ${points.map(p => `${kt(p)} compacts ${Math.round(compactsPer100(p, growth) * 10) / 10} times, ${money(100 * compactStepUsd(acModel, p, growth))}`).join('; ')}. Green is near the cheapest; red compacts so often it loses detail, or costs too much.`
-    const acNote = `Now ${kt(s.lastContext)}; Claude Code itself compacts at ${kt(engineAt)}${src}.${s.lastContext >= 1000 ? ` Compacting now costs ${about(f.sheet.compact)}.` : ''} ${growth === undefined
-      ? 'The cheapest point shows after a few steps.'
-      : `This chat grows about ${kt(growth)} a step; a step reads ${money(stepUsd(acModel, s.lastContext, 0))} now${shown ? `, and compacting at ${kt(shown)} averages ${about(compactStepUsd(acModel, shown, growth))} a step` : ''}.`}${per100} A point you pick is used after the turn that passes it, for this chat only${at && at >= engineAt ? `; Claude Code compacts at ${kt(engineAt)} first, so make it your default to reach ${kt(at)}` : ''}.`
+    const best = growth === undefined ? undefined : cheapestPoint(model, growth, limit)
     const LOOK_COLOR: Record<CompactLook, string> = { good: '#4f9a5c', ok: '#c9932e', bad: '#c8553d' }
-    const acDot = (v: string) => (v === 'off' || growth === undefined || best === undefined ? undefined : LOOK_COLOR[compactLook(acModel, Number(v), growth, best)])
-    // order: what a person changes most (this chat) first, then what to save on, then where routing is on at all
-    const settings = (
-      <Box key="router-settings-box" flexDirection="column" rowGap="md">
-        {group('router-g-chat',
-          field('router-chat', 'This chat', choices('router-chat', [['off', 'Off'], ['effort', 'Effort'], ['models', 'Models'], ['both', 'Both']], f.chatMode, v => setChat($, s, v))),
-          note('router-chat-note', 'Effort follows each task. Models picks subagent models and suggests a chat switch. Lasts until the session ends.'),
-          field('router-compact', 'Compact at', choices('router-compact', [['off', 'Claude Code'] as [string, string], ...points.map(p => [String(p), p === best ? `${kt(p)}, cheapest` : kt(p)] as [string, string])], at ? String(at) : 'off', v => setCompactAt($, s, v === 'off' ? null : Number(v)), acDot), true),
-          note('router-compact-note', acNote),
-          <Box key="router-compact-default" marginLeft={LABEL + 1}>
-            {at
-              ? <Button key="router-compact-default-set" plain label={`Make ${kt(at)} my default (every chat, in settings.json)`} onPress={() => setDefaultWindow($, s, at)} />
-              : bd?.autocompactSource === 'settings' && <Button key="router-compact-default-clear" plain label="Back to Claude Code's own window (settings.json)" onPress={() => setDefaultWindow($, s, null)} />}
-          </Box>,
-          f.feats.awake && field('router-chat-awake', 'Keep awake', choices('router-chat-awake', ONOFF, (await read($, chatAwake)) ? 'on' : 'off', v => setChatAwake($, s, v === 'on'))),
-          f.feats.awake && note('router-chat-awake-note', 'Off: no nudges for this chat only, for example one you are done with.'))}
-        {group('router-g-pick',
-          field('router-model', 'Model', choices('router-model', [['auto', 'Auto'], ['haiku', 'Haiku'], ['sonnet', 'Sonnet'], ['opus', 'Opus'], ['fable', 'Fable']], picked.by === 'you' ? family(picked.model ?? s.cfg.main.model) : 'auto', v => pickModel($, v), v => (v === 'auto' ? undefined : modelColor(v)))),
-          field('router-effort', 'Effort', choices('router-effort', [['auto', 'Auto'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra high'], ['max', 'Max']], picked.effort ?? 'auto', v => setChatEffort($, s, v === 'auto' ? null : v), v => (v === 'auto' ? undefined : shade(f.main?.model ?? s.cfg.main.model, v, 'dark')))),
-          note('router-pick-note', 'A pick locks this chat to it, and savings count against it. Auto lets the router choose per task.'),
-          field('router-units', 'Units', choices('router-units', [['usd', 'Dollars'], ['plan', 'Plan %']], f.units, v => setUnits($, v === 'plan' ? 'plan' : 'usd'))),
-          note('router-units-note', !f.plan?.week ? 'No plan usage reported here (an API key, or no reply yet), so figures stay in dollars.'
-            : f.plan.rate ? `Your week is ${f.plan.week.pct}% used, as Claude Code reports it. Plan % turns dollars into it at ${money(f.plan.rate)} per point: what this machine spent this week over that percent, so it reads high if you also use Claude elsewhere.`
-            : `Your week is ${f.plan.week.pct}% used. Plan % starts once this week has 3 points and $3 of spend here; until then figures stay in dollars.`))}
-        {group('router-g-save',
-          feat('autoSwitch', 'Move down'),
-          note('router-f-autoSwitch-note', 'Moves to a cheaper model on its own, only when rebuilding the cache pays back. Moving up is always your call.'),
-          feat('sizing', 'Helpers'),
-          note('router-f-sizing-note', 'Runs the reader and researcher on Haiku or Sonnet by the size of the job, with a budget.'),
-          feat('pastes', 'Big pastes'),
-          note('router-f-pastes-note', 'A message over about 10K tokens goes to a file, and a cheaper model reads it first. Write "raw" to skip.'),
-          feat('awake', 'Keep awake'),
-          field('router-awake-hours', 'Keep it for', choices('router-awake-hours', AWAKE_HOURS.map(h => [String(h), `${h}h`] as [string, string]), String(f.hours), v => setAwakeHours($, Number(v)))),
-          note('router-f-awake-note', `A hidden nudge every 50 minutes keeps an idle chat's cache warm${s.lastContext >= 1000 ? ` (${about(f.sheet.ping)} each, against ${money(f.sheet.reset)} to re-read it)` : ''}. After ${f.hours} hours it compacts the chat into a handoff${s.lastContext >= 1000 ? ` (${about(f.sheet.compact)})` : ''} and stops. Off: the band offers to compact once the cache lapses.`),
-          feat('labels', 'Training'),
-          note('router-f-labels-note', 'Logs each model or effort switch on this machine (no prompt text), for a future local router. Switches in the band lists them to rate: 👎 goes back.'))}
-        {group('router-g-scope',
-          field('router-scope', 'Routing', [
-            <Text key="router-global-l">Everywhere</Text>,
-            ...choices('router-global', ONOFF, globalOn ? 'on' : 'off', v => setScope($, s, 'global', v)),
-            ...(f.m.isProject ? [<Box key="router-scope-gap" width={2} />, <Text key="router-project-l">In {s.project}</Text>, ...choices('router-project', ONOFF, projectOn ? 'on' : 'off', v => setScope($, s, 'project', v))] : []),
-          ]),
-          note('router-scope-note', f.m.isProject ? `The ${s.project} switch wins over Everywhere. Both are saved in routing.json.` : 'Saved in ~/.claude/routing.json.'))}
-        {group('router-g-tools',
-          field('router-clis', 'Tools', [cli('claude'), cli('codex'), cli('antigravity'), <Button key="router-recheck" plain dimColor label="Re-check" onPress={recheck} />], true),
-          note('router-tools-note', 'The newest models need current tools.'))}
-        <Box key="router-more" flexDirection="row" alignItems="center" gap={2} marginLeft={LABEL + 1}>
-          <Button key="router-widget" plain label={widgetOpen ? 'Hide widget' : 'Show widget'} onPress={() => showWidget($, !widgetOpen)} />
-          <Button key="router-rules" plain label="Edit rules" onPress={() => editRules($, s).catch(() => $.ui.toast('router: could not open routing.json'))} />
+    const look = (v: number) => (growth === undefined || best === undefined ? '#8a8f98' : LOOK_COLOR[compactLook(model, v, growth, best)])
+    const step = limit > 400_000 ? 25_000 : 10_000
+    const min = Math.min(points[0] ?? step * 5, limit)
+    const zones: Array<[number, string]> = []
+    for (let v = min; v <= limit; v += step) { const c = look(v); const z = zones[zones.length - 1]; if (z && z[1] === c) z[0] = v; else zones.push([v, c]) }
+    const value = Math.min(limit, Math.max(min, at ?? engineAt))
+    const marks: Array<[number, string, string]> = [[engineAt, '│', '#8a8f98'], ...(best ? [[best, '★', '#4f9a5c'] as [number, string, string]] : []), ...(cached ? [[s.lastContext, '▲', '#5b8def'] as [number, string, string]] : [])]
+    const sliderProps: SliderProps = { min, max: limit, step, value, zones, marks }
+    const Client = 'Client' in el ? el.Client : undefined
+    const Select = 'Select' in el ? el.Select : undefined
+    const slider = Client
+      ? <Client key="router-compact-slider" module="./slider.tsx" props={sliderProps} width={Math.max(12, Math.min(72, W - LABEL - 2))} height={3} />
+      : Select
+        ? <Select key="router-compact-select" label="Compact at" options={[{ value: 'off', label: `Claude Code (${kt(engineAt)})` }, ...points.map(p => ({ value: String(p), label: p === best ? `${kt(p)}, cheapest` : kt(p) }))]} value={at ? String(at) : 'off'} onSelect={v => setCompactAt($, s, v === 'off' ? null : Number(v))} />
+        : null
+    const src = bd?.autocompactSource === 'env' ? ' (CLAUDE_CODE_AUTO_COMPACT_WINDOW)' : bd?.autocompactSource === 'settings' ? ' (your settings.json)' : ''
+    const legend = [`▲ now ${kt(s.lastContext)}`, best ? `★ cheapest ${kt(best)}` : '', `│ Claude Code ${kt(engineAt)}${src}`].filter(Boolean).join('   ')
+    const acCost = (growth === undefined ? 'The cheapest point shows after a few steps.' : `Compacting at ${kt(at ?? engineAt)} averages ${about(compactStepUsd(model, at ?? engineAt, growth))} a step; this chat grows about ${kt(growth)} a step.`)
+      + (at && at >= engineAt ? ` Claude Code compacts at ${kt(engineAt)} first, so make ${kt(at)} your default to reach it.` : '')
+
+    return page([
+      heading('router-h-chat', 'This chat'),
+      field('router-chat', 'Routing', choices('router-chat', [['off', 'Off'], ['effort', 'Effort'], ['models', 'Models'], ['both', 'Both']], f.chatMode, v => setChat($, s, v))),
+      field('router-model', 'Model', choices('router-model', [['auto', 'Auto'], ['haiku', 'Haiku'], ['sonnet', 'Sonnet'], ['opus', 'Opus'], ['fable', 'Fable']], picked.by === 'you' ? family(picked.model ?? s.cfg.main.model) : 'auto', v => pickModel($, v), v => (v === 'auto' ? undefined : modelColor(v)))),
+      field('router-effort', 'Effort', choices('router-effort', [['auto', 'Auto'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra high'], ['max', 'Max']], picked.effort ?? 'auto', v => setChatEffort($, s, v === 'auto' ? null : v), v => (v === 'auto' ? undefined : shade(model, v, 'dark')))),
+      f.feats.awake && field('router-chat-awake', 'Keep awake', choices('router-chat-awake', ONOFF, f.chatAwake ? 'on' : 'off', v => setChatAwake($, s, v === 'on'))),
+      field('router-compact', 'Compact at', [<Text key="router-compact-value" bold>{at ? kt(at) : `Claude Code's own (${kt(engineAt)})`}</Text>, ...(at ? [<Button key="router-compact-off" plain dimColor label="Use Claude Code's" onPress={() => setCompactAt($, s, null)} />] : [])]),
+      slider && <Box key="router-compact-slider-row" marginLeft={LABEL + 1} flexDirection="column">{slider}<Text dimColor wrap="wrap">{legend}</Text><Text dimColor wrap="wrap">{acCost}</Text></Box>,
+      (!!at || bd?.autocompactSource === 'settings') && (
+        <Box key="router-compact-default" marginLeft={LABEL + 1}>
+          {at
+            ? <Button key="router-compact-default-set" plain label={`Make ${kt(at)} my default (every chat)`} onPress={() => setDefaultWindow($, s, at)} />
+            : <Button key="router-compact-default-clear" plain label="Back to Claude Code's own window" onPress={() => setDefaultWindow($, s, null)} />}
         </Box>
-      </Box>
-    )
-    return stack(<Box flexDirection="column" gap={1} width={e.props.bodyColumns}>{head}{settings}</Box>)
-  }).catch((_, e, next) => next(e))
+      ),
+      <Box key="router-chat-note" marginLeft={LABEL + 1}>{note('Kept for this chat, also after a restart.')}</Box>,
+      ...(f.m.isProject
+        ? [
+            heading('router-h-project', `This project: ${s.project}`),
+            field('router-project', 'Routing', [...choices('router-project', ONOFF, projectOn ? 'on' : 'off', v => setScope($, s, 'project', v)), note('Wins over Everywhere.')]),
+          ]
+        : []),
+      heading('router-h-all', 'Everywhere'),
+      field('router-global', 'Routing', choices('router-global', ONOFF, globalOn ? 'on' : 'off', v => setScope($, s, 'global', v))),
+      field('router-units', 'Units', [...choices('router-units', [['usd', 'Dollars'], ['plan', 'Plan %']], f.units, v => setUnits($, v === 'plan' ? 'plan' : 'usd')), note(!f.plan?.week ? 'no plan usage reported here' : f.plan.rate ? `1% of your week ≈ ${money(f.plan.rate)}` : 'Plan % starts after 3 points of use')]),
+      feat('autoSwitch', 'Move down', 'to a cheaper model when the cache rebuild pays back'),
+      feat('sizing', 'Helpers', 'reader and researcher on Haiku or Sonnet by job size'),
+      feat('pastes', 'Big pastes', 'over 10K tokens: a cheaper model reads it first'),
+      feat('awake', 'Keep awake', 'nudges keep an idle chat warm, then it compacts'),
+      f.feats.awake && field('router-awake-hours', 'Keep it for', choices('router-awake-hours', AWAKE_HOURS.map(h => [String(h), `${h}h`] as [string, string]), String(f.hours), v => setAwakeHours($, Number(v)))),
+      feat('labels', 'Training', 'log switches to rate (no prompt text)'),
+      heading('router-h-tools', 'Tools'),
+      field('router-clis', 'Versions', [cli('claude'), cli('codex'), cli('antigravity'), <Button key="router-recheck" plain dimColor label="Re-check" onPress={() => refreshTools($, s, true)} />]),
+      <Box key="router-more" flexDirection="row" alignItems="center" columnGap={2} marginLeft={LABEL + 1}>
+        <Button key="router-widget" plain label={widgetOpen ? 'Hide widget' : 'Show widget'} onPress={() => showWidget($, !widgetOpen)} />
+        <Button key="router-rules" plain label="Edit rules" onPress={() => editRules($, s).catch(() => $.ui.toast('router: could not open routing.json'))} />
+      </Box>,
+    ])
+  })
+
+  // The Compact at slider (hooks/slider.tsx) posts the point picked.
+  on('ui.message', async ($, e, next) => {
+    if (e.element === 'router-compact-slider') {
+      const v = Number((e.data as { value?: unknown } | null)?.value)
+      if (Number.isFinite(v) && v > 0) await setCompactAt($, s, v)
+    }
+    return next(e)
+  })
 
   // The widget: a glance in the session rail (clicks may not reach it there); expanded, the Stats card.
   // keep-awake's nudge and its one-phrase reply draw nothing (ctrl+o still shows the nudge); the band reports them
