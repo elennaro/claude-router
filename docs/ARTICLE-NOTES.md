@@ -70,11 +70,17 @@ real usage. Per-move detail is in [LESSONS.md](LESSONS.md); the numbers come fro
    main lever, yet the ledger kept no effort, so the $96 of extra spend could not be traced. 0.9.0 adds an `efforts`
    table (effort, no-router effort, class, and why: class, unhappy, pick, asked, agent, nudge, as-is). The ledger
    also trims itself: effort detail after 60 days, the rest after 400.
-13. **Next: labelled data and a local classifier.** Two steps, owner's plan. First, an opt-in switch log in Settings
-   with like and dislike on each model or effort switch; dislike switches back, with a warning when that costs a
-   cache rebuild. Later, labels read from the person's replies instead of buttons. Then a small local classifier
-   (CPU-sized, chosen from the open models on the Hugging Face "Jev decision index") trained first on public
-   routing and task-type datasets, then on the owner's own anonymized labels, to replace the Haiku calls.
+13. **Labelled data, and stepping aside (0.9.1, 2026-11-26).** The owner's plan, first half: an opt-in *Training*
+   switch logs each switch the router makes (model, effort, quick turn, subagent) to the ledger, with no prompt text,
+   and the **Switches** list rates each 👍 or 👎; 👎 goes back like Undo, with a toast when going back costs a cache
+   rebuild over $0.10. Same release: a prompt with "ultrathink" or "ultracode", and every workflow agent, runs exactly
+   as asked; the router only measures. The owner's reasoning: someone who writes ultrathink has already decided.
+   Later, labels read from the person's replies instead of buttons.
+14. **Next: a local classifier.** The "Jev decision index" models turned out to be 25-31B, far from CPU-sized. The plan
+   (`docs/PLAN-classifier.md`) is multilingual-e5-small (118M parameters, MIT, multilingual) with a small trained
+   layer on top, data from public sets plus Haiku labels, never the eval cases. First measurement, int8 in Node on a
+   desktop CPU: 3 ms for a short prompt and 13 ms for a paragraph once loaded, but about 1 s for a fresh process, 850 MB
+   of memory to keep it loaded, and a 379 MB runtime install. Whether the runtime cost is worth it is the next decision.
 
 ## How the savings are measured
 

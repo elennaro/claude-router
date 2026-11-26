@@ -28,6 +28,7 @@ Every row is detailed under *What it does* below.
 
 ## What's new
 
+- **0.9.1** *Training* (Settings, off by default): a log of each switch the router makes and a **Switches** list to rate them 👍 or 👎; 👎 goes back. "ultrathink" or "ultracode" in a prompt, and workflow agents, run exactly as you set them: the router only measures.
 - **0.9.0** The ledger records each step's effort, the effort it would have had with no router, its task class and why the effort was set (class, unhappy, pick, asked, agent, nudge, as-is), so extra spend can be traced to the raise that bought it. The ledger trims itself: effort detail after 60 days, the rest after 400.
 - **0.8.9** The Board writes the net as "saved $x" or "$x extra" (a bare "+$30" was read as a saving). Keep-awake and plan % fixes from a code review: plan % counts the week from its reset time, a stopped chat still gets the compact-first offer, a slash command ends an idle stretch.
 - **0.8.8** *Units*: savings in dollars or as a share of your plan's weekly limit, and a **Plan** cell in Stats with the week and 5-hour limits used. **Smart keep awake**: finished chats get no nudges, and once 20 idle stretches are recorded it nudges only while you're likely enough to come back. Keep awake **off for one chat**. Turning routing on or off in one session reaches your other open sessions within about 10 seconds.

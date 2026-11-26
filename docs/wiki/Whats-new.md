@@ -2,6 +2,11 @@
 
 Newest first. Update with `/plugin marketplace update claude-router`, then `/plugin update router@claude-router`, then restart Claude Code.
 
+## 0.9.1: rate the router, and it steps aside for ultrathink
+
+- **Training** (Settings, off by default): the router logs each switch it makes (the chat's model, its effort, a quick turn on Haiku, a routed subagent) to `router.db` on this machine, with no prompt text. **Switches** on the band lists this chat's last 10; rate each 👍 or 👎. 👎 on a model pick goes back like **Undo** (a toast first if re-reading the chat costs over $0.10); 👎 on an effort pins the chat's own effort back. The labels are training data for a future local router.
+- **Ultrathink and ultracode**: a prompt with either word, every agent started in that turn, and every workflow agent run exactly as you set them. No classifier, no tip, no switch; the ledger still counts the spend, with no saving and no extra.
+
 ## 0.9.0: the ledger says why
 
 Each step's effort is now recorded, with the effort it would have had with no router, the task class, and why the effort was set: the class, a raise after unhappy replies, your pick, your words, a subagent's routing, or a keep-awake nudge. With this, the extra spend can be traced to the raises that cause it, which is the next tuning step. The ledger also trims itself: effort detail after 60 days, everything else after 400. See [The ledger](Ledger.md).

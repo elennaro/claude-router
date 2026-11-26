@@ -190,7 +190,27 @@ What this changes:
    OS are what CI must check.
 3. The mod cannot load Node code, so the runner is a separate process. Spawning it per prompt costs ~1 s (still faster
    than three Haiku samples); a runner that stays alive for the session costs 3-15 ms but holds ~850 MB of RAM.
-4. Not measured yet: option (c), the static potion model, and a mid laptop or the CI runners.
+4. Not measured yet: a mid laptop or the CI runners.
+
+Option (c), `minishlab/potion-multilingual-128M` (MIT, a static table of 500k pieces x 256, distilled from bge-m3),
+in plain Node with built-ins only: a ~40-line Unigram tokenizer over its `tokenizer.json`, then the mean of table rows.
+Same machine, 200 runs each, int8 table (identical to float32 to 4 decimals):
+
+| Input | Median | p95 |
+|---|---|---|
+| Short prompt (~6 tokens) | 0.04 ms | 0.15 ms |
+| Paragraph (~128 tokens, English or Russian) | 1.3 ms | 1.7 ms |
+| Long paste (~920 tokens, no cut) | 10 ms | 12 ms |
+| Load (parse the 18 MB tokenizer, read the table) | ~450 ms | |
+
+What this changes:
+1. No runtime to install and no native code: it fits the repo's built-ins-only rule. Files: a 128 MB int8 table and
+   the 18 MB tokenizer, downloaded on opt-in. A fresh process per prompt costs ~0.5 s, mostly loading.
+2. Cross-language match is weaker than e5's but real on full sentences (same task EN vs RU 0.25 and 0.19, different
+   tasks 0.09 and 0.06); on 4-6 token prompts it is noise. Whether that is enough for 34 classes only the trained
+   head on the eval can say.
+3. Recommendation: train the head on both in step 4 and compare on the gates; take potion if it clears them (much
+   simpler to ship), e5 otherwise.
 
 ## Steps and cost
 

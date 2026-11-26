@@ -18,6 +18,12 @@ Settings → *This chat* → *Keep awake* → Off, or **Stop for this chat** on 
 **It moved my chat to Sonnet. I want Opus back.**
 Press **Undo** on "Picked X for this chat", pick Opus in Settings → *Model*, or say "use opus from now on".
 
+**I wrote "ultrathink" and the router did nothing.**
+On purpose. A prompt with "ultrathink" or "ultracode" runs as you set it, and so does every agent under it and every workflow agent. The router only measures those turns. Claude Code's session-wide ultracode switch is not visible to plugins.
+
+**A switch was wrong. How do I tell the router?**
+Turn on Settings → *Training*, then press **Switches** on the band and 👎 the switch. A model pick or effort change goes back; a quick turn or subagent run is already over, so it is only recorded. The labels stay in `router.db` on this machine.
+
 **Can I stop it touching the model and only set effort?**
 Settings → *This chat* → *Effort*, or `/route models off`.
 

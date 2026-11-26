@@ -544,6 +544,64 @@ test('an aside turn keeps the model and effort you picked in Settings, and its b
   expect(main.map(r => [r[3], r[6] === r[5], r[7]])).toEqual([['sonnet', true, 0]])
 })
 
+test('a prompt typed over a running turn: it stays aside when the turn is, and the word turns a plain turn aside (owner case 2026-11-26)', async (engine, on) => {
+  const $ = engine as any
+  const sent: Array<unknown> = []
+  const asked = { n: 0 }
+  wire(on, { sent, asked, files: { '/home/.claude/routing.json': ROUTING }, haiku: 'mechanical 0.95', tokens: 5_000 })
+  const spawned: Array<string | undefined> = []
+  let n = 0
+  on('agent.spawn', (_: unknown, e: { model?: string }) => { spawned.push(e.model); return { model: e.model ?? 'inherit', agentId: `sub${++n}` } })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const spawn = (prompt: string) => $.agent.spawn({ prompt, subagentType: 'general-purpose', parentModel: 'claude-opus-5-5' })
+  const brief = 'Swap every variable called foo for bar across the utils folder'
+  await $.prompt.submit({ text: 'ultrathink: swap every variable called foo for bar in the utils module' })
+  const calls = asked.n
+  await $.prompt.submit({ text: 'Swap every variable called foo for bar in the tests too', turnId: 't' }) // typed over the aside turn: still aside
+  await step($, 'high')
+  await spawn(brief)
+  expect(asked.n).toBe(calls) // no classifier for the follow-up
+  await $.prompt.submit({ text: 'Swap every variable called foo for bar in the docs' }) // a plain turn
+  await $.prompt.submit({ text: 'ultracode this one too', turnId: 't' }) // typed over a plain turn: the word turns it aside
+  const plain = asked.n
+  await spawn(brief)
+  expect(sent).toEqual(['high'])
+  expect(spawned).toEqual([undefined, undefined])
+  expect(asked.n).toBe(plain)
+})
+
+test('only the whole words ultrathink and ultracode step the router aside (owner case 2026-11-26)', async (engine, on) => {
+  const $ = engine as any
+  const asked = { n: 0 }
+  wire(on, { sent: [], asked, files: { '/home/.claude/routing.json': ROUTING }, haiku: 'mechanical 0.95', tokens: 5_000 })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: 'Swap every variable called foo for bar in the utils module, no ultrathinking needed' })
+  const plain = asked.n
+  expect(plain).toBeGreaterThan(0) // classified: "ultrathinking" and "ultracoder" are not the words
+  await $.prompt.submit({ text: 'Swap every variable called foo for bar, ask the ultracoder' })
+  expect(asked.n).toBeGreaterThan(plain)
+  const before = asked.n
+  await $.prompt.submit({ text: 'UltraThink: swap every variable called foo for bar in the utils module' })
+  expect(asked.n).toBe(before)
+})
+
+test('Training: an ultrathink turn between two alike switches leaves the log and its once-per-switch memory alone (owner case 2026-11-26)', async (engine, on) => {
+  const $ = engine as any
+  const batches: Array<Array<Step>> = []
+  const store = new Map<string, unknown>([['features', { labels: true }]])
+  wire(on, { sent: [], batches, store, tokens: 5_000, files: { '/home/.claude/routing.json': ROUTING }, haiku: 'critique 0.95' })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const logged = () => batches.flat().filter(x => x.sql.includes('INTO switches')).length
+  await $.prompt.submit({ text: 'please review this PR for bugs and missing edge cases' })
+  await step($, 'medium') // critique: high, one effort switch
+  await $.prompt.submit({ text: 'ultrathink: please review this PR for bugs and missing edge cases' })
+  await step($, 'high')
+  await $.prompt.submit({ text: 'please review the other PR for bugs and missing edge cases' })
+  await step($, 'medium') // the same switch again: already logged, not twice
+  await end($)
+  expect(logged()).toBe(1) // the ultrathink turn added no row and did not reset the memory, so the third turn did not log again
+})
+
 test('paste size: tokens counted per character kind, the skip words, and which model reads it (docs/PLAN-v3.md, slice 3)', () => {
   expect([estTokens('a'.repeat(40_000)), estTokens('a'.repeat(40_001)), estTokens('я'.repeat(20_000)), estTokens('я'.repeat(20_000) + 'a')]).toEqual([10_000, 10_001, 10_000, 10_001])
   const log = 'line of the build log\n'.repeat(2_000) // about 11K tokens

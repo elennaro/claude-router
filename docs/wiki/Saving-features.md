@@ -10,6 +10,8 @@ All of these are switchable in **Settings**. Each one is about the prompt cache:
 | **Keep awake** | 50 minutes after the last step, a hidden one-line nudge keeps an idle chat's cache warm, for up to the hours you set, and only while it pays; then it compacts the chat as a handoff. Off for one chat: Settings → *This chat* → *Keep awake*, or **Stop for this chat** | you work on API keys with a 5-minute cache (it turns itself off then), or never leave chats idle |
 | **Compact at** | Your own compaction point for this chat, with the cheapest point marked; **Make it my default** writes it to `~/.claude/settings.json` | you are happy with Claude Code's own window |
 
+**Training** (off by default) is in Settings too, but saves nothing by itself: it logs the router's switches so you can rate them, and 👎 undoes a model pick or effort change. A prompt with "ultrathink" or "ultracode", and every workflow agent, keeps its model and effort as you set them: no switch, no move down. Big pastes and keep awake still work there, and the ledger shows that work with no saving and no extra.
+
 ## Why keep awake pays
 
 After an hour idle, your next message re-reads the whole chat at the cache-write price, about 40 times a cached read. A nudge reads it from cache instead. On a big chat, one avoided rebuild pays for many nudges. No nudge is sent while a question or permission dialog is waiting on you.
