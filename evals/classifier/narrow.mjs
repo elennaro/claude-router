@@ -63,6 +63,10 @@ export function tier(a, cfg) {
   assert.ok(SYSTEM.includes('simple 0.9') && prompt('fix it', ['the login test fails']).includes('<earlier>'))
 }
 
+// NARROW_ANSWERS=results/answers-<model>.jsonl: a local decision model's answers ({id, answers}, one per case, written
+// by a local model runner outside the repo; values rounded to 4 places) replace Haiku's; the output is results/classifier-narrow-<model>.jsonl.
+const local = process.env.NARROW_ANSWERS ? new Map(readJsonl(join(ROOT, process.env.NARROW_ANSWERS)).map(r => [r.id, r])) : undefined
+const OUT = local ? `classifier-narrow-${process.env.NARROW_ANSWERS.replace(/^.*answers-|\.jsonl$/g, '')}.jsonl` : 'classifier-narrow.jsonl'
 const today = readJsonl(join(ROOT, 'results', 'classifier.jsonl'))
 // every case file, by id: group files (russian, follow-up) hold cases of many categories
 const cases = new Map(readdirSync(join(ROOT, 'cases')).filter(f => f.endsWith('.jsonl')).flatMap(f => readJsonl(join(ROOT, 'cases', f))).map(c => [c.id, c]))
@@ -73,7 +77,7 @@ const rows = await pool(today, 6, async r => {
   const runs = []
   for (const [i, run] of r.runs.entries()) {
     if (run.by !== 'haiku' || !c) { runs.push(run); continue }
-    const res = await claude({ model: cfg.classifier.model, effort: 'low', system: SYSTEM, prompt: prompt(c.prompt, earlier), tag: `narrow:${r.id}:${i}`, timeoutMs: 60_000, cache: true, seed: `narrow:${i}` })
+    const res = local ? { text: local.get(r.id)?.answers ? KEYS.map(k => `${k} ${local.get(r.id).answers[k]}`).join(' ') : 'missing' } : await claude({ model: cfg.classifier.model, effort: 'low', system: SYSTEM, prompt: prompt(c.prompt, earlier), tag: `narrow:${r.id}:${i}`, timeoutMs: 60_000, cache: true, seed: `narrow:${i}` })
       .catch(e => { if (e instanceof CapReached) throw e; return { text: String(e.message).slice(0, 120) } })
     const a = parse(res.text)
     if (!a) unread++
@@ -82,6 +86,6 @@ const rows = await pool(today, 6, async r => {
   }
   return { ...r, runs }
 })
-writeJsonl(join(ROOT, 'results', 'classifier-narrow.jsonl'), rows.filter(r => r?.id))
+writeJsonl(join(ROOT, 'results', OUT), rows.filter(r => r?.id))
 for (const [k, r] of rows.entries()) if (r?.error) log(`error ${today[k].id}: ${r.error}`)
 log(`narrow: ${rows.filter(r => r?.id).length} cases, ${unread} unreadable replies`)
