@@ -28,6 +28,7 @@ Every row is detailed under *What it does* below.
 
 ## What's new
 
+- **0.9.5** *Compact at* fixes: the slider runs to the model's own limit (it stopped at the compaction window from settings.json); its colours and the cheapest point show right after a restart (this chat's growth per step is kept); the chat's size shows as ◀ at the left end when it is under the smallest point.
 - **0.9.4** *Compact at* colours go both ways as a gradient: purple where it would compact too often (detail lost), green at the cheapest, amber then red where it costs more.
 - **0.9.3** *Compact at* on the desktop: a drawn slider (cost colours, a tick every 100K, the knob at your pick, ★ cheapest, │ Claude Code) over a row of points to press, each with its cost dot. Settings get air between rows on the desktop, and each feature's note sits under its switch. The chat's growth shows to a tenth (0.4K, not 0K).
 - **0.9.2** The band is one row and never grows (it made the chat jump and caught the mouse wheel); **Cache**, **Stats**, **Settings** and **Switches** open in one **Router** panel. A **Cache** tab: size, minutes left, what is in it, and what losing it, a switch, compacting and `/clear` cost now. *Compact at* is a slider with a mark every 100K. This chat's routing, effort, keep-awake and compact point are kept after a restart. Routing can be turned off for one project.

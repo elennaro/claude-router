@@ -292,7 +292,7 @@ async function end($: any) {
   await $.session.end({ reason: 'other', sessionId: 'sess-1', resume: { sessionId: 'sess-1' } })
 }
 
-function wire(on: any, opts: { batches?: Array<Array<Step>>; runFails?: boolean; store?: Map<string, unknown>; haiku?: string | ((e: { system?: string }) => string); tokens?: number; model?: string; messages?: Array<unknown>; ownClock?: boolean; sent: Array<unknown>; asked?: { n: number }; lines?: Array<string | undefined>; opened?: Array<unknown>; surfaces?: Array<string>; files?: Record<string, string>; models?: Array<string>; read?: number; write?: number; select?: (sql: string, params?: ReadonlyArray<unknown>) => Array<unknown>; argv?: Array<Array<string>>; nudges?: Array<{ text: string }>; window?: number; engineAt?: number; rateLimits?: Array<{ kind: string; percentUsed: number; resetsAt?: string }> }) {
+function wire(on: any, opts: { batches?: Array<Array<Step>>; runFails?: boolean; store?: Map<string, unknown>; haiku?: string | ((e: { system?: string }) => string); tokens?: number; model?: string; messages?: Array<unknown>; ownClock?: boolean; sent: Array<unknown>; asked?: { n: number }; lines?: Array<string | undefined>; opened?: Array<unknown>; surfaces?: Array<string>; files?: Record<string, string>; models?: Array<string>; read?: number; write?: number; select?: (sql: string, params?: ReadonlyArray<unknown>) => Array<unknown>; argv?: Array<Array<string>>; nudges?: Array<{ text: string }>; window?: number; engineAt?: number; rawMax?: number; rateLimits?: Array<{ kind: string; percentUsed: number; resetsAt?: string }> }) {
   on('env.get', (_: unknown, e: { name: string }) => ({ value: e.name === 'USERPROFILE' ? '/home' : undefined }))
   on('session.root', () => ({ value: '/proj' }))
   on('session.id', () => ({ value: 'sess-1' }))
@@ -336,7 +336,7 @@ function wire(on: any, opts: { batches?: Array<Array<Step>>; runFails?: boolean;
   on('prompt.submit', (_: unknown, e: { text: string; origin?: { kind: string } }) => { if (e.origin?.kind === 'plugin') opts.nudges?.push(e); return { text: e.text } })
   on('model.complete', (_: unknown, e: { system?: string }) => { opts.asked && opts.asked.n++; return { value: { isAnswered: true, text: (typeof opts.haiku === 'function' ? opts.haiku(e) : opts.haiku) ?? 'default 0.9', usage: USAGE } } })
   // tokens set = a chat already under way (no first-prompt pick); unset = a new chat
-  on('session.usage', () => ({ value: { startedAt: 0, context: { window: opts.window ?? 200_000, ...(opts.engineAt ? { breakdown: { autoCompactThreshold: opts.engineAt, rawMaxTokens: opts.window, autocompactSource: 'settings' } } : {}), ...(opts.tokens === undefined ? {} : { tokens: opts.tokens }) }, rateLimits: opts.rateLimits ?? [] } }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: opts.window ?? 200_000, ...(opts.engineAt ? { breakdown: { autoCompactThreshold: opts.engineAt, rawMaxTokens: opts.rawMax ?? opts.window, autocompactSource: 'settings' } } : {}), ...(opts.tokens === undefined ? {} : { tokens: opts.tokens }) }, rateLimits: opts.rateLimits ?? [] } }))
   on('turn.step', async function* (_: unknown, e: { effort?: unknown; model: string; turnId: string; index: number }) {
     opts.sent.push(e.effort)
     opts.models?.push(e.model)
@@ -1050,6 +1050,26 @@ test("this chat's own settings come back after a restart and outlast another ses
   expect(await again.find({ type: 'Text', text: 'off everywhere' })).toBeTruthy()
   expect((store.get('chat:sess-1') as { mode: unknown }).mode).toBe(null)
   await again.unmount()
+})
+
+test('Compact at after a restart: colours and the cheapest point from the kept growth, the scale to the model\'s own limit, now as an arrow when under the track (owner case 2026-11-26)', async (engine, on) => {
+  const $ = engine as any
+  const files: Record<string, string> = { '/home/.claude/routing.json': ROUTING }
+  const store = new Map<string, unknown>([['chat:sess-1', { growth: 5_000 }]]) // kept before the restart
+  const opts = { sent: [] as Array<unknown>, files, store, read: 171_000, write: 0, window: 1_000_000, engineAt: 367_000, rawMax: 400_000 }
+  wire(on, opts)
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await step($, 'medium') // one step since the restart: too few to measure growth again
+  const panel = await $.ui.mount({ ...PANEL, surface: 'terminal' })
+  await panel.press({ key: 'router-tab-settings' })
+  const p = (await panel.find({ type: 'Client' }))?.props.props as SliderProps
+  expect(p.max).toBe(1_000_000) // the model's limit, not settings.json's 400K window
+  expect(p.marks.find(m => m[1] === '★')?.[0]).toBe(300_000)
+  expect(p.zones[0]?.[1]).toBe('#9061c2') // coloured at once
+  expect(await panel.find({ type: 'Text', text: /This chat grows 5\.0K a step/ })).toBeTruthy()
+  for (const r of [181_000, 191_000, 201_000, 211_000, 221_000]) { opts.read = r; await step($, 'medium') }
+  expect(Math.round((store.get('chat:sess-1') as { growth: number }).growth)).toBe(10_000) // measured again and kept every 5th step
+  await panel.unmount()
 })
 
 test('routing turned on for the project in another session reaches this one: the band follows within seconds (owner case 2026-11-25)', async (engine, on) => {
@@ -2076,7 +2096,7 @@ test('Compact at on the desktop: a picture with a tick every 100K, the knob at t
   expect(svg).toContain('<circle cx="107.5"') // the knob at 400K
   expect(svg).toContain('<stop offset="0.125" stop-color="#c8553d"/><stop offset="1.000" stop-color="#4f9a5c"/>') // one gradient through the zones
   expect(svg).toContain('>★</text>')
-  expect(svg).not.toContain('▲') // under the track's start: left out, the legend still says it
+  expect(svg).toContain('fill="#5b8def">◀</text>') // now (171K) is under the track's start: an arrow at the left end
   const labels = [...svg.matchAll(/>(\d+K)</g)].map(m => m[1])
   expect(labels).toEqual(['200K', '300K', '400K', '500K', '600K', '700K', '800K', '900K', '1000K']) // 50 px apart: all fit
   expect([...sliderSvg(p, 200).matchAll(/>(\d+K)</g)].map(m => m[1])).toEqual(['200K', '400K', '600K', '800K', '1000K']) // narrow: every 2nd

@@ -53,8 +53,9 @@ export function sliderSvg(p: SliderProps, width: number): string {
     out.push(`<line x1="${x(v).toFixed(1)}" y1="${Y + 7}" x2="${x(v).toFixed(1)}" y2="${Y + 12}" stroke="#8a8f98" stroke-width="1"/>`)
     if (i % every === 0) out.push(`<text x="${x(v).toFixed(1)}" y="${Y + 26}" text-anchor="${x(v) < L + 14 ? 'start' : x(v) > R - 14 ? 'end' : 'middle'}" font-size="11" fill="#8a8f98">${k(v)}</text>`)
   })
-  for (const [v, glyph, color] of p.marks) {
-    if (v < p.min || v > p.max) continue
+  for (let [v, glyph, color] of p.marks) {
+    if (glyph === '│' && (v < p.min || v > p.max)) continue
+    glyph = v < p.min ? '◀' : v > p.max ? '▶' : glyph // past an end: an arrow at that end (the legend has the number)
     const at = x(v).toFixed(1)
     out.push(glyph === '│'
       ? `<line x1="${at}" y1="${Y - 13}" x2="${at}" y2="${Y + 7}" stroke="${color}" stroke-width="2"><title>Claude Code ${k(v)}</title></line>`
@@ -95,7 +96,7 @@ const Slider: ClientModule<SliderProps, SliderState> = (p, surface) => {
   const { ticks, labels } = scale(p.min, p.max, cols)
   const under = Array.from({ length: cols }, () => ({ text: ' ', color: undefined as string | undefined }))
   for (const v of ticks) under[colOf(v)] = { text: '╵', color: 'inactive' }
-  for (const [v, glyph, color] of p.marks) { const c = colOf(v); if (c >= 0 && c < cols) under[c] = { text: glyph, color } }
+  for (const [v, glyph, color] of p.marks) { const c = colOf(v); if (c >= 0 && c < cols) under[c] = { text: glyph, color }; else if (glyph !== '│') under[c < 0 ? 0 : cols - 1] = { text: c < 0 ? '◀' : '▶', color } }
   return (
     <Box flexDirection="column">
       <Text wrap="truncate-end">{track.map(t => <Text color={t.color} bold={t.bold}>{t.text}</Text>)}</Text>

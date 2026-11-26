@@ -141,6 +141,7 @@ type State = {
   awakeStop: '' | 'done' | 'unlikely' // why keep-awake stopped early in this idle stretch
   ownPrompt: boolean // the running turn came from the person's own message (not a notification or a peer)
   openTurn: string // the main chat's turn still running ('' when idle): keep-awake waits while one is open
+  keptGrowth?: number // the growth per step last kept for this chat, for after a restart (until 3 new steps tell it again)
   seg: { ctx: number; steps: number } // where the chat stood at its first step since the last compaction or clear: its growth per step
   briefRun: Map<string, string> // brief hash -> the agentId of its latest run
   wastedRuns: Set<string> // runs a re-spawn replaced: no saving counts for them
@@ -1099,7 +1100,7 @@ async function setChat($: EngineInterface, s: State, mode: ChatMode) {
 
 // This chat's own settings (routing mode, keep awake, compact point, effort pick) go to the plugin store per session:
 // $.state survives a hot reload but not a restart, and a resumed chat should come back as it was left.
-type ChatPrefs = { mode?: ChatMode | null; awake?: boolean; compactAt?: number | null; effort?: string | null }
+type ChatPrefs = { mode?: ChatMode | null; awake?: boolean; compactAt?: number | null; effort?: string | null; growth?: number }
 const CHATS_KEPT = 50 // sessions; older ones are dropped
 async function keepChat($: EngineInterface, s: State, patch: ChatPrefs) {
   if (!s.session || s.session === 'session') return
@@ -1116,6 +1117,7 @@ async function restoreChat($: EngineInterface, s: State) {
   const p = ((await $.store.get(`chat:${s.session}`).catch(() => undefined)) ?? {}) as ChatPrefs
   if (typeof p.awake === 'boolean') await update($, chatAwake, () => p.awake ?? true)
   if (typeof p.compactAt === 'number') await update($, compactAt, () => p.compactAt ?? null)
+  if (typeof p.growth === 'number') s.keptGrowth = p.growth
   if (typeof p.effort === 'string') await update($, chat, (c): ChatModel => ({ ...c, effort: p.effort ?? null }))
   if (p.mode) { s.chatMode = p.mode; await applyChat($, s, p.mode) }
 }
@@ -1627,6 +1629,8 @@ export const register: Register = on => {
         if (a && !a.back) await update($, away, (x): Away | null => (x ? { ...x, back: true, saved } : null))
       }
       s.mainSteps++
+      const grown = chatGrowth(s)
+      if (grown !== undefined && (s.mainSteps - s.seg.steps) % 5 === 0) { s.keptGrowth = grown; await keepChat($, s, { growth: grown }) } // every 5th step: few store writes
       s.mainOut += u.output_tokens
       const probeFile = await $.env.get('ROUTER_PROBE_LOG')
       if (probeFile) await probeLog($, probeFile, { at: now, index: e.index, effort: sent, model: u.model, read: u.cache_read_input_tokens, write: u.cache_creation_input_tokens, input: u.input_tokens, output: u.output_tokens })
@@ -1807,7 +1811,7 @@ export const register: Register = on => {
     const model = f.main?.model ?? s.cfg.main.model
     const usage = await $.session.usage({ breakdown: 'summary' }).catch(() => undefined)
     const bd = usage?.context.breakdown
-    const limit = bd?.rawMaxTokens ?? usage?.context.window ?? 1_000_000 // the model's own context limit
+    const limit = usage?.context.window ?? bd?.rawMaxTokens ?? 1_000_000 // the model's own limit (rawMaxTokens may be a smaller compaction window)
     const cached = s.lastContext >= 1000
 
     if (shown === 'cache') {
@@ -1948,7 +1952,7 @@ export const register: Register = on => {
     // Compact at: this chat's own point (the router compacts it between turns), on a slider coloured by cost
     const engineAt = bd?.autoCompactThreshold ?? limit
     const at = await read($, compactAt)
-    const growth = chatGrowth(s)
+    const growth = chatGrowth(s) ?? s.keptGrowth
     const points = compactPoints(limit)
     const best = growth === undefined ? undefined : cheapestPoint(model, growth, limit)
     const look = (v: number) => (growth === undefined || best === undefined ? '#8a8f98' : toneColor(compactTone(model, v, growth, best)))
@@ -1998,7 +2002,7 @@ export const register: Register = on => {
           <Box flexDirection="column">
             <Text dimColor wrap="wrap">{legend}</Text>
             <Text dimColor wrap="wrap">{acCost}</Text>
-            {reach && <Text color="warning" wrap="wrap">{reach}</Text>}
+            {!!reach && <Text color="warning" wrap="wrap">{reach}</Text>}
           </Box>
           {at
             ? <Box key="router-compact-default"><Button key="router-compact-default-set" plain label={`Make ${kt(at)} my default (every chat)`} onPress={() => setDefaultWindow($, s, at)} /></Box>
