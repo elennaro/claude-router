@@ -2,6 +2,10 @@
 
 Newest first. Update with `/plugin marketplace update claude-router`, then `/plugin update router@claude-router`, then restart Claude Code.
 
+## 0.9.9: stop the nudges from the band
+
+**Stop nudges** in the band turns keep awake off for this chat only, in one press. It then reads **Nudges off**; press it again to turn them back on. It shows once the chat is over 20K tokens and keep awake is on in Settings, and on a narrow row it gives way before the Stats and Settings buttons.
+
 ## 0.9.8: the band stays on one row
 
 - When the row is short of room, parts drop in turn: the hit, the word "Router", **Switches**, then **Board** (both stay as tabs of the Router panel). The desktop app's wider buttons are counted, so "Settings" no longer wraps to a second line.

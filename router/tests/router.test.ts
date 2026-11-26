@@ -1597,7 +1597,7 @@ test('the band says the cache in the longest words that fit, and "Cache expired"
     return { label, hit }
   }
   const warm = await Promise.all([140, 100, 72, 40].map(at))
-  expect(warm.map(w => w.label)).toEqual(['Cache 100K · 60 min left', 'Cache 100K · 60 min left', '60m left', 'Cache'])
+  expect(warm.map(w => w.label)).toEqual(['Cache 100K · 60 min left', 'Cache 100K · 60m', '60m left', 'Cache'])
   expect([warm[0]!.hit, warm[3]!.hit]).toEqual([true, false]) // the hit only where room is left over
   // the row never runs past one line from 72 cells, on either surface, with every part on (owner case 2026-11-27)
   const panel = await $.ui.mount({ ...PANEL, surface: 'terminal' })
@@ -1773,6 +1773,39 @@ test('keep awake stops when, by past gaps, a return is too unlikely to pay; "Sto
   await band.press({ key: 'router-away-stop' })
   await clock.advance(3_000_000)
   expect(nudges.length).toBe(1)
+  await band.unmount()
+})
+
+test('the band turns keep-awake off and on for this chat in one press (owner ask 2026-11-27)', async (engine, on) => {
+  const $ = engine as any
+  const nudges: Array<{ text: string }> = []
+  wire(on, { sent: [], nudges, store: new Map([['gaps', []]]), files: {}, read: 200_000, write: 0, ownClock: true })
+  const clock = mock.clock(on, { now: 1_000 })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await step($, 'medium')
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop', props: { ...BAND.props, bodyColumns: 140 } })
+  expect((await band.find({ key: 'router-awake' }))?.props.label).toBe('Stop nudges')
+  await band.press({ key: 'router-awake' })
+  expect((await band.find({ key: 'router-awake' }))?.props.label).toBe('Nudges off')
+  await clock.advance(3_000_000)
+  expect(nudges.length).toBe(0) // off for this chat: no nudge at 50 minutes
+  await band.press({ key: 'router-awake' })
+  expect((await band.find({ key: 'router-awake' }))?.props.label).toBe('Stop nudges')
+  await $.prompt.submit({ text: 'back again', origin: { kind: 'composer' }, wait: false })
+  await step($, 'medium')
+  await clock.advance(3_000_000)
+  expect(nudges.length).toBe(1) // on again: nudges resume
+  await band.unmount()
+})
+
+test('the band shows no keep-awake switch for a small chat or with keep awake off in Settings', async (engine, on) => {
+  const $ = engine as any
+  wire(on, { sent: [], nudges: [], store: new Map(), files: {}, read: 5_000, write: 0, ownClock: true })
+  mock.clock(on, { now: 1_000 })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await step($, 'medium')
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop', props: { ...BAND.props, bodyColumns: 140 } })
+  expect(await band.find({ key: 'router-awake' })).toBeFalsy() // under 20K tokens nothing is nudged
   await band.unmount()
 })
 

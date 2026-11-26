@@ -1,6 +1,6 @@
 {
   "name": "router",
-  "version": "0.9.8",
+  "version": "0.9.9",
   "description": "Router mode: per-turn effort by task class, more effort when you're unhappy with the answers, the chat model picked on the first prompt, a session check with compact-and-switch buttons, subagents routed by type or brief, and a spend ledger against running with no router.",
   "license": "MIT",
   "network": { "hosts": ["platform.claude.com", "registry.npmjs.org"] },

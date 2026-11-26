@@ -1720,6 +1720,9 @@ export const register: Register = on => {
     let cacheLabel = forms[forms.length - 1]!
     room -= cost(cacheLabel, true)
     const fits = (t: string, isButton: boolean, gap = true) => { const c = cost(t, isButton) - (gap ? 0 : 2); if (c > room) return false; room -= c; return true }
+    // keep awake for this chat in one press (owner ask 2026-11-27), only where nudges could run; it goes in before Board
+    const awakeLabel = f.v.isOn && f.feats.awake && s.lastContext >= AWAKE_MIN ? (f.chatAwake ? 'Stop nudges' : 'Nudges off') : ''
+    const showAwake = !!awakeLabel && fits(awakeLabel, true)
     const showBoard = fits('Board', true)
     const showSwitches = f.feats.labels && fits('Switches', true)
     const showWord = !narrow && fits(' Router', false, false) // inside the dot's text: no gap
@@ -1740,6 +1743,7 @@ export const register: Register = on => {
         {warn
           ? <Button key="router-cache" plain onPress={open('cache')}><Text color="warning">{cacheLabel}</Text></Button>
           : <Button key="router-cache" plain dimColor={cacheLabel !== 'Cache'} label={cacheLabel} onPress={open('cache')} />}
+        {showAwake && <Button key="router-awake" plain dimColor={!f.chatAwake} label={awakeLabel} onPress={() => setChatAwake($, s, !f.chatAwake).then(() => $.ui.toast(f.chatAwake ? 'Keep awake off for this chat' : 'Keep awake on for this chat'))} />}
         {showSwitches && <Button key="router-switches" plain label="Switches" onPress={open('switches')} />}
         {showBoard && <Button key="router-board" plain label="Board" onPress={board} />}
         <Button key="router-stats" plain label="Stats" onPress={open('stats')} />
