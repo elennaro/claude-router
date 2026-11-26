@@ -1,7 +1,7 @@
 # Plan: a small local routing classifier
 
-Status: research and plan only, nothing trained. Written 2026-11-25. The owner's own labelled data (the Switches
-👍/👎 log from 0.9.x, and reply-read labels after it) comes next week and slots into step 3.
+Status: data work, nothing trained. Written 2026-11-25; on 2026-11-26 Claude-made training data was ruled out (Usage
+Policy, decision 4), so the data is public sets plus the owner's own labels. The open decisions 5 and 6 come next.
 
 ## The goal
 
@@ -70,7 +70,7 @@ layers, coarse to fine.
 | databricks-dolly-15k | CC BY-SA 3.0 | 15k | 8 categories | summarization, information_extraction, closed_qa -> long-read; open_qa, general_qa -> learn-explain/explore; brainstorming -> brainstorm; classification -> mechanical; creative_writing -> brainstorm |
 | lmarena-ai/arena-human-preference-140k | CC-BY-4.0 (prompts) | 136k | `category_tag`: complexity, problem_solving, technical_accuracy, domain_knowledge, creativity, math, instruction following | "hard prompt" criteria -> effort high signal; math -> math; creative -> brainstorm. Has a language column (Russian share to count) |
 | routellm/gpt4_dataset | Apache-2.0 | 119k | `mixtral_score` 1-5 (a weak model's answer graded) | not a class: a "a cheaper model will do" signal for the model tier |
-| allenai/WildChat-1M | ODC-By | 838k | none (language, model, moderation) | unlabelled real prompts, many languages: the pool for distillation (below) |
+| allenai/WildChat-1M | ODC-By | 838k | none (language, model, moderation) | unlabelled real prompts, many languages: a pool to label by hand (decision 6) |
 | NVIDIA task types (as teacher labels on the pools) | model under NVIDIA licence | as run | 11 task types + complexity | Code Generation -> scoped-code/engineering; Summarization, Extraction, Closed QA -> long-read; Rewrite, Classification -> mechanical; Brainstorming -> brainstorm; Open QA -> learn-explain; Text Generation -> docs/message; Chatbot, Other -> default |
 
 Cards: [Magpie-Qwen2.5-Pro-1M](https://huggingface.co/datasets/Magpie-Align/Magpie-Qwen2.5-Pro-1M-v0.1),
@@ -88,12 +88,8 @@ were found and not inspected.
 
 **The four layers:**
 1. **Coarse pre-training** on Magpie + Dolly + Arena mapped as above (only rows whose mapping is unambiguous).
-2. **Distillation**: the current Haiku classifier (the exact plugin prompt) labels a pool of 10-20k public prompts
-   (WildChat, Arena), English and Russian. This teaches the router's own 24 labels and its "default" habit.
-3. **Synthetic gaps**: Haiku writes prompts for the classes no public set has (final-copy, brand-visual,
-   image-prompt, vision, devops-config, security-review, code-review, test-writing, structure, critique, rare-hard,
-   repeat-agent, message), in English, Russian and mixed, with the generator rules in `evals/generate.mjs` (never the
-   owner's places or projects).
+2. ~~**Distillation**: the Haiku classifier labels 10-20k public prompts.~~ **Dropped** (see "Anthropic terms" below).
+3. ~~**Synthetic gaps**: Haiku writes prompts for the classes no public set has.~~ **Dropped**, same reason.
 4. **The owner's labels** (next week): Switches 👍/👎 and reply-read labels. They weigh most and are the only data
    from real use; held out by session for testing.
 
@@ -163,12 +159,20 @@ weights and checkpoints on D: only, one copy. Only the head (and, if fine-tuned,
    forward pass in plain JS (12 layers, int8, about 300 lines; slower, maybe 100-300 ms, unmeasured); (c) take the
    static potion model, which needs only a tokenizer and a table lookup in plain JS. Recommendation: measure (a) and
    (c) in step 1, then decide.
-2. **Distillation spend** (layer 2): 10-20k Haiku labels at about $0.0003-0.0009 each with the system prompt cached,
-   so roughly $6-18. Under the Haiku cap rule, but large enough to ask.
-3. **Llama-licensed Magpie**: usable for training under its licence terms, or skip it and keep Dolly, Arena and the
-   NVIDIA teacher. Recommendation: start without it.
-4. **Anthropic terms**: training a 33-label router classifier on Haiku's labels is not building a competing model, but
-   read the usage terms once before layer 2.
+2. ~~Distillation spend~~: dropped with layer 2.
+3. **Llama-licensed Magpie**: skipped (owner's default); the Qwen Magpie set states no licence at all.
+4. **Anthropic terms (read 2026-11-26, settled):** the Usage Policy
+   ([aup](https://www.anthropic.com/legal/aup), "Do Not Abuse Our Platform") bars using outputs "to train an AI model
+   (e.g. ... model distillation) without prior authorization from Anthropic", with no "competing" condition (the
+   Consumer and Commercial terms only bar competing models). So no Claude output trains the classifier: no Haiku labels,
+   no Haiku-written prompts. Owner's choice: public data plus the owner's own labels. Haiku stays the eval baseline.
+5. **Text for the owner's labels (open).** The Switches log keeps no prompt text (repo rule 5), so a 👍/👎 row has
+   nothing to train a text classifier on. Options: an opt-in local-only text column for Training rows (never
+   published; the head trained from it would be the owner's own), or label public pool prompts by hand.
+6. **How to cover the empty classes (open).** With public data only, 14 of the 25 labels have no rows (below). Options:
+   the owner labels pool prompts by hand (a small labelling page; ~30 per class is a start), an open-weight model run
+   locally as the labeller (licences such as Apache-2.0 allow it), or shrink the local classifier to the labels it
+   can learn and let Haiku answer the rest (the cascade already falls back to Haiku).
 
 ## Step 1 result (2026-11-26, $0)
 
@@ -220,23 +224,23 @@ Scripts in `evals/classifier/`; output in the private `evals/work/classifier/` (
    states no licence, the other is Llama-licensed. Dolly gives explore, mechanical, brainstorm, learn-explain; Arena
    gives math and, through the router's own rules, a few code classes. 5,572 rows. The 7,975 Arena prompts (580 in
    Russian) are also saved as the layer 2 pool.
-2. `synth.mjs` (layer 3): Haiku writes 30 messages per call from the class definitions only (no real prompts shown),
-   12 calls per class in English, Russian and mixed at three lengths; 4 Russian-and-mixed calls for the three classes
-   public data already fills. 275 calls, 7,889 messages, $1.04 (the plan guessed $3-5).
-3. `build.mjs` (free): joins both, drops 20 duplicates and 4 rows close to an eval case (half their word triples in
-   one case). **13,437 rows; every one of the 25 labels has 311 or more, about two thirds of each gap class Russian
-   or mixed.** The three biggest classes (explore, mechanical, brainstorm, ~1,600 each) are capped at 1,500 public
-   rows; class weights in training handle the rest.
+2. A Haiku-written synthetic layer was built (7,889 messages, $1.04) and then **deleted unused** once the Usage Policy
+   was read (decision 4). Nothing was trained on it.
+3. `build.mjs` (free): drops duplicates and rows close to an eval case (half their word triples in one case).
+   **5,550 rows, 11 labels:** explore 1,498, mechanical 1,497, brainstorm 1,496, math 595, learn-explain 377,
+   scoped-code 35, debugging 25, architecture 12, devops-config 10, security-review 4, rare-hard 1. Almost all English
+   (56 Russian). **No rows** for docs, engineering, message, default, code-review, image-prompt, final-copy, critique,
+   vision, long-read, structure, test-writing, data-analysis, brand-visual.
 
-Not done: layer 2 (distillation, decision 2), and no one has read a sample of the synthetic rows for label mistakes.
+What it means: a 25-label head cannot be trained on this. Decisions 5 and 6 come first.
 
 ## Steps and cost
 
 | Step | What | Cost |
 |---|---|---|
 | 1 | Download e5-small int8 (D:), measure CPU latency in Node for options (a) and (c) | $0 |
-| 2 | Build layers 1 and 3 (public sets, Haiku synthetic gaps ~7k prompts): **done**, 13.4k rows | $1.04 Haiku |
-| 3 | Layer 2 distillation (after decision 2); add the owner's labels when they land | ~$6-18 Haiku |
+| 2 | Public layer: **done**, 5.5k rows over 11 labels (the Haiku synthetic layer was dropped) | $1.04 Haiku, unused |
+| 3 | Cover the empty labels (decisions 5 and 6); add the owner's labels when they land | $0 |
 | 4 | Train the head, `CLASSIFIER=local` replay, gates | $0 (CPU or local GPU) |
 | 5 | Fine-tune only if 4 misses | $0 local GPU; paid measure runs only if new tiers appear (owner's OK) |
 | 6 | Shadow setting in the plugin, a week of real use | $0 |
@@ -247,7 +251,7 @@ Not done: layer 2 (distillation, decision 2), and no one has read a sample of th
 - **24 fine classes from ~10 eval cases each**: the eval can only see large differences; the gates' noise is about a
   case per point.
 - **Floor classes** (final-copy, brand-visual, rare-hard, architecture, critique, security-review, structure) have no
-  public data. A miss there is a hard-gate fail, so these lean on synthetic data and the cascade's Haiku fallback.
+  public data. A miss there is a hard-gate fail, so these lean on the cascade's Haiku fallback until labelled data exists.
 - **Distribution shift**: public chat prompts are not coding-assistant prompts with pasted stack traces and file
   paths. The owner's labels fix this; until then the cascade keeps Haiku on anything unsure.
 - **Size and install**: a 118 MB download and a JS runtime on every OS, checked in CI on Windows, macOS and Linux.

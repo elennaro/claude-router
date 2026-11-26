@@ -1,4 +1,4 @@
-// Classifier data: joins the layers into one training file, drops duplicates and anything close to an eval case
+// Classifier data: the training file from the public layer, drops duplicates and anything close to an eval case
 // (the cases are the test set and are never trained on). Free.
 // Usage: node classifier/build.mjs  -> work/classifier/train.jsonl and a count per class, source and language
 import assert from 'node:assert/strict'
@@ -17,7 +17,8 @@ assert.ok(!close(grams('rename foo to bar'), grams('write a linkedin post about 
 
 const DIR = join(WORK, 'classifier')
 const cases = readdirSync(join(ROOT, 'cases')).flatMap(f => readJsonl(join(ROOT, 'cases', f))).map(c => grams(c.prompt ?? ''))
-const rows = [...readJsonl(join(DIR, 'public.jsonl')), ...readJsonl(join(DIR, 'synth.jsonl'))]
+// No model-written data: Anthropic's Usage Policy bars training a model on Claude outputs without authorization (owner, 2026-11-26)
+const rows = readJsonl(join(DIR, 'public.jsonl'))
 
 const seen = new Set()
 let dup = 0, near = 0
@@ -32,10 +33,10 @@ writeJsonl(join(DIR, 'train.jsonl'), kept)
 
 const table = {}
 for (const r of kept) {
-  const t = (table[r.label] ??= { total: 0, public: 0, synth: 0, ru: 0 })
-  t.total++; t[r.src === 'synth' ? 'synth' : 'public']++
-  if (r.lang === 'ru' || r.lang === 'mixed') t.ru++
+  const t = (table[r.label] ??= { total: 0, ru: 0 })
+  t.total++
+  if (r.lang === 'ru') t.ru++
 }
 log(`train: ${kept.length} rows (${dup} duplicates and ${near} close to an eval case dropped, ${cases.length} cases)`)
-console.log('label'.padEnd(16), 'total public synth ru/mixed')
-for (const [c, t] of Object.entries(table).sort((a, b) => b[1].total - a[1].total)) console.log(c.padEnd(16), String(t.total).padStart(5), String(t.public).padStart(6), String(t.synth).padStart(5), String(t.ru).padStart(8))
+console.log('label'.padEnd(16), 'total russian')
+for (const [c, t] of Object.entries(table).sort((a, b) => b[1].total - a[1].total)) console.log(c.padEnd(16), String(t.total).padStart(5), String(t.ru).padStart(7))

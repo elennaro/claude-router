@@ -78,7 +78,10 @@ real usage. Per-move detail is in [LESSONS.md](LESSONS.md); the numbers come fro
    Later, labels read from the person's replies instead of buttons.
 14. **Next: a local classifier.** The "Jev decision index" models turned out to be 25-31B, far from CPU-sized. The plan
    (`docs/PLAN-classifier.md`) is multilingual-e5-small (118M parameters, MIT, multilingual) with a small trained
-   layer on top, data from public sets plus Haiku labels, never the eval cases. First measurement, int8 in Node on a
+   layer on top, data from public sets and the owner's own labels, never the eval cases. The first plan had Haiku label
+   and write the training prompts; reading Anthropic's Usage Policy stopped that before anything was trained: it bars
+   training any model on Claude outputs without authorization, competing or not. $1.04 of Haiku-written prompts were
+   deleted unused. Lesson: read the terms before the paid data run, not after. First measurement, int8 in Node on a
    desktop CPU: 3 ms for a short prompt and 13 ms for a paragraph once loaded, but about 1 s for a fresh process, 850 MB
    of memory to keep it loaded, and a 379 MB runtime install. Whether the runtime cost is worth it is the next decision.
 
