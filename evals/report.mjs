@@ -2,7 +2,7 @@
 // Usage: node report.mjs  -> results/report.md (and results/report.json for the page)
 import assert from 'node:assert/strict'
 import { readdirSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import { BUILTIN, BUILTIN_PRICE, INVESTIGATION, merge } from '../router/hooks/policy.ts'
 import { EFFORTS, RANK, ROOT, WORK, compareTier, evalRouting, readJsonl, spent } from './lib.mjs'
 
@@ -69,7 +69,10 @@ export function replayCosts(spend) {
   assert.equal(covers({ model: 'haiku', effort: 'medium', asked: true }, { model: 'opus', effort: 'high' }), 'match')
 }
 
-const runs = new Map(readJsonl(join(ROOT, 'results', 'classifier.jsonl')).map(r => [r.id, r]))
+// EVAL_RUNS=results/<file>.jsonl scores another classifier's runs (e.g. classifier/narrow.mjs) with the same gates
+const RUNS_FILE = process.env.EVAL_RUNS ? resolve(ROOT, process.env.EVAL_RUNS) : join(ROOT, 'results', 'classifier.jsonl')
+const OUT = process.env.EVAL_RUNS ? `report-${basename(RUNS_FILE, '.jsonl')}` : 'report'
+const runs = new Map(readJsonl(RUNS_FILE).map(r => [r.id, r]))
 const cmAll = readJsonl(join(ROOT, 'results', 'class-measure.jsonl'))
 const cm = cmAll.filter(r => r.cand !== 'null'), cmNull = cmAll.filter(r => r.cand === 'null')
 const prodLabel = new Map(readJsonl(join(ROOT, 'labels-prod.jsonl')).map(l => [l.id, l.prod]))
@@ -158,6 +161,6 @@ const md = [
     `| ${x.c.id} | ${[x.floor && 'floor', x.prod && 'investigation', x.cheap && 'false cheap', x.q === 'worse' && 'worse'].filter(Boolean).join(', ')} | ${x.r.runs.map(r => t(r) + (r.tip ? ` (+${r.tip})` : '')).join(' / ')} | ${t(x.need)} | ${x.r.runs.map(r => `${r.cls ?? 'none'}${r.sure ? '' : '?'} (${r.by})`).join(' / ')} | ${x.c.prompt.slice(0, 70).replace(/[|\n]/g, ' ')} |`),
 ].join('\n')
 
-writeFileSync(join(ROOT, 'results', 'report.md'), md)
-writeFileSync(join(ROOT, 'results', 'report.json'), JSON.stringify({ gates, n, total: rows.length, spent: spent() }, null, 1))
+writeFileSync(join(ROOT, 'results', `${OUT}.md`), md)
+writeFileSync(join(ROOT, 'results', `${OUT}.json`), JSON.stringify({ gates, n, total: rows.length, spent: spent() }, null, 1))
 console.log(md)
