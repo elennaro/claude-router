@@ -50,4 +50,4 @@ Code mode refuses plugins that hook tool calls or subagent spawns, and the route
 Run `/route reload`.
 
 **Where is my data?**
-`~/.claude/router/router.db`: token counts and spend. The only text kept is the first 60 characters of a chat's first prompt, with long tokens masked. Big pastes sit in `~/.claude/router/pastes/` until the session ends.
+`~/.claude/router/router.db`: token counts and spend. The only text kept is the first 60 characters of a chat's first prompt, with long tokens masked. With Settings → *Training* on, the prompts of the turns the router switched or kept are kept too, masked, on this machine only, as training data for a local router. Big pastes sit in `~/.claude/router/pastes/` until the session ends.

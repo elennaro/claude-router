@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS usage (day TEXT, session TEXT, who TEXT, model TEXT, 
 CREATE TABLE IF NOT EXISTS spawns (day TEXT, session TEXT, type TEXT, runs INTEGER NOT NULL, routed INTEGER NOT NULL, respawned INTEGER NOT NULL, PRIMARY KEY (day, session, type)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS efforts (day TEXT, session TEXT, who TEXT, model TEXT, effort TEXT, asked TEXT, cls TEXT, why TEXT, steps INTEGER NOT NULL, usd REAL NOT NULL, base REAL NOT NULL, extra REAL NOT NULL, PRIMARY KEY (day, session, who, model, effort, asked, cls, why)) WITHOUT ROWID;
-CREATE TABLE IF NOT EXISTS switches (id TEXT PRIMARY KEY, day TEXT NOT NULL, at INTEGER NOT NULL, session TEXT NOT NULL, who TEXT NOT NULL, kind TEXT NOT NULL, from_model TEXT NOT NULL, from_effort TEXT NOT NULL, to_model TEXT NOT NULL, to_effort TEXT NOT NULL, cls TEXT NOT NULL, why TEXT NOT NULL, undo_usd REAL NOT NULL, label TEXT, source TEXT, labelled INTEGER) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS switches (id TEXT PRIMARY KEY, day TEXT NOT NULL, at INTEGER NOT NULL, session TEXT NOT NULL, who TEXT NOT NULL, kind TEXT NOT NULL, from_model TEXT NOT NULL, from_effort TEXT NOT NULL, to_model TEXT NOT NULL, to_effort TEXT NOT NULL, cls TEXT NOT NULL, why TEXT NOT NULL, undo_usd REAL NOT NULL, label TEXT, source TEXT, labelled INTEGER, text TEXT, local TEXT) WITHOUT ROWID;
 `
 
 // 0.4's ledger had no `extra`: older rows get 0 (their extra spend was never split out).
@@ -57,6 +57,8 @@ export const MIGRATE = [
   'ALTER TABLE usage ADD COLUMN tin INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE usage ADD COLUMN tread INTEGER NOT NULL DEFAULT 0',
   'ALTER TABLE usage ADD COLUMN twrite INTEGER NOT NULL DEFAULT 0',
+  'ALTER TABLE switches ADD COLUMN text TEXT', // 0.9.4: the prompt, kept only with Training on
+  'ALTER TABLE switches ADD COLUMN local TEXT', // 0.9.4: a later local classifier's answer, beside Haiku's
 ]
 
 export type Step = { sql: string; params?: Array<string | number | null>; all?: true }
@@ -81,8 +83,9 @@ export async function run($: EngineInterface, home: string, steps: Array<Step>):
 }
 
 // How a chat's first prompt names it on the Board: 60 characters, injected reminders dropped, anything that looks like
-// a secret masked (long tokens, a password in a URL, key=value secrets). Nothing else of a prompt is ever stored.
-export function labelOf(text: string): string {
+// a secret masked (long tokens, a password in a URL, key=value secrets). Nothing else of a prompt is stored, except with
+// Training on: the prompt, masked the same way, up to 2000 characters (max), with its switch rows (rule 5).
+export function labelOf(text: string, max = 60): string {
   return text
     .replace(/<system-reminder>[\s\S]*?(<\/system-reminder>|$)/g, '')
     .replace(/\s+/g, ' ')
@@ -90,7 +93,7 @@ export function labelOf(text: string): string {
     .replace(/\b(\w*(?:pass(?:word)?|secret|token|key|pwd)\w*\s*[=:]\s*)\S+/gi, '$1…')
     .replace(/[\w+/=-]{24,}/g, '…')
     .trim()
-    .slice(0, 60)
+    .slice(0, max)
     .trim()
 }
 
@@ -125,16 +128,29 @@ export const effortRow = (day: string, session: string, who: string, model: stri
   params: [day, session, who, model, d.effort, d.asked, d.cls, d.why, usd, base, extra],
 })
 
-// switches (training data, opt-in): one row per router switch (Switch in types), its label filled in later.
-// label 'good' | 'bad'; source 'button' (👍/👎 in the band) or, planned, 'reply' (read from the person's next message).
-// A reply label must never overwrite a button one: write it with `AND source IS NULL`.
-export const switchRow = (day: string, session: string, w: Switch): Step => ({
-  sql: 'INSERT OR IGNORE INTO switches VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)',
-  params: [w.id, day, w.at, session, w.who, w.kind, w.fromModel, w.fromEffort, w.toModel, w.toEffort, w.cls, w.why, w.undoUsd],
+// switches (training data, opt-in): one row per router switch (Switch in types), or per turn it kept as it was
+// (kind 'stay'), with the masked prompt (main chat only; a subagent's brief is the model's text, never stored), the
+// label filled in later. label 'good' | 'bad'; source 'button' (👍/👎 in the band) or 'mood' (your next message:
+// unhappy, or a short thanks). A mood label never overwrites a button one; a button press overwrites a mood label.
+export const switchRow = (day: string, session: string, w: Switch, text: string | null): Step => ({
+  sql: 'INSERT OR IGNORE INTO switches VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, NULL)',
+  params: [w.id, day, w.at, session, w.who, w.kind, w.fromModel, w.fromEffort, w.toModel, w.toEffort, w.cls, w.why, w.undoUsd, text],
 })
 export const labelRow = (id: string, label: 'good' | 'bad', at: number): Step => ({
   sql: `UPDATE switches SET label = ?, source = 'button', labelled = ? WHERE id = ?`,
   params: [label, at, id],
+})
+export const moodRow = (id: string, label: 'good' | 'bad', at: number): Step => ({
+  sql: `UPDATE switches SET label = ?, source = 'mood', labelled = ? WHERE id = ? AND source IS NULL`,
+  params: [label, at, id],
+})
+// Balance (owner, 2026-11-26): unlabelled rows would swamp the labelled ones and teach a model to keep everything as is,
+// so from before `day` (today's can still be rated) at most SILENT_PER_LABEL unlabelled rows per labelled one stay, the
+// newest, counted apart for switches and for stays.
+export const SILENT_PER_LABEL = 2
+const keepSilent = (day: string, stay: boolean): Step => ({
+  sql: `DELETE FROM switches WHERE label IS NULL AND day < ? AND (kind = 'stay') = ? AND id NOT IN (SELECT id FROM switches WHERE label IS NULL AND (kind = 'stay') = ? ORDER BY at DESC LIMIT (SELECT ? * COUNT(*) FROM switches WHERE label IS NOT NULL))`,
+  params: [day, stay ? 1 : 0, stay ? 1 : 0, SILENT_PER_LABEL],
 })
 
 // The ledger stays small: per-effort detail for EFFORTS_DAYS (enough to tune routing), the rest for LEDGER_DAYS (the
@@ -144,6 +160,8 @@ export const LEDGER_DAYS = 400
 export const cleanupSteps = (dayBefore: (days: number) => string): Array<Step> => [
   { sql: 'DELETE FROM efforts WHERE day < ?', params: [dayBefore(EFFORTS_DAYS)] },
   ...['usage', 'days', 'spawns', 'switches'].map(t => ({ sql: `DELETE FROM ${t} WHERE day < ?`, params: [dayBefore(LEDGER_DAYS)] })),
+  keepSilent(dayBefore(0), false),
+  keepSilent(dayBefore(0), true),
   { sql: 'DELETE FROM sessions WHERE id NOT IN (SELECT session FROM days)' },
 ]
 

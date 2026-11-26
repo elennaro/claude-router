@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, 
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { BOARD, IMPORTED, SWEEP, bucketsOf, dayRow, isAlreadyImported, paths, run, sessionRow, spawnRow, totalsOf, totalsQuery, usageRow, livesOf, livesQuery, spendOf, spendSinceQuery, effortRow, cleanupSteps, EFFORTS_DAYS, switchRow, labelRow } from '../hooks/db.ts'
+import { BOARD, IMPORTED, SWEEP, bucketsOf, dayRow, isAlreadyImported, paths, run, sessionRow, spawnRow, totalsOf, totalsQuery, usageRow, livesOf, livesQuery, spendOf, spendSinceQuery, effortRow, cleanupSteps, EFFORTS_DAYS, switchRow, labelRow, moodRow } from '../hooks/db.ts'
 
 const home = mkdtempSync(join(tmpdir(), 'router-db-'))
 const old = mkdtempSync(join(tmpdir(), 'router-db-0.4-'))
@@ -115,9 +115,10 @@ try {
   q.close()
   // switches (training labels): a row once per id, the 👍/👎 label filled in later; kept like the ledger, not like efforts
   const W = { id: 'w1', at: 1, who: 'main', kind: 'effort', fromModel: 'opus', fromEffort: 'medium', toModel: 'opus', toEffort: 'low', cls: 'quick-fix', why: 'class', undoUsd: 0, label: null }
-  await run($, home, [switchRow(day, 's1', W), switchRow(day, 's1', { ...W, toEffort: 'high' }), switchRow('2026-11-17', 's1', { ...W, id: 'w0' }), labelRow('w1', 'bad', 5)])
+  await run($, home, [switchRow(day, 's1', W, 'fix the typo'), switchRow(day, 's1', { ...W, toEffort: 'high' }, null), switchRow('2026-11-17', 's1', { ...W, id: 'w0' }, null), labelRow('w1', 'bad', 5), moodRow('w1', 'good', 6)])
   q = db()
-  assert.deepEqual({ ...q.prepare('SELECT to_effort, label, source, labelled FROM switches WHERE id = ?').get('w1') }, { to_effort: 'low', label: 'bad', source: 'button', labelled: 5 })
+  // the prompt is kept with the row (Training on); a mood label never overwrites a button one
+  assert.deepEqual({ ...q.prepare('SELECT to_effort, label, source, labelled, text, local FROM switches WHERE id = ?').get('w1') }, { to_effort: 'low', label: 'bad', source: 'button', labelled: 5, text: 'fix the typo', local: null })
   q.close()
   // effort detail older than 60 days goes before the rest (400): here 2026-11-18 is past the first cutoff, 2026-11-17 past both
   await run($, home, cleanupSteps(n => (n === EFFORTS_DAYS ? '2026-11-19' : '2026-11-18')))
@@ -125,6 +126,14 @@ try {
   assert.deepEqual(q.prepare('SELECT id FROM switches').all().map(r => r.id), ['w1'])
   assert.equal(q.prepare('SELECT count(*) AS n FROM efforts').get().n, 0)
   assert.deepEqual(q.prepare('SELECT DISTINCT day FROM usage').all().map(r => r.day), ['2026-11-18'])
+  q.close()
+  // balance: one more label (w1 already has one) and old unlabelled rows; before today at most 2 per label stay, the
+  // newest, counted apart for switches and stays; today's unlabelled rows wait to be rated
+  const aged = (id, kind, at, d = '2026-11-15') => switchRow(d, 's1', { ...W, id, kind, at }, null)
+  await run($, home, [aged('m1', 'effort', 10), moodRow('m1', 'good', 11), ...[20, 21, 22, 23, 24].map(at => aged(`s${at}`, 'effort', at)), ...[30, 31, 32, 33, 34].map(at => aged(`t${at}`, 'stay', at)), aged('today', 'stay', 1, '2026-11-18')])
+  await run($, home, cleanupSteps(n => (n === EFFORTS_DAYS ? '2026-11-01' : n === 0 ? '2026-11-18' : '2026-01-01')))
+  q = db()
+  assert.deepEqual(q.prepare('SELECT id FROM switches ORDER BY id').all().map(r => r.id), ['m1', 's21', 's22', 's23', 's24', 't31', 't32', 't33', 't34', 'today', 'w1'])
   assert.deepEqual(q.prepare('SELECT id FROM sessions ORDER BY id').all().map(r => r.id), ['s1']) // s2 had no day left
   q.close()
   console.log('db check: ok')

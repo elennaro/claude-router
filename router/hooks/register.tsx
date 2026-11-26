@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionMessage } from 'claude-code'
 
 import type { Advice, Away, Bucket, Cache, ChatModel, Cold, Features, Hint, Mix, Plan, Switch, Tally, RouterView, TurnLog, Why } from '../types'
-import { BOARD, SWEEP, cleanupSteps, effortRow, type EffortOf, type EffortWhy, livesQuery, livesOf, type Step, type Totals, IMPORTED, addCache, bucketsOf, dayRow, isAlreadyImported, labelOf, legacySteps, run, sessionRow, spawnRow, spendOf, spendSinceQuery, totalsOf, totalsQuery, usageRow, switchRow, labelRow } from './db'
+import { BOARD, SWEEP, cleanupSteps, effortRow, type EffortOf, type EffortWhy, livesQuery, livesOf, type Step, type Totals, IMPORTED, addCache, bucketsOf, dayRow, isAlreadyImported, labelOf, legacySteps, run, sessionRow, spawnRow, spendOf, spendSinceQuery, totalsOf, totalsQuery, usageRow, switchRow, labelRow, moodRow } from './db'
 import { shield } from './guard'
 import { type SliderProps, sliderSvg } from './slider'
 import { claudeFamily } from './latest'
@@ -128,6 +128,10 @@ type State = {
   lastSwitch: string // the main chat's last logged model switch (from>to), so the same state logs once
   lastEffortSwitch: string // the same for its effort
   lastQuick: string // the turn whose quick move was logged (one row per turn, not per step)
+  promptText: string // with Training on: this turn's prompt, masked (labelOf), stored with its switch rows
+  turnRows: Array<string> // switch rows this main turn logged, and the turn before's (lastRows): your next message labels those
+  lastRows: Array<string>
+  lastStay: number // the prompt (turnCount) whose stay row was logged: once per turn
   agentType: Map<string, string> // agentId -> subagent type, for the dashboard log
   agentAsked: Map<string, string> // agentId -> the model it would have run on with no router (the parent's, before any move of the parent), when that differs from what it runs on
   agentSpend: Map<string, { usd: number; base: number; extra: number; model: string }> // agentId -> the run's recorded totals
@@ -746,7 +750,7 @@ async function clearChat($: EngineInterface, s: State) {
   Object.assign(s, {
     session: '', label: '', lastLedgerTurn: '', stickyAsk: undefined, ask: undefined, seenPrompt: false, hasClassified: false,
     hadClass: false, lastClass: null, lastHintModel: null, switchTurn: false, sure: false, samples: [], turnCount: 0, quietUntil: 0, declined: null, unhappy: 0,
-    prev: NO_PREV, lastContext: 0, mainSteps: 0, mainOut: 0, rerouted: 0, lastRerouted: '', lastSwitch: '', lastEffortSwitch: '', lastQuick: '',
+    prev: NO_PREV, lastContext: 0, mainSteps: 0, mainOut: 0, rerouted: 0, lastRerouted: '', lastSwitch: '', lastEffortSwitch: '', lastQuick: '', promptText: '', turnRows: [], lastRows: [], lastStay: -1,
   })
   for (const m of [s.briefs, s.asideAgents, s.agentEffort, s.agentType, s.agentAsked, s.agentSpend, s.briefRun, s.wastedRuns]) m.clear()
   s.savedAgents = NO_AGENTS // the old chat's memory stays in the store, for a resume of it
@@ -904,14 +908,20 @@ async function setFeature($: EngineInterface, k: keyof Features, on: boolean) {
   await $.store.set('features', next)
 }
 
-// Training data (Settings > Training, off by default): one row per switch the router makes, never prompt text (rule 5).
+// Training data (Settings > Training, off by default): one row per switch the router makes, or per main turn it kept as
+// it was (stay; not in the Switches list), with the masked prompt for main-chat rows (owner-approved exception to rule 5;
+// a subagent's brief is the model's text and is never stored).
 async function logSwitch($: EngineInterface, s: State, w: Omit<Switch, 'id' | 'at' | 'label'>) {
   if (s.headless || !(await read($, features)).labels) return // claude -p (evals, scripts) is not your work
   const { day, now } = await stamp($, s)
   const sw: Switch = { ...w, id: `${s.session}:${now}:${Math.random().toString(36).slice(2, 8)}`, at: now, label: null }
-  await update($, switches, (xs): Array<Switch> => [...xs, sw].slice(-SWITCHES_SHOWN))
-  later($, s, [switchRow(day, s.session, sw)])
+  if (w.kind !== 'stay') await update($, switches, (xs): Array<Switch> => [...xs, sw].slice(-SWITCHES_SHOWN))
+  const main = w.who === 'main'
+  if (main) s.turnRows.push(sw.id)
+  later($, s, [switchRow(day, s.session, sw, main ? s.promptText || null : null)])
 }
+// A short thanks or "good", in English or Russian, labels what the router did last turn 👍 (no model call)
+const HAPPY = /^\s*(good|great|perfect|nice|thanks?|thank you|thx|works|awesome|excellent|well done|отлично|спасибо|супер|класс|круто|работает|хорошо|идеально)(?=$|[\s,.!)])/iu
 
 // 👍 keeps the switch. 👎 also goes back where something is left to go back to: a model pick as Undo does, an effort
 // pinned back as in Settings, each only while the chat is still on the router's choice (a pick of yours since stays).
@@ -1186,7 +1196,7 @@ export const register: Register = on => {
   const s: State = {
     cfg: BUILTIN, home: '', root: '', project: 'unknown', sources: 'built-in only', lastClass: null, lastHintModel: null,
     hasClassified: false, hadClass: false, aside: false, asideAgents: new Set(), headless: false, agentEffort: new Map(), defs: new Map(),
-    prev: NO_PREV, lastContext: 0, mainSteps: 0, mainOut: 0, cleanChanges: 0, baseEffort: '', rerouted: 0, lastRerouted: '', lastSwitch: '', lastEffortSwitch: '', lastQuick: '', agentType: new Map(), agentAsked: new Map(), agentSpend: new Map(), briefRun: new Map(), wastedRuns: new Set(), paneOpened: false, pasted: false, coldTimer: undefined, minuteTick: undefined, awakeSince: 0, pinging: false, gapStart: 0, doneChecked: 0, awakeStop: '', ownPrompt: false, scopeAt: 0, scopeQueued: false, openTurn: '', seg: { ctx: 0, steps: 0 },
+    prev: NO_PREV, lastContext: 0, mainSteps: 0, mainOut: 0, cleanChanges: 0, baseEffort: '', rerouted: 0, lastRerouted: '', lastSwitch: '', lastEffortSwitch: '', lastQuick: '', promptText: '', turnRows: [], lastRows: [], lastStay: -1, agentType: new Map(), agentAsked: new Map(), agentSpend: new Map(), briefRun: new Map(), wastedRuns: new Set(), paneOpened: false, pasted: false, coldTimer: undefined, minuteTick: undefined, awakeSince: 0, pinging: false, gapStart: 0, doneChecked: 0, awakeStop: '', ownPrompt: false, scopeAt: 0, scopeQueued: false, openTurn: '', seg: { ctx: 0, steps: 0 },
     session: 'session', label: '', lastLedgerTurn: '', pending: [], scheduled: false, warned: false, trimmed: false, totals: { proj: EMPTY_TALLY, since: undefined }, routeModels: true, chatMode: null, sure: false, switchTurn: false,
     ask: undefined, stickyAsk: undefined, v: undefined, seenPrompt: false, samples: [], turnCount: 0, quietUntil: 0, declined: null, switching: false,
     briefs: new Map(), queue: Promise.resolve(), savedAgents: NO_AGENTS, unhappy: 0,
@@ -1380,6 +1390,7 @@ export const register: Register = on => {
     if (short) e = { ...e, text: short }
     // typed over a running turn, the prompt joins that turn: it may raise the turn's routing, never lower it
     const midTurn = e.turnId !== undefined
+    if (!midTurn) { s.lastRows = s.turnRows; s.turnRows = []; s.promptText = labelOf(e.text, 2000) } // a new turn: the last one's rows wait for your reply
     const asked = explicitAsk(e.text)
     if (asked?.sticky) s.stickyAsk = asked
     if (!midTurn || asked) s.ask = asked ?? s.stickyAsk
@@ -1407,6 +1418,9 @@ export const register: Register = on => {
     // a content follow-up the classifier could not place (it is told to say default for those) keeps it too
     const keep = felt === 'unhappy' ? !(found && isHarder(found, s.lastClass, s.cfg)) : felt === 'same' && found === null
     const cls = keep ? undefined : found
+    // training labels from your reply (rows of Training on only): unhappy is 👎 for last turn's rows, a short thanks 👍
+    const said = felt === 'unhappy' ? 'bad' : e.text.length <= 60 && HAPPY.test(e.text) ? 'good' : undefined
+    if (said && s.lastRows.length) { const at = await $.clock.now(); later($, s, s.lastRows.map(id => moodRow(id, said, at))); s.lastRows = [] }
     if (felt === 'unhappy') s.unhappy++
     else if (felt === 'new' || (felt === undefined && found !== undefined && found !== s.lastClass)) s.unhappy = 0 // a new task starts calm
     if (midTurn && !(cls === null && strict) && !(cls && isHarder(cls, s.lastClass, s.cfg))) return go(e) // nothing harder: the turn keeps its routing
@@ -1580,6 +1594,12 @@ export const register: Register = on => {
         const effortKey = from.effort === to.effort ? '' : `${from.effort}>${to.effort}`
         if (effortKey !== s.lastEffortSwitch && effortKey) await logSwitch($, s, { ...row, kind: 'effort', why, undoUsd: 0 })
         s.lastEffortSwitch = effortKey
+        // the router kept the turn as it would run with no router: a stay row, once per turn; a model or effort you named
+        // or picked is your decision, not the router's (isMain already leaves routing off out)
+        if (!modelKey && !effortKey && !ask?.model && !ask?.effort && picked?.by !== 'you' && !picked?.effort && s.lastStay !== s.turnCount) {
+          await logSwitch($, s, { ...row, kind: 'stay', why: 'stay', undoUsd: 0 })
+          s.lastStay = s.turnCount
+        }
       }
     }
     // one log row per main-loop turn or subagent run, its steps summed
