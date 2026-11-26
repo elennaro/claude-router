@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 
 declare const console: { log: (line: string) => void } // the test runner prints it; the strict config has no DOM or Node types
 
-import { type Node, cells, contrast, labelIssues, numberIssues, overfullRows, textOf, walk } from './uikit'
+import { type Node, cells, contrast, labelIssues, numberIssues, oneRowOverflow, overfullRows, textOf, walk } from './uikit'
 
 const ROUTING = JSON.stringify({ main: { model: 'opus', effort: 'medium' }, classes: { mechanical: { model: 'haiku', effort: 'low' } } })
 const USAGE = { model: 'claude-opus-5-5', input_tokens: 4000, output_tokens: 800, cache_read_input_tokens: 90_000, cache_creation_input_tokens: 2000 }
@@ -79,6 +79,8 @@ async function states($: any, on: any, routing: string, setup: ($: any) => Promi
         issues.push(...audit(row, `${state} (band)`, surface, width))
         // the band never grows with what is open (owner case 2026-11-26: a tall band made the chat jump); only an offer adds a row
         walk(row, n => { const k = String(n.props?.key ?? ''); if (n.type === 'Svg' || /^router-(card|f-|compact|tab-|cost-|cache-|sw-|model-|effort-|global|project|units|chat-awake)/.test(k)) issues.push(`${state} · ${surface} · ${width}: the band grew: ${k || n.type}`) })
+        // from 72 cells the row stays one line (owner case 2026-11-27: "Settings" wrapped on the desktop at ~96 cells)
+        walk(row, n => { if (n.props?.key === 'router-row' && width >= 72) { const over = oneRowOverflow(n, width, surface); if (over) issues.push(`${state} · ${surface} · ${width}: the band row wraps, ${over} cells over (${textOf(n).slice(0, 70)})`) } })
         issues.push(...audit(await panel.drawn(), `${state} (panel)`, surface, width))
       }
       await band.unmount()
@@ -99,7 +101,7 @@ test('the band, Stats and Settings fit 40 to 120 cells, with sentence-case label
 })
 
 test('Training on: the Switches list with its 👍 👎 fits every width', async (engine, on) => {
-  const presses: Array<[string, string | undefined]> = [['settings', 'router-settings'], ['training on', 'router-f-labels-on'], ['switches', 'router-switches']]
+  const presses: Array<[string, string | undefined]> = [['settings', 'router-settings'], ['training on', 'router-f-labels-on'], ['switches', 'router-tab-switches']]
   expect(await states(engine as any, on, ROUTING, stepped, presses)).toEqual([])
 })
 
@@ -133,7 +135,12 @@ test('the rules themselves: contrast, labels, numbers, cell widths, row budgets'
   expect(overfullRows(row(40), 40)).toEqual([])
   expect(overfullRows(row(30), 30)).toEqual([]) // 8 + 2 + 6 + 2 + "[ Settings ]" 12 = 30 cells
   expect(overfullRows(row(29), 29)).toHaveLength(1)
-  const wrapping: Node = { type: 'Box', props: { flexDirection: 'row', flexWrap: 'wrap' }, children: [{ type: 'Button', props: { label: 'Make 96K my default for every chat' } }] }
+  // the desktop's buttons as measured (2026-11-27): "Settings" is 9 cells of text plus 4 of padding
+  const band: Node = { type: 'Box', props: { key: 'router-row', flexDirection: 'row', flexWrap: 'wrap', columnGap: 2 }, children: [{ type: 'Text', children: ['● Router'] }, { type: 'Box', props: { flexGrow: 1 } }, { type: 'Button', props: { plain: true, label: 'Stats' } }, { type: 'Button', props: { plain: true, label: 'Settings' } }] }
+  expect(oneRowOverflow(band, 40, 'terminal')).toBe(0) // 8 + 5 + 8 + 2 gaps of 2 = 25
+  expect(oneRowOverflow(band, 40, 'desktop')).toBe(0) // 8 + 10 + 13 + 4 = 35
+  expect(oneRowOverflow(band, 30, 'desktop')).toBe(5)
+  const wrapping: Node ={ type: 'Box', props: { flexDirection: 'row', flexWrap: 'wrap' }, children: [{ type: 'Button', props: { label: 'Make 96K my default for every chat' } }] }
   expect(overfullRows(wrapping, 40)).toEqual([]) // 34 + 4 cells: fits on its own line
   expect(overfullRows(wrapping, 37)).toHaveLength(1)
 })

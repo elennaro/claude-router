@@ -1708,17 +1708,28 @@ export const register: Register = on => {
     const behind = Object.values((await read($, tools))?.tools ?? {}).some(x => x.isBehind)
     const undoLabel = f.v.isOn && picked.by === 'auto' && picked.model ? `Picked ${pretty(picked.model)} for this chat · Undo` : ''
     const net = netWords(f.chat, f.fmt)
-    const fixed = [narrow ? '●' : '● Router', ...(f.v.isOn ? [`■ ${f.now}`, net] : [`off ${f.where}`]), undoLabel, behind ? 'Update available' : '', f.feats.labels ? 'Switches' : '', 'Board', 'Stats', 'Settings']
-      .filter(Boolean).reduce((n, t) => n + t.length + 2, 0)
-    const room = e.props.bodyColumns - fixed
+    // A desktop button is wider than its text (tests/uikit.ts DESK, measured on a screenshot): ~1.1 cells a character
+    // plus ~4 of padding. Parts go in by priority while they fit: the shortest cache words, Board, Switches, the word
+    // "Router", then longer cache words, then the hit. Board and Switches are also tabs of the panel, so nothing is lost.
+    const desk = e.surface === 'desktop'
+    const cost = (t: string, isButton = false) => (isButton && desk ? Math.ceil(t.length * 1.1) + 4 : t.length) + 2
+    let room = e.props.bodyColumns - 2 - [['●'], ...(f.v.isOn ? [[`■ ${f.now}`], [net]] : [[`off ${f.where}`]]), [undoLabel, 1], [behind ? 'Update available' : '', 1], ['Stats', 1], ['Settings', 1]]
+      .filter(([t]) => t).reduce((n, [t, b]) => n + cost(String(t), Boolean(b)), 0)
     const K = kt(s.lastContext)
     const forms = !f.v.isOn || left === undefined ? ['Cache'] : left === 0 ? ['Cache expired'] : [`Cache ${K} · ${left} min left`, `Cache ${K} · ${left}m`, `${left}m left`, 'Cache']
-    const cacheLabel = forms.find(t => t.length + 2 <= room) ?? forms[forms.length - 1]!
-    const hitLabel = f.v.isOn && f.hit !== undefined && `Hit ${f.hit}%`.length + 2 <= room - cacheLabel.length - 2 ? `hit ${f.hit}%` : ''
+    let cacheLabel = forms[forms.length - 1]!
+    room -= cost(cacheLabel, true)
+    const fits = (t: string, isButton: boolean, gap = true) => { const c = cost(t, isButton) - (gap ? 0 : 2); if (c > room) return false; room -= c; return true }
+    const showBoard = fits('Board', true)
+    const showSwitches = f.feats.labels && fits('Switches', true)
+    const showWord = !narrow && fits(' Router', false, false) // inside the dot's text: no gap
+    const longer = forms.find(t => cost(t, true) - cost(cacheLabel, true) <= room)
+    if (longer) { room -= cost(longer, true) - cost(cacheLabel, true); cacheLabel = longer }
+    const hitLabel = f.v.isOn && f.hit !== undefined && fits(`hit ${f.hit}%`, false) ? `hit ${f.hit}%` : ''
     const warn = left !== undefined && left <= 10 && f.v.isOn
     const row = (
       <Box key="router-row" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} width={e.props.bodyColumns}>
-        <Text><Text color={f.v.isOn ? 'success' : 'inactive'}>●</Text>{narrow ? '' : ' Router'}</Text>
+        <Text><Text color={f.v.isOn ? 'success' : 'inactive'}>●</Text>{showWord ? ' Router' : ''}</Text>
         {f.v.isOn && <Text wrap="truncate-end"><Text color={modelColor(f.main?.model ?? s.cfg.main.model)}>■</Text> {f.now}</Text>}
         {!!undoLabel && <Button key="router-chat-undo" plain dimColor label={undoLabel} onPress={undo} />}
         {f.v.isOn && <Text dimColor={!isExtra(f.chat)} color={isExtra(f.chat) ? 'warning' : undefined} wrap="truncate-end">{net}</Text>}
@@ -1729,8 +1740,8 @@ export const register: Register = on => {
         {warn
           ? <Button key="router-cache" plain onPress={open('cache')}><Text color="warning">{cacheLabel}</Text></Button>
           : <Button key="router-cache" plain dimColor={cacheLabel !== 'Cache'} label={cacheLabel} onPress={open('cache')} />}
-        {f.feats.labels && <Button key="router-switches" plain label="Switches" onPress={open('switches')} />}
-        <Button key="router-board" plain label="Board" onPress={board} />
+        {showSwitches && <Button key="router-switches" plain label="Switches" onPress={open('switches')} />}
+        {showBoard && <Button key="router-board" plain label="Board" onPress={board} />}
         <Button key="router-stats" plain label="Stats" onPress={open('stats')} />
         <Button key="router-settings" plain label="Settings" onPress={open('settings')} />
       </Box>
@@ -2060,7 +2071,7 @@ export const register: Register = on => {
       feat('labels', 'Training', 'log switches to rate (no prompt text)'),
       heading('router-h-tools', 'Tools'),
       field('router-clis', 'Versions', [cli('claude'), cli('codex'), cli('antigravity'), <Button key="router-recheck" plain dimColor label="Re-check" onPress={() => refreshTools($, s, true)} />]),
-      <Box key="router-more" flexDirection="row" alignItems="center" columnGap={2} marginLeft={LABEL + 1}>
+      <Box key="router-more" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} marginLeft={LABEL + 1}>
         <Button key="router-widget" plain label={widgetOpen ? 'Hide widget' : 'Show widget'} onPress={() => showWidget($, !widgetOpen)} />
         <Button key="router-rules" plain label="Edit rules" onPress={() => editRules($, s).catch(() => $.ui.toast('router: could not open routing.json'))} />
       </Box>,

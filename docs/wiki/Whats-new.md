@@ -2,6 +2,11 @@
 
 Newest first. Update with `/plugin marketplace update claude-router`, then `/plugin update router@claude-router`, then restart Claude Code.
 
+## 0.9.8: the band stays on one row
+
+- When the row is short of room, parts drop in turn: the hit, the word "Router", **Switches**, then **Board** (both stay as tabs of the Router panel). The desktop app's wider buttons are counted, so "Settings" no longer wraps to a second line.
+- The expired-cache offer is shorter: what the next message re-reads and what compacting first adds and pays back.
+
 ## 0.9.7: the band fits its words
 
 - The cache is the **Cache** button itself, in the longest words that fit: `Cache 96K · 60 min left`, `Cache 96K · 60m`, `60m left`, or `Cache`.

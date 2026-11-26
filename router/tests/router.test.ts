@@ -7,6 +7,7 @@ import { addWhy, cacheClock, minutesLeft, whoWords, whyWords, boardHtml, cacheSt
 import { RUNNER, type Step, bucketsOf, labelOf, livesOf } from '../hooks/db'
 import { shield } from '../hooks/guard'
 import { type SliderProps, scale, sliderSvg } from '../hooks/slider'
+import { oneRowOverflow } from './uikit'
 
 test("the router's own error never blocks the person's work: the event passes once, one warning", async () => {
   const toasts: Array<string> = []
@@ -1313,7 +1314,7 @@ test('Training on: a model pick and its effort log once each, with the prompt (m
   await ask('Swap every variable called foo for bar in the utils module and the tests too')
   await ask('ok, do it') // the same switches again: no new entries
   const band = await mountBoth($, { ...BAND, surface: 'desktop' })
-  await band.press({ key: 'router-switches' })
+  await band.press({ key: 'router-tab-switches' })
   expect(await thumbs(band, '👍')).toHaveLength(2) // newest first: the effort, then the pick
   await band.press({ key: (await thumbs(band, '👎'))[1]!.props.key })
   expect(await band.find({ type: 'Text', text: '👎 went back' })).toBeTruthy()
@@ -1350,7 +1351,7 @@ test('Training: a quick turn on Haiku logs once as quick, its 👎 only notes it
   await $.prompt.submit({ text: 'use haiku for this: tell me the weather in Porto' })
   await step($, 'medium')
   const band = await mountBoth($, { ...BAND, surface: 'desktop' })
-  await band.press({ key: 'router-switches' })
+  await band.press({ key: 'router-tab-switches' })
   await band.press({ key: (await thumbs(band, '👎')).at(-1)!.props.key })
   expect(await band.find({ type: 'Text', text: '👎 noted' })).toBeTruthy()
   await band.unmount()
@@ -1371,7 +1372,7 @@ test('Training: 👎 on an effort switch pins the chat back to the effort it had
   await ask('Swap every variable called foo for bar in the utils module and the tests too')
   expect(sent.at(-1)).toBe('medium') // the class lowers the picker's high
   const band = await mountBoth($, { ...BAND, surface: 'desktop' })
-  await band.press({ key: 'router-switches' })
+  await band.press({ key: 'router-tab-switches' })
   await band.press({ key: (await thumbs(band, '👎'))[0]!.props.key })
   await ask('Rename the helper called bar to baz in the same module and its tests')
   expect(sent.at(-1)).toBe('high')
@@ -1393,7 +1394,7 @@ test('Training: 👎 on an old pick leaves a model you chose since in Settings',
   await band.press({ key: 'router-settings' })
   await band.press({ key: 'router-model-sonnet' })
   await band.press({ key: 'router-settings' })
-  await band.press({ key: 'router-switches' })
+  await band.press({ key: 'router-tab-switches' })
   for (const b of await thumbs(band, '👎')) await band.press({ key: b.props.key })
   await $.prompt.submit({ text: 'ok, do it' })
   await step($, 'medium')
@@ -1457,7 +1458,7 @@ test('Training: a turn the router kept logs a stay row with its prompt; your rep
   await turn('that is wrong, the page still says the old thing') // 👎 for the turn before
   await turn('use opus for this: check the page once more') // your model: not the router's stay
   const band = await mountBoth($, { ...BAND, surface: 'desktop' })
-  await band.press({ key: 'router-switches' })
+  await band.press({ key: 'router-tab-switches' })
   expect(await thumbs(band, '👍')).toHaveLength(0) // stays are not in the Switches list
   await band.unmount()
   await end($)
@@ -1483,7 +1484,7 @@ test('Training: a subagent the router moves logs one entry; its 👎 only record
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
   await $.agent.spawn({ prompt: 'Where is the config loaded from? List the files.', subagentType: 'general-purpose', parentModel: 'claude-opus-5-5' })
   const band = await mountBoth($, { ...BAND, surface: 'desktop' })
-  await band.press({ key: 'router-switches' })
+  await band.press({ key: 'router-tab-switches' })
   await band.press({ key: (await thumbs(band, '👎'))[0]!.props.key })
   expect(await band.find({ type: 'Text', text: '👎 noted' })).toBeTruthy()
   await band.unmount()
@@ -1506,7 +1507,7 @@ test('Training: 👎 on a model pick over $0.10 of cache says the price first, s
   await $.prompt.submit({ text: 'ok, do it' })
   await step($, 'medium')
   const band = await mountBoth($, { ...BAND, surface: 'desktop' })
-  await band.press({ key: 'router-switches' })
+  await band.press({ key: 'router-tab-switches' })
   await band.press({ key: (await thumbs(band, '👎')).at(-1)!.props.key })
   await band.unmount()
   expect(toasts.join('\n')).toMatch(/back to Opus; the next request re-reads this chat once, about \$/)
@@ -1598,6 +1599,18 @@ test('the band says the cache in the longest words that fit, and "Cache expired"
   const warm = await Promise.all([140, 100, 72, 40].map(at))
   expect(warm.map(w => w.label)).toEqual(['Cache 100K · 60 min left', 'Cache 100K · 60 min left', '60m left', 'Cache'])
   expect([warm[0]!.hit, warm[3]!.hit]).toEqual([true, false]) // the hit only where room is left over
+  // the row never runs past one line from 72 cells, on either surface, with every part on (owner case 2026-11-27)
+  const panel = await $.ui.mount({ ...PANEL, surface: 'terminal' })
+  await panel.press({ key: 'router-tab-settings' })
+  await panel.press({ key: 'router-f-labels-on' })
+  await panel.unmount()
+  for (const surface of ['terminal', 'desktop'])
+    for (let cols = 72; cols <= 160; cols += 4) {
+      const band = await $.ui.mount({ ...BAND_SITE, surface, props: { ...BAND_SITE.props, bodyColumns: cols } })
+      const row = await band.find({ key: 'router-row' })
+      expect([surface, cols, oneRowOverflow(row, cols, surface)]).toEqual([surface, cols, 0])
+      await band.unmount()
+    }
   await clock.advance(61 * 60_000)
   for (const cols of [140, 72, 40]) expect((await at(cols)).label).toContain('expired') // the warning always fits
   expect((await at(40)).label).toContain('Cache expired')
@@ -1626,7 +1639,7 @@ test('with a real cache the widget and the Stats card show its size, what losing
   const sheet = (await band.panel.findAll({ type: 'Text' })).map((x: { text: string }) => x.text)
   for (const t of ['Cache: 100K of 200K', 'Lose the cache', '$0.80', 'Switch to Haiku', '$0.10', 'Switch to Sonnet', '$0.40', 'Switch to Fable', '$1.60', 'Compact now', 'about $0.60', 'Keep it warm', 'about $0.02']) expect(sheet).toContain(t)
   expect(await band.panel.find({ type: 'Text', text: 'Cache time left 60 min left' })).toBeTruthy() // the hour left, as a bar
-  expect((await band.band.find({ key: 'router-cache' }))?.props.label).toBe('Cache 100K · 60 min left') // the cache is the Cache button itself, in the band's one row
+  expect((await band.band.find({ key: 'router-cache' }))?.props.label).toBe('60m left') // the cache is the Cache button itself; a 100-cell desktop row has room for the short words
   // compact and proportional (owner ask 2026-11-26): a heading opens each block, blank lines only between blocks; the
   // note sits beside its price when there is room and under it when narrow
   type N = { type: string; props?: Record<string, unknown>; children?: Array<N | string> }
@@ -2219,7 +2232,9 @@ test('with keep-awake off, once the cache lapses the band offers to compact firs
   expect(await band.find({ key: 'router-cold-compact' })).toBeFalsy()
   await clock.advance(1_700_000)
   expect(nudges.length).toBe(0)
-  expect(await band.find({ type: 'Text', text: /re-reads the whole chat \(200K tokens, about \$1\.60\).*about \$0\.58.*22 steps/ })).toBeTruthy()
+  const offerText = (await band.find({ type: 'Text', text: /re-reads the whole chat \(200K tokens, about \$1\.60\).*about \$0\.58.*22 steps/ }))?.text as string
+  expect(offerText.startsWith('Cache expired: ')).toBe(true)
+  expect(offerText.length <= 200).toBe(true) // two lines on a normal window, not five (owner case 2026-11-27)
   await band.press({ key: 'router-cold-keep' })
   expect(await band.find({ key: 'router-cold-compact' })).toBeFalsy()
   expect(compacted.length).toBe(0)

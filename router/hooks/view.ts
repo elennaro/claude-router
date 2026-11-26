@@ -8,7 +8,7 @@ export const about = (n: number) => (n > 0 && n < 0.005 ? 'under $0.01' : `about
 // What a switch offer says it costs: the new model writes the chat to its own cache once (less after compacting).
 // The offer after an hour away: resuming re-reads everything anyway; compacting first adds a little and saves per step.
 export const coldWords = (c: { cache: number; resume: number; extra: number; perStep: number; payback: number }) =>
-  `You were away over an hour, so the cache expired: your next message re-reads the whole chat (${Math.round(c.cache / 1000)}K tokens, about ${money(c.resume)}) either way. Compacting first adds about ${money(c.extra)}, then saves about ${money(c.perStep)} a step, paying back in about ${c.payback} steps. The summary keeps the goal, plan, decisions and files, but loses detail.`
+  `Cache expired: your next message re-reads the whole chat (${Math.round(c.cache / 1000)}K tokens, about ${money(c.resume)}). Compacting first adds about ${money(c.extra)}, paid back in about ${c.payback} steps; it keeps the goal, plan, decisions and files.`
 // Keep-awake's report while you were away: what the nudges cost against re-reading the chat, and the compaction if any.
 export const STOP_WORDS = { done: 'the work looked finished', unlikely: 'a return at these hours is too unlikely to pay for more' } as const
 export const awayWords = (a: { pings: number; usd: number; rebuild: number; compacted: boolean; back?: boolean; saved?: number; stop?: keyof typeof STOP_WORDS }, hours: number) =>

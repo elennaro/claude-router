@@ -92,12 +92,14 @@ export function walk(n: Node | string, fn: (n: Node) => void): void {
 }
 // Cells a child needs at the least: a truncating text can shrink to its first cell plus "…" (we allow 6), a spacer
 // nothing, anything else its full text. The terminal draws a plain Button as its label alone and any other as
-// "[ label ]" (the engine's ButtonProps docs); a desktop draws native buttons, counted here as 2 cells of padding more.
-// shortcut: the desktop's padding is a guess in cells; measure a desktop screenshot if a row there looks off.
+// "[ label ]" (the engine's ButtonProps docs); a desktop draws native buttons with padding.
+// Desktop numbers measured on an owner screenshot (2026-11-27, the band at ~940 px): text ~9.75 px a cell, button text
+// ~10.4 px a character (x1.1), and about 4 cells of padding per plain button.
+export const DESK = { text: 1.1, pad: 4 }
 export function minCells(n: Node | string, surface = 'terminal'): number {
   if (typeof n === 'string') return cells(n)
   if (n.props?.flexGrow) return 0
-  if (n.type === 'Button') return cells(textOf(n)) + (n.props?.plain ? 0 : 4) + (surface === 'desktop' ? 2 : 0)
+  if (n.type === 'Button') return surface === 'desktop' ? Math.ceil(cells(textOf(n)) * DESK.text) + DESK.pad + (n.props?.plain ? 0 : 2) : cells(textOf(n)) + (n.props?.plain ? 0 : 4)
   if (n.props?.wrap === 'truncate-end') return Math.min(6, cells(textOf(n)))
   if (n.props?.wrap === 'wrap') return Math.min(12, cells(textOf(n)))
   if (n.type === 'Box' && n.props?.flexDirection !== 'row') return Math.max(0, ...(n.children ?? []).map(c => minCells(c, surface)))
@@ -106,6 +108,17 @@ export function minCells(n: Node | string, surface = 'terminal'): number {
   const gap = Number(n.props?.gap ?? n.props?.columnGap ?? 0)
   return kids.reduce((a: number, c) => a + minCells(c, surface), 0) + (n.type === 'Box' ? gap * Math.max(0, kids.length - 1) : 0) + Number(n.props?.marginLeft ?? 0) + Number(n.props?.marginRight ?? 0)
 }
+// A row that must stay one line (the band: a second line makes the chat jump): every child at its least width, gaps
+// included, as if it could not wrap. Returns the overflow in cells, 0 when it fits.
+export function oneRowOverflow(row: Node, width: number, surface = 'terminal'): number {
+  const kids = row.children ?? []
+  const gap = Number(row.props?.columnGap ?? row.props?.gap ?? 0)
+  const shown = kids.filter(c => typeof c === 'string' || !c.props?.flexGrow)
+  // a truncating text counts in full here: a cut model name or saving is a fault too, not room
+  const need = (c: Node | string) => (typeof c !== 'string' && c.props?.wrap === 'truncate-end' ? cells(textOf(c)) : minCells(c, surface))
+  return Math.max(0, shown.reduce((a: number, c) => a + need(c), 0) + gap * Math.max(0, shown.length - 1) - width)
+}
+
 // Every row Box whose fixed parts do not fit the width it gets (its own, or what its parents leave after margins):
 // the surface would clip them or push them off the edge.
 export function overfullRows(tree: Node, width: number, surface = 'terminal'): Array<string> {
