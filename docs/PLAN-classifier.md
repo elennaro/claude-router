@@ -301,8 +301,12 @@ the classifier. Scored with `EVAL_RUNS=results/classifier-narrow.jsonl node repo
 2. Without the doubt guard (Sonnet only when every up answer < 0.2), two production cases went to Sonnet (hard fail).
 3. A stricter "steps" (0.7-0.9) saved 4-5 points of spend, cost 3 points of quality and left false dear unchanged, so
    the dear picks are not one loose question. Not tuned further on 283 cases (overfitting).
-4. Still unmeasured: a cheaper rung than Opus high for "steps" alone (Opus medium or Sonnet high), Russian vs English
-   split, and the decision models other than Haiku.
+4. "steps" alone at Opus medium: spend 124.2%, quality +17.1%, false dear unchanged. Same trade as above.
+5. Sonnet-high rung, rejected (free, cached). Every up answer below 0.3 → Sonnet high: one floor downgrade, one
+   production case below Opus high (hard fails), spend 129.4%. Below 0.4: 1 and 3 hard fails, unstable 15.5%. On the 81
+   cases with a measured Sonnet-high answer, it beat Opus medium only where every up answer was under 0.2 (9 cases,
+   +0.11), which already go to Sonnet medium; a higher "simple" answer went with a worse Sonnet-high score.
+6. Still unmeasured: Russian vs English split, and the decision models other than Haiku.
 
 ## Steps and cost
 
