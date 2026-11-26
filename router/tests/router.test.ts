@@ -1140,9 +1140,9 @@ test('the ledger keeps each session per day; the classifier counts as spend with
   expect(eff.map(r => r[9])).toEqual([Number(main[6]), Number(main[6])])
   // the session's first batch trims the ledger: effort detail after 60 days, the rest after 400, sessions with no day
   const trim = batches.flat().filter(x => x.sql.startsWith('DELETE FROM'))
-  expect(trim.map(x => x.sql.split(' ')[2])).toEqual(['efforts', 'usage', 'days', 'spawns', 'switches', 'sessions'])
+  expect(trim.map(x => x.sql.split(' ')[2])).toEqual(['efforts', 'usage', 'days', 'spawns', 'switches', 'switches', 'switches', 'sessions']) // the last two keep Training's unlabelled rows in balance
   const ago = (n: number) => { const t = new Date(1_000 - n * 86_400_000); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}` }
-  expect(trim.map(x => x.params?.[0])).toEqual([ago(60), ago(400), ago(400), ago(400), ago(400), undefined])
+  expect(trim.map(x => x.params?.[0])).toEqual([ago(60), ago(400), ago(400), ago(400), ago(400), ago(0), ago(0), undefined]) // today's unlabelled rows can still be rated
   // once per session, after the waiting rows
   const first = batches.findIndex(b => b.some(x => x.sql.startsWith('DELETE FROM')))
   expect(batches[first]!.findIndex(x => x.sql.startsWith('DELETE')) > batches[first]!.findIndex(x => x.sql.startsWith('INSERT INTO usage'))).toBe(true)
@@ -1270,7 +1270,7 @@ test('the first prompt picks the chat model only when all 3 samples agree; Undo 
 // the Switches list's rating buttons with this label (findAll matches by type only)
 const thumbs = async (band: any, label: string): Promise<Array<{ props: { key: string } }>> => (await band.findAll({ type: 'Button' })).filter((b: { props: { label?: string } }) => b.props.label === label)
 
-test('Training on: a model pick and its effort log once each, no prompt text; 👎 on the pick goes back as Undo, effort routing stays', async (engine, on) => {
+test('Training on: a model pick and its effort log once each, with the prompt (masked, local); 👎 on the pick goes back as Undo, effort routing stays', async (engine, on) => {
   const $ = engine as any
   const models: Array<string> = []
   const efforts: Array<unknown> = []
@@ -1299,7 +1299,7 @@ test('Training on: a model pick and its effort log once each, no prompt text; �
     ['sess-1', 'main', 'effort', 'opus', 'high', 'haiku', 'low', 'mechanical', 'class'],
     ['sess-1', 'main', 'effort', 'opus', 'high', 'opus', 'medium', 'mechanical', 'class'], // back on Opus: a new effort switch
   ])
-  expect(JSON.stringify(rows)).not.toMatch(/foo|utils|docs/) // never prompt text (rule 5)
+  expect(rows.map(r => r[13])).toEqual(['Swap every variable called foo for bar in the utils module and the tests too', 'Swap every variable called foo for bar in the utils module and the tests too', 'ok, and the docs too']) // the prompt each switch served (owner, 2026-11-26)
   const label = all.find(x => x.sql.startsWith('UPDATE switches'))
   expect(label?.params?.slice(0, 1)).toEqual(['bad'])
   expect(label?.params?.[2]).toBe(rows[0]![0])
@@ -1412,6 +1412,37 @@ test('Training off (the default): no switch rows and no Switches button', async 
   expect(batches.flat().some(x => x.sql.includes('INTO switches') || x.sql.startsWith('UPDATE switches'))).toBe(false) // the trim still runs
 })
 
+test('Training: a turn the router kept logs a stay row with its prompt; your reply labels it (thanks 👍, unhappy 👎); a model you named is no stay (owner, 2026-11-26)', async (engine, on) => {
+  const $ = engine as any
+  const batches: Array<Array<Step>> = []
+  const store = new Map<string, unknown>([['features', { labels: true }]])
+  const haiku = (e: { system?: string; prompt?: unknown }) => (e.system?.startsWith('You read one exchange') ? (/that is wrong/.test(JSON.stringify(e)) ? 'unhappy 0.9' : 'same 0.9') : 'default 0.9')
+  wire(on, { sent: [], batches, store, haiku, tokens: 5_000, messages: EXCHANGE, files: {} })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const turn = async (text: string) => { await $.prompt.submit({ text }); await step($, 'medium') }
+  await turn('please look over the deploy notes for the staging box')
+  await turn('thanks!') // 👍 for the turn before
+  await turn('and the onboarding page too')
+  await turn('that is wrong, the page still says the old thing') // 👎 for the turn before
+  await turn('use opus for this: check the page once more') // your model: not the router's stay
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
+  await band.press({ key: 'router-switches' })
+  expect(await thumbs(band, '👍')).toHaveLength(0) // stays are not in the Switches list
+  await band.unmount()
+  await end($)
+  const all = batches.flat()
+  const stays = all.filter(x => x.sql.includes('INTO switches')).map(x => x.params ?? []).filter(r => r[5] === 'stay')
+  expect(stays.map(r => [r[6], r[7], r[8], r[9], r[13]])).toEqual([
+    ['opus', 'medium', 'opus', 'medium', 'please look over the deploy notes for the staging box'],
+    ['opus', 'medium', 'opus', 'medium', 'thanks!'],
+    ['opus', 'medium', 'opus', 'medium', 'and the onboarding page too'],
+    ['opus', 'medium', 'opus', 'medium', 'that is wrong, the page still says the old thing'],
+  ])
+  const moodsSet = all.filter(x => x.sql.includes("source = 'mood'")).map(x => [x.params?.[0], x.params?.[2]])
+  expect(moodsSet).toEqual([['good', stays[0]![0]], ['bad', stays[2]![0]]])
+  expect(all.find(x => x.sql.includes("source = 'mood'"))?.sql).toContain('AND source IS NULL') // never over a button label
+})
+
 test('Training: a subagent the router moves logs one entry; its 👎 only records the label', async (engine, on) => {
   const $ = engine as any
   const batches: Array<Array<Step>> = []
@@ -1427,7 +1458,7 @@ test('Training: a subagent the router moves logs one entry; its 👎 only record
   await band.unmount()
   await $.session.end({ reason: 'other', sessionId: 'sess-1', resume: { sessionId: 'sess-1' } })
   const rows = batches.flat().filter(x => x.sql.includes('INTO switches')).map(x => x.params ?? [])
-  expect(rows.map(r => [r[4], r[5], r[6]])).toEqual([['general-purpose', 'agent', 'opus']])
+  expect(rows.map(r => [r[4], r[5], r[6], r[13]])).toEqual([['general-purpose', 'agent', 'opus', null]]) // a brief is the model's text: never stored
 })
 
 test('Training: 👎 on a model pick over $0.10 of cache says the price first, still goes back', async (engine, on) => {
