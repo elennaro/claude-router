@@ -245,6 +245,15 @@ function modelBand(mix: Mix, x0: number, y0: number, width: number): { svg: stri
   return { svg: out, height: ly - y0 + 4 }
 }
 
+// A Compact at point's colour from its tone (policy compactTone): green at the cheapest; toward purple as compactions
+// come too often (detail lost); toward amber, then red, as it costs more.
+const TONE = { green: '#4f9a5c', purple: '#9061c2', amber: '#d4a72c', red: '#c8553d' }
+export function toneColor(tone: number): string {
+  const t = Math.min(1, Math.max(-1, tone))
+  if (t < 0) return mixHex(TONE.green, TONE.purple, -t)
+  return t <= 0.5 ? mixHex(TONE.green, TONE.amber, t * 2) : mixHex(TONE.amber, TONE.red, (t - 0.5) * 2)
+}
+
 // The card's width and columns from the band's width in cells, so a narrow window gets two readable columns
 // instead of four shrunken ones. shortcut: assumes about 8 px per cell; measure the slot if a surface reports pixels.
 export function cardLayout(bodyColumns: number): { width: number; perRow: number } {

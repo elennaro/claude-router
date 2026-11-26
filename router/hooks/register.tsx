@@ -15,10 +15,10 @@ import {
   classifyPlan, isCacheBreak, merge, settleAnswers, readLabel, prices, rank, setPrices, turnEffort, briefHash, isHarder, needsSecondSample, spawnPick, withoutRouter,
   type Mood, longRun, moodPrompt, moodSystem, parseMood, raiseEffort, raiseSteps, stepUp, rebuildUsd, stepUsd, switchMath, FAMILIES, coldMath,
   AWAKE_DEFAULT_HOURS, AWAKE_HOURS, AWAKE_MIN, AWAKE_PING_MS, AWAKE_TEXT, AWAY_COMPACT, awakeNext, isNudgeReply, type Gap, GAPS_KEPT, returnCurve, nudgePays, backAtAll, writeOverRead, doneSystem, donePrompt, parseDone, COMPACT_KEEP, compactUsd,
-  type CompactLook, cheapestPoint, compactLook, compactPoints, compactStepUsd,
+  cheapestPoint, compactPoints, compactTone, compactStepUsd,
   SIZED, briefPaths, bucket, sizeOf, cacheSheet, PASTE_MIN, estTokens, keepsRaw, pasteModel, pasteSystem, pastePrompt, offloaded,
 } from './policy'
-import { type Cell, NAMES, TOOL_NAMES, about, addWhy, awayWords, cacheClock, minutesLeft, coldWords, whyWords, barsSvg, boardHtml, cardLayout, hitPct, switchCost, svgSize, isExtra, modelColor, money, shade, net, netPct, netWords, planFmt, planRate, savedUsd, statsSvg, withMode } from './view'
+import { type Cell, NAMES, TOOL_NAMES, about, addWhy, awayWords, cacheClock, minutesLeft, coldWords, whyWords, barsSvg, boardHtml, cardLayout, hitPct, switchCost, svgSize, isExtra, modelColor, money, shade, net, netPct, netWords, planFmt, planRate, savedUsd, statsSvg, toneColor, withMode } from './view'
 
 const PANE = 'router'
 const hint = atom({ plugin: 'router', key: 'hint' } as const, null)
@@ -1951,8 +1951,7 @@ export const register: Register = on => {
     const growth = chatGrowth(s)
     const points = compactPoints(limit)
     const best = growth === undefined ? undefined : cheapestPoint(model, growth, limit)
-    const LOOK_COLOR: Record<CompactLook, string> = { good: '#4f9a5c', ok: '#c9932e', bad: '#c8553d' }
-    const look = (v: number) => (growth === undefined || best === undefined ? '#8a8f98' : LOOK_COLOR[compactLook(model, v, growth, best)])
+    const look = (v: number) => (growth === undefined || best === undefined ? '#8a8f98' : toneColor(compactTone(model, v, growth, best)))
     const step = limit > 400_000 ? 25_000 : 10_000
     const min = Math.min(points[0] ?? step * 5, limit)
     const zones: Array<[number, string]> = []

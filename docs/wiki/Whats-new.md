@@ -2,6 +2,10 @@
 
 Newest first. Update with `/plugin marketplace update claude-router`, then `/plugin update router@claude-router`, then restart Claude Code.
 
+## 0.9.4: Compact at colours both ways
+
+The slider is one gradient: purple where the chat would compact too often and lose detail, green at the cheapest point, amber then red where it costs more.
+
 ## 0.9.3: a real Compact at slider on the desktop
 
 - **Compact at** is drawn: cost colours along the track, a tick every 100K, the knob at your pick, ★ for the cheapest point and a line for Claude Code's own. Under it, a row of points to press, each with its cost dot.

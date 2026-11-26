@@ -1,9 +1,9 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import {
-  BUILTIN, CLASS_LABELS, adviseSwitch, effortRank, rank, agentTier, autoModel, needsSecondSample, briefHash, briefTier, stepUp, classifyByRules, costUsd, firstModel, isCacheBreak, isContinuation, merge, parseJev, parseSessionCheck, parseMood, raiseEffort, moodPrompt, longRun, readLabel, spawnPick, turnEffort, withoutRouter, rebuildUsd, stepUsd, switchMath, remainingSteps, quickPays, type Life, sessionCheckSystem, briefPaths, sizeOf, bucket, estTokens, keepsRaw, pasteModel, pasteSystem, offloaded, cacheSheet, coldMath, awakeNext, AWAKE_TEXT, returnCurve, nudgePays, backAtAll, writeOverRead, parseDone, type Gap, isNudgeReply, compactStepUsd, cheapestPoint, compactPoints, compactLook, compactsPer100,
+  BUILTIN, CLASS_LABELS, adviseSwitch, effortRank, rank, agentTier, autoModel, needsSecondSample, briefHash, briefTier, stepUp, classifyByRules, costUsd, firstModel, isCacheBreak, isContinuation, merge, parseJev, parseSessionCheck, parseMood, raiseEffort, moodPrompt, longRun, readLabel, spawnPick, turnEffort, withoutRouter, rebuildUsd, stepUsd, switchMath, remainingSteps, quickPays, type Life, sessionCheckSystem, briefPaths, sizeOf, bucket, estTokens, keepsRaw, pasteModel, pasteSystem, offloaded, cacheSheet, coldMath, awakeNext, AWAKE_TEXT, returnCurve, nudgePays, backAtAll, writeOverRead, parseDone, type Gap, isNudgeReply, compactStepUsd, cheapestPoint, compactPoints, compactTone, compactsPer100,
 } from '../hooks/policy'
-import { addWhy, cacheClock, minutesLeft, whoWords, whyWords, boardHtml, cacheStrength, cardLayout, hitPct, svgSize, switchCost, netWords, planFmt, planRate, savedUsd, shade, statsSvg, withMode } from '../hooks/view'
+import { addWhy, cacheClock, minutesLeft, whoWords, whyWords, boardHtml, cacheStrength, cardLayout, hitPct, svgSize, switchCost, netWords, planFmt, planRate, savedUsd, shade, statsSvg, toneColor, withMode } from '../hooks/view'
 import { RUNNER, type Step, bucketsOf, labelOf, livesOf } from '../hooks/db'
 import { shield } from '../hooks/guard'
 import { type SliderProps, scale, sliderSvg } from '../hooks/slider'
@@ -1961,9 +1961,16 @@ test('auto-compact cost: the cheapest point follows the chat\'s growth, up to th
   expect(cheapestPoint('opus', 5_000, 1_000_000)).toBe(300_000)
   expect(cheapestPoint('opus', 20_000, 1_000_000)).toBe(600_000) // a fast-growing chat compacts less often
   // 5K a step: 200K compacts every 17 steps (loses detail), 300K-500K near the cheapest, 600K dearer, 700K+ too dear
-  expect(compactPoints(1_000_000).map(p => compactLook('opus', p, 5_000, 300_000))).toEqual(['bad', 'good', 'good', 'good', 'ok', 'bad', 'bad', 'bad'])
+  // two ways from the cheapest (owner ask 2026-11-26): below it toward -1 (too often, purple), above toward 1 (dear, red)
+  const tones = compactPoints(1_000_000).map(p => compactTone('opus', p, 5_000, 300_000))
+  expect([tones[0], tones[1], tones[7]]).toEqual([-1, 0, 1])
+  expect(tones.slice(1).every((t, i, a) => i === 0 || t >= a[i - 1]!)).toBe(true) // dearer step by step above it
+  expect(tones[2]! > 0 && tones[2]! < 0.5).toBe(true) // 400K: a little dearer, still green-amber
   // 20K a step: 500K would compact every 19 steps; 900K costs a little more than 600K
-  expect([200_000, 500_000, 900_000].map(p => compactLook('opus', p, 20_000, 600_000))).toEqual(['bad', 'bad', 'ok'])
+  const t20 = [200_000, 500_000, 900_000].map(p => compactTone('opus', p, 20_000, 600_000))
+  expect([t20[0], t20[1]]).toEqual([-1, -1])
+  expect(t20[2]! > 0 && t20[2]! < 1).toBe(true)
+  expect([0, -1, 0.5, 1, -0.5].map(toneColor)).toEqual(['#4f9a5c', '#9061c2', '#d4a72c', '#c8553d', '#707e8f'])
   expect(cheapestPoint('opus', 5_000, 300_000)).toBe(200_000) // only points under the model's limit
   expect(Math.round(compactsPer100(300_000, 5_000) * 10)).toBe(27) // 187K between compactions at 5K a step
   expect(cheapestPoint('opus', 0, 1_000_000)).toBeUndefined() // a chat that doesn't grow never needs it
@@ -2018,7 +2025,10 @@ test('auto-compact Settings: the slider is coloured by cost and marks the cheape
   const props = (await band.panel.find({ type: 'Client' }))?.props.props as SliderProps
   expect(props.max).toBe(1_000_000) // up to the model's limit, not a fixed cap
   expect(props.marks.find(m => m[1] === '★')?.[0]).toBe(300_000) // 5K a step on Opus
-  expect(props.zones.map(z => z[1])).toEqual(['#c8553d', '#c9932e', '#4f9a5c', '#c9932e', '#c8553d']) // red too early, green around the cheapest, red where it costs too much
+  const hues = props.zones.map(z => z[1])
+  expect([hues[0], hues[hues.length - 1]]).toEqual(['#9061c2', '#c8553d']) // purple too early, red too dear
+  expect(props.zones.find(z => z[0] >= 300_000)?.[1]).toBe('#4f9a5c') // green at the cheapest
+  expect(hues.length > 10).toBe(true) // a gradient, not three bands
   expect(await band.find({ type: 'Text', text: /★ cheapest 300K/ })).toBeTruthy()
   expect(await band.find({ type: 'Text', text: /^Compacting at 1000K: about \$0\.\d\d a step; at 300K: about \$0\.\d\d\. This chat grows 5\.0K a step\.$/ })).toBeTruthy()
   await band.panel.post({ value: 400_000 }, { in: 'router-compact-slider' })
@@ -2064,7 +2074,7 @@ test('Compact at on the desktop: a picture with a tick every 100K, the knob at t
   const svg = sliderSvg(p, 410) // 10 px each side, 390 px for 800K
   expect(svg.match(/<line [^>]*y1="33"/g)?.length).toBe(9) // 200K to 1000K
   expect(svg).toContain('<circle cx="107.5"') // the knob at 400K
-  expect(svg).toContain('fill="#c8553d"/><rect x="58.8"') // red to 300K, then green
+  expect(svg).toContain('<stop offset="0.125" stop-color="#c8553d"/><stop offset="1.000" stop-color="#4f9a5c"/>') // one gradient through the zones
   expect(svg).toContain('>★</text>')
   expect(svg).not.toContain('▲') // under the track's start: left out, the legend still says it
   const labels = [...svg.matchAll(/>(\d+K)</g)].map(m => m[1])
@@ -2083,7 +2093,7 @@ test('Compact at on the desktop: a picture with a tick every 100K, the knob at t
   const dot = async (k: string) => (await panel.find({ key: `router-compact-dot-${k}` }))
   expect(JSON.stringify((await dot('300000'))?.children)).toContain('300K ★') // the cheapest point says so
   expect((await dot('300000'))?.children?.[0]?.props?.color).toBe('#4f9a5c') // green near the cheapest
-  expect((await dot('200000'))?.children?.[0]?.props?.color).toBe('#c8553d') // red: compacts too often
+  expect((await dot('200000'))?.children?.[0]?.props?.color).toBe('#9061c2') // purple: compacts too often
   await panel.press({ key: 'router-compact-dot-400000' })
   expect(await panel.find({ type: 'Text', text: '400K' })).toBeTruthy()
   expect((await panel.find({ type: 'Svg' }))?.props.alt).toBe('Compact at 400K, from 200K to 1000K')

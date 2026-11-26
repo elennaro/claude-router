@@ -735,14 +735,16 @@ export function cheapestPoint(model: string, growth: number, limit: number, base
   for (const p of compactPoints(limit)) if (compactStepUsd(model, p, growth, base) < (best === undefined ? Infinity : compactStepUsd(model, best, growth, base))) best = p
   return best
 }
-// How a point looks: green near the cheapest, red where compactions come too often (each one loses detail) or the
-// price runs too high, amber between. shortcut: 20 steps and 10%/25% are judgment, not measured; tune if they mislead.
+// Where a point sits, from -1 to 1: 0 at the cheapest; below it toward -1 as compactions come too often (each loses
+// detail: full at under 20 steps a cycle, nothing from 40) or cost more; above it toward 1 as it costs more (full at
+// a quarter over the cheapest). shortcut: 20/40 steps and 25% are judgment, not measured; tune if they mislead.
 export const AC_MIN_STEPS = 20
-export type CompactLook = 'good' | 'ok' | 'bad'
-export function compactLook(model: string, at: number, growth: number, best: number, base = AC_BASE): CompactLook {
+export function compactTone(model: string, at: number, growth: number, best: number, base = AC_BASE): number {
   const ratio = compactStepUsd(model, at, growth, base) / compactStepUsd(model, best, growth, base)
-  if ((at - base) / growth < AC_MIN_STEPS || ratio > 1.25) return 'bad'
-  return ratio <= 1.1 ? 'good' : 'ok'
+  const dear = Math.min(1, Math.max(0, (ratio - 1) / 0.25))
+  if (at >= best) return dear
+  const often = Math.min(1, Math.max(0, (2 * AC_MIN_STEPS - (at - base) / growth) / AC_MIN_STEPS))
+  return -Math.max(dear, often)
 }
 // Compactions every 100 steps at this point.
 export const compactsPer100 = (at: number, growth: number, base = AC_BASE) => (100 * growth) / (at - base)

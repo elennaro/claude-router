@@ -43,10 +43,10 @@ export function sliderSvg(p: SliderProps, width: number): string {
   const x = (v: number) => L + ((Math.min(p.max, Math.max(p.min, v)) - p.min) / span) * (R - L)
   const esc = (t: string) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;')
   const out: Array<string> = []
-  out.push(`<defs><clipPath id="t"><rect x="${L}" y="${Y - 4}" width="${R - L}" height="8" rx="4"/></clipPath></defs>`)
-  let from = p.min
-  const bands = p.zones.map(([to, color]) => { const r = `<rect x="${x(from).toFixed(1)}" y="${Y - 4}" width="${Math.max(0, x(to) - x(from)).toFixed(1)}" height="8" fill="${color}"/>`; from = to; return r })
-  out.push(`<g clip-path="url(#t)"><rect x="${L}" y="${Y - 4}" width="${R - L}" height="8" fill="#8a8f98"/>${bands.join('')}</g>`)
+  // the track is one gradient through the zones' colours, each stop where its zone ends
+  const stops = p.zones.map(([to, color]) => `<stop offset="${((Math.min(p.max, Math.max(p.min, to)) - p.min) / span).toFixed(3)}" stop-color="${color}"/>`).join('')
+  out.push(`<defs><linearGradient id="g" x1="0" x2="1" y1="0" y2="0">${stops || '<stop offset="0" stop-color="#8a8f98"/>'}</linearGradient></defs>`)
+  out.push(`<rect x="${L}" y="${Y - 4}" width="${R - L}" height="8" rx="4" fill="url(#g)"/>`)
   const { ticks } = scale(p.min, p.max, 2)
   const every = [1, 2, 5, 10].find(n => ((R - L) / span) * TICK * n >= 44) ?? 20
   ticks.forEach((v, i) => {
