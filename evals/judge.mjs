@@ -74,9 +74,13 @@ export async function judgeFast(c, x, y, tag) {
   const [ab, ba] = await Promise.all([jevAsk({ request: request(c), answer_A: x, answer_B: y }, PICK, `${tag}:jev-ab`), jevAsk({ request: request(c), answer_A: y, answer_B: x }, PICK, `${tag}:jev-ba`)])
   const j = fromJev(ab.pick.probabilities, ba.pick.probabilities)
   if (j.sure) return { score: j.p > 0.5 ? 1 : -1, by: 'jev', p: j.p }
+  return { ...await judgeOpus(c, x, y, tag), p: j.p }
+}
+// The Opus part alone, both orders (precedents.mjs uses it for every pair, so one judge covers the table).
+export async function judgeOpus(c, x, y, tag) {
   const [a, b] = await Promise.all([once('opus', c, x, y, true, `${tag}:opus-ab`), once('opus', c, x, y, false, `${tag}:opus-ba`)])
-  if (!a && !b) return { score: 0, by: 'none', p: j.p }
-  return { score: Math.sign((a?.s ?? 0) + (b?.s ?? 0)), by: 'opus', p: j.p, scores: [a?.s, b?.s] }
+  if (!a && !b) return { score: 0, by: 'none' }
+  return { score: Math.sign((a?.s ?? 0) + (b?.s ?? 0)), by: 'opus', scores: [a?.s, b?.s] }
 }
 
 // The one judge (the cascade above) as a verdict: is x (the routed answer) better, the same or worse than y (the

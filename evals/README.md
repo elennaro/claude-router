@@ -11,7 +11,7 @@ Four suites test the router's decisions against labeled cases, through `claude -
 | Big pastes | whether the cheaper model's analysis alone carries what the request needs (the plugin's own paste prompt and model choice) | `paste/run.mjs` (6 synthetic pastes, 12K to 70K tokens, facts planted at seeded places, exact string checks, no judge). Gate: 90% of facts kept on each model, every analysis keeps its headings | `node paste/run.mjs --test`, then `node docker.mjs paste/run.mjs` |
 | Small-diff review | whether Sonnet high finds planted bugs in small diffs as well as Opus high (code review stays on Opus until this says otherwise) | `review/run.mjs` (20 synthetic diffs with one planted bug each, 4 clean ones, 2 samples; found = reported line within 3 or a key regex, no judge). First run 2026-11-25, $2.61: both found 40/40, false alarms Sonnet 2/8, Opus 4/8. Too easy to separate them (ceiling); no routing change. Next: subtler bugs that need context from outside the diff | `node review/run.mjs --test`, then `node review/run.mjs` with `ANTHROPIC_API_KEY` set to the eval key for that process |
 
-**Docker runs.** `node docker.mjs --check` (free) builds a clean Linux image (`docker/Dockerfile`: Node 22, Claude Code, the repo, nothing from your machine) and runs the engine tests, validate, the db check, the eval self-checks and the offline replay, each in a fresh container. `node docker.mjs <suite.mjs>` runs a paid suite the same way, billed to the platform API key in `ROUTER_EVAL_API_KEY` from your shell (its own name, so Claude Code on your machine never bills it; the container gets it as `ANTHROPIC_API_KEY`) (passed by name, never written to the image or a log), not the subscription. Only `evals/work` is mounted, so the store still pays each answer once. The cap is `EVAL_CAP_USD` (default $10 here, refused above $50).
+**Docker runs.** `node docker.mjs --check` (free) builds a clean Linux image (`docker/Dockerfile`: Node 22, Claude Code, the repo, nothing from your machine) and runs the engine tests, validate, the db check, the eval self-checks and the offline replay, each in a fresh container. `node docker.mjs <suite.mjs>` runs a paid suite the same way, billed to the platform API key in `ROUTER_EVAL_API_KEY` from your shell (its own name, so Claude Code on your machine never bills it; the container gets it as `ANTHROPIC_API_KEY`) (passed by name, never written to the image or a log), not the subscription. `evals/work` is mounted, so the store still pays each answer once; a paid run also mounts `evals/results` and passes any further arguments to the suite. The cap is `EVAL_CAP_USD` (default $10 here, refused above $50).
 
 Haiku writes code only as a self-contained edit of about 10 lines that nothing else uses (a private helper, a one-off script). Renames and any change that reaches other files are `scoped-code`. The tool-loop suite keeps one such change (`rename`) as a control.
 
@@ -150,6 +150,18 @@ node calibrate/opus-variant.mjs  # the Opus prompt variant -> results/opus-varia
 ```
 
 Jev needs `TYPESAFE_API_KEY` in the environment.
+
+## Precedents
+
+A table for grading a router pick, or training a second-stage picker, at no further cost: 170 cases, each answered once per pair (Haiku medium, Sonnet low, Sonnet medium, Sonnet high, Opus high) and once by the reference, Opus medium. Method, fixed before the first paid call:
+
+1. **Cases.** The 170 with the most answers and Opus verdicts already paid for, with every category kept in, saved once (`work/precedents-cases.json`) and run round-robin by category.
+2. **One judge.** The Opus part of the calibrated judge for every pair: Opus high, both orders, evidence before the verdict; score -1, 0 or +1 against Opus medium, seed 0. Opus verdicts from the per-class measurement are reused. A pair with no verdict has a null score and never wins.
+3. **Order.** A case finishes all its pairs before its worker takes the next (three at a time), so a spend cap leaves whole precedents.
+4. **Winner, by price** (Haiku medium < Sonnet low < Sonnet medium < Sonnet high < Opus medium < Opus high): where Opus high scored +1, the cheapest pair that also scored +1, else Opus high; otherwise the cheapest pair scoring 0 or better, else Opus medium. Every score is stored, so the rule can be changed later for free.
+5. **Noise.** One answer per pair makes a single case's winner noisy: a second Opus medium answer is itself often judged worse than the first (the null pairs in the per-class measurement). Read totals over the table, not one row.
+
+Run: `node precedents.mjs select`, then `DRY=1 node precedents.mjs` (free, the estimate), then `node docker.mjs precedents.mjs [limit]` (paid; first checks that the API key, not a subscription, is billed, and refuses a cap that would take the whole table past $99). Rows: `node precedents.mjs rows`. Self-check: `node precedents.test.mjs`.
 
 ## Reading the numbers
 

@@ -4,7 +4,7 @@
 // Usage (from evals/):
 //   node docker.mjs --check             free: build, then the engine tests, validate, db check, eval self-tests and
 //                                       the offline replay, each in its own container
-//   node docker.mjs paste/run.mjs       a paid suite: needs ROUTER_EVAL_API_KEY (a platform API key) in this shell; EVAL_CAP_USD (default 10,
+//   node docker.mjs paste/run.mjs [args]  a paid suite (evals/work and evals/results mounted): needs ROUTER_EVAL_API_KEY (a platform API key) in this shell; EVAL_CAP_USD (default 10,
 //                                       never above 50) caps this run
 import { spawnSync } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
@@ -26,9 +26,9 @@ function build() {
 
 // One fresh container. The key and cap are passed by name, so docker reads their values from this process's
 // environment and they never appear in an argv, a log or the image.
-function inBox(cwd, argv, env = []) {
+function inBox(cwd, argv, env = [], mounts = []) {
   mkdirSync(work, { recursive: true })
-  const args = ['run', '--rm', '-v', `${work}:/repo/evals/work`, '-w', `/repo/${cwd}`, ...env.flatMap(e => ['-e', e]), IMAGE, ...argv]
+  const args = ['run', '--rm', '-v', `${work}:/repo/evals/work`, '-w', `/repo/${cwd}`, ...mounts.flatMap(m => ['-v', m]), ...env.flatMap(e => ['-e', e]), IMAGE, ...argv]
   return docker(args).status ?? 1
 }
 
@@ -50,6 +50,7 @@ const CHECKS = [
   ['evals', ['node', 'store.test.mjs']],
   ['evals', ['node', 'toolloop/checks.test.mjs']],
   ['evals', ['node', 'paste/run.mjs', '--test']],
+  ['evals', ['node', 'precedents.test.mjs']],
 ]
 
 function main() {
@@ -71,7 +72,8 @@ function main() {
   process.env.ANTHROPIC_API_KEY = key
   process.env.EVAL_CAP_USD = String(capFor(process.env.EVAL_CAP_USD))
   console.log(`running ${what} in a fresh container, cap $${process.env.EVAL_CAP_USD}`)
-  process.exitCode = inBox('evals', ['node', what], ['ANTHROPIC_API_KEY', 'EVAL_CAP_USD'])
+  // a paid run also reads and appends evals/results; the free checks stay off the host's files
+  process.exitCode = inBox('evals', ['node', ...process.argv.slice(2)], ['ANTHROPIC_API_KEY', 'EVAL_CAP_USD'], [`${join(evals, 'results')}:/repo/evals/results`])
 }
 
 if (process.argv[2] === '--self-test') {
