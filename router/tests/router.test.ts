@@ -405,7 +405,7 @@ test('the app picker default (high) is routed too, and the status line says so',
   await step($, 'max') // the person switched to max mid-session: kept
 
   expect(sent).toEqual(['low', 'high', 'max'])
-  expect(lines[0]).toBe('route: mechanical · Haiku (auto) · effort low (picker high) · saved $0.00')
+  expect(lines[0]).toBe('mechanical task · Haiku (auto) · effort low (picker high) · saved $0.00')
 })
 
 test('a routed subagent gets its tier effort; headless sessions keep the main effort', async (engine, on) => {
@@ -1606,7 +1606,7 @@ test('the widget is a glance of two rows and the bars; expanded it is the Stats 
 
   const dock = await $.ui.mount({ ...PANE, surface: 'desktop' })
   const card = await dock.find({ type: 'Svg' })
-  expect(card?.props.alt).toMatch(/Spent this chat \$[0-9.]+, cache hit 0%/) // the stub steps read nothing from cache
+  expect(card?.props.alt).toMatch(/Spent this chat \$[0-9.]+, cache hit not known yet/) // the stub steps read nothing from cache: no "0%"
   expect(card?.props.source).toContain('1 turn, 0 agents re-routed')
   expect(card?.props.source).toContain('class="m-haiku-0"') // the model band: this turn ran on Haiku at low effort
   await dock.unmount()
@@ -1662,6 +1662,18 @@ test('the band says the cache in the longest words that fit, and "Cache expired"
   await clock.advance(61 * 60_000)
   for (const cols of [140, 72, 40]) expect((await at(cols)).label).toContain('expired') // the warning always fits
   expect((await at(40)).label).toContain('Cache expired')
+})
+
+test('after a first reply, which only writes the cache, the band shows no "hit 0%" and Stats says the hit is not known yet (owner case 2026-11-27)', async (engine, on) => {
+  const $ = engine as any
+  wire(on, { sent: [], haiku: 'engineering 0.95', tokens: 54_000, read: 0, write: 54_000 })
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  await $.prompt.submit({ text: 'set up the release pipeline for the app' })
+  await step($, 'medium')
+  const band = await mountBoth($, { ...BAND, surface: 'desktop', props: { ...BAND.props, bodyColumns: 160 } })
+  expect(await band.find({ type: 'Text', text: /^hit / })).toBeFalsy()
+  await band.press({ key: 'router-stats' })
+  expect((await band.find({ type: 'Svg' }))?.props.alt).toContain('cache hit not known yet')
 })
 
 test('with a real cache the widget and the Stats card show its size, what losing it costs and what each switch costs', async (engine, on) => {

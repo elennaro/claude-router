@@ -1023,7 +1023,9 @@ async function facts($: EngineInterface, s: State) {
   const chatMode: ChatMode = !v.isOn ? 'off' : !v.autoEffort ? 'models' : v.routeModels ? 'both' : 'effort'
   const cost = (await $.session.usage().catch(() => undefined))?.cost?.usd // the app's own total, /cost's, every request included
   const spend = await read($, mix)
-  const hit = hitPct(Object.values(spend).reduce((a: Cache | undefined, x) => addCache(a, x.cache), undefined)) // this chat, main and subagents
+  const all = Object.values(spend).reduce((a: Cache | undefined, x) => addCache(a, x.cache), undefined) // this chat, main and subagents
+  // nothing read from the cache yet (a first reply only writes it): "hit 0%" would read as broken, so it is not known yet
+  const hit = all?.read ? hitPct(all) : undefined
   const sheet = cacheSheet(main?.model ?? s.cfg.main.model, s.lastContext)
   const feats = await read($, features)
   const hours = await read($, awakeHours)
@@ -1189,7 +1191,7 @@ async function answer($: EngineInterface, s: State, agent: AgentName, call: Call
   const v = await where($, s)
   const a = agent === 'codex' ? await runCodex($, v, tier, call, await codexModels($, v)) : await runAgy($, tier, call, await agyModels($))
   if ('error' in a) return { deny: `router: ${a.error}` }
-  await $.ui.status(`route: ${agent} ${call.role} · ${a.model} ${a.effort}`)
+  await $.ui.status(`${agent} ${call.role} · ${a.model} ${a.effort}`)
   return { result: `[${agent} ${a.model}, effort ${a.effort}]\n\n${a.text}` }
 }
 
@@ -1683,7 +1685,7 @@ export const register: Register = on => {
           await update($, view, (x): RouterView => ({ ...x, rerouted: s.rerouted }))
         }
         const t = await read($, tally)
-        await $.ui.status(`route: ${s.lastClass ?? 'default'}${model ? ` · ${pretty(model)} ${asked ? '(you asked)' : '(auto)'}` : ''} · effort ${sent}${ask?.effort ? ' (you asked)' : sent !== String(e.effort) ? ` (picker ${e.effort})` : ''} · ${netWords(t)}`)
+        await $.ui.status(`${s.lastClass ?? 'default'} task${model ? ` · ${pretty(model)} ${asked ? '(you asked)' : '(auto)'}` : ''} · effort ${sent}${ask?.effort ? ' (you asked)' : sent !== String(e.effort) ? ` (picker ${e.effort})` : ''} · ${netWords(t)}`)
       }
     }
     return result
