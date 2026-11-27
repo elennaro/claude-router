@@ -28,6 +28,7 @@ Every row is detailed under *What it does* below.
 
 ## What's new
 
+- **0.9.10** A model your account refuses (Fable with usage credits off) no longer kills the chat: it goes back to the session's model and **Try again** works. A model picked in the app's menu or with `/model` replaces the router's pick.
 - **0.9.9** **Stop nudges** in the band turns keep awake off for this chat in one press (**Nudges off** turns it back on).
 - **0.9.8** The band never wraps: when short of room it drops the hit, the word "Router", **Switches** and **Board** in turn (the panel still has them). The expired-cache offer is two short sentences.
 - **0.9.7** The band fits its words to the width: the cache is the **Cache** button itself (`Cache 96K · 60 min left` down to `60m left`), and **Cache expired** shows at every width. A chat that grows under 1K a step says so in tokens.
