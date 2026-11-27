@@ -48,7 +48,9 @@ export function cells(s: string): number {
 // ---- wording ----
 // Words that stay as written even mid-label or at the start (names, units, acronyms).
 const KEEP = /^(Router|Claude|Code|Codex|Antigravity|Haiku|Sonnet|Opus|Fable|Auto|JSON|CLI|K|M|OK|ID|URL|MCP|API|CLAUDE_CODE_AUTO_COMPACT_WINDOW|\d.*)$/
-export const LIMITS = { button: 32, label: 18, toast: 200 } as const // label: a Stats cell's, at the 4-column card's narrowest (150 px)
+// label: a Stats cell's, at the 4-column card's narrowest (150 px); row: an offer or report under the band, one line at
+// 120 cells and two at 60 (owner case 2026-11-27: a 117-character report wrapped loosely over the band's width)
+export const LIMITS = { button: 32, label: 18, toast: 200, row: 120 } as const
 // Problems with a button or field label: sentence case, short, no end stop, no "click", no shouting.
 export function labelIssues(label: string, max: number = LIMITS.button): Array<string> {
   const out: Array<string> = []
@@ -59,7 +61,15 @@ export function labelIssues(label: string, max: number = LIMITS.button): Array<s
   if (/\bclick\b/i.test(label)) out.push('says "click"')
   if (words.slice(1).some(w => /^[A-Z][a-z]/.test(w) && !KEEP.test(w))) out.push('Title Case (use sentence case)')
   if (words.some(w => w.length > 2 && w === w.toUpperCase() && /[A-Z]/.test(w) && !KEEP.test(w))) out.push('ALL CAPS word')
+  // "Nudges off" on a button: is that what it is, or what it does? A lone "On"/"Off" option is fine.
+  if (/\s(on|off)$/i.test(label)) out.push('reads as a state, not an action')
   return out
+}
+// A label and its value side by side ("Cache time left" "60 min left") must not say the same word twice.
+export function repeatIssues(label: string, value: string): Array<string> {
+  const ws = (s: string) => new Set(s.toLowerCase().match(/\p{L}{3,}/gu) ?? [])
+  const twice = [...ws(label)].filter(w => ws(value).has(w))
+  return twice.length ? [`"${label}" and "${value}" both say "${twice.join('", "')}"`] : []
 }
 
 // ---- numbers ----
@@ -96,27 +106,69 @@ export function walk(n: Node | string, fn: (n: Node) => void): void {
 // Desktop numbers measured on an owner screenshot (2026-11-27, the band at ~940 px): text ~9.75 px a cell, button text
 // ~10.4 px a character (x1.1), and about 4 cells of padding per plain button.
 export const DESK = { text: 1.1, pad: 4 }
-export function minCells(n: Node | string, surface = 'terminal'): number {
+// full: a truncating text counts whole (a cut model name or saving is a fault too, not room), and a wrapping row as
+// one line: what a row that must stay one line needs.
+export function minCells(n: Node | string, surface = 'terminal', full = false): number {
   if (typeof n === 'string') return cells(n)
-  if (n.props?.flexGrow) return 0
+  if (n.props?.flexGrow && n.type === 'Box' && !(n.children ?? []).length) return 0 // an empty spacer; its gaps still count
   if (n.type === 'Button') return surface === 'desktop' ? Math.ceil(cells(textOf(n)) * DESK.text) + DESK.pad + (n.props?.plain ? 0 : 2) : cells(textOf(n)) + (n.props?.plain ? 0 : 4)
-  if (n.props?.wrap === 'truncate-end') return Math.min(6, cells(textOf(n)))
+  if (n.props?.wrap === 'truncate-end') return full ? cells(textOf(n)) : Math.min(6, cells(textOf(n)))
   if (n.props?.wrap === 'wrap') return Math.min(12, cells(textOf(n)))
-  if (n.type === 'Box' && n.props?.flexDirection !== 'row') return Math.max(0, ...(n.children ?? []).map(c => minCells(c, surface)))
-  if (n.type === 'Box' && n.props?.flexWrap === 'wrap') return Math.max(0, ...(n.children ?? []).map(c => minCells(c, surface)))
+  if (n.type === 'Box' && n.props?.flexDirection !== 'row') return Math.max(0, ...(n.children ?? []).map(c => minCells(c, surface, full)))
+  if (n.type === 'Box' && n.props?.flexWrap === 'wrap' && !full) return Math.max(0, ...(n.children ?? []).map(c => minCells(c, surface)))
   const kids = n.children ?? []
   const gap = Number(n.props?.gap ?? n.props?.columnGap ?? 0)
-  return kids.reduce((a: number, c) => a + minCells(c, surface), 0) + (n.type === 'Box' ? gap * Math.max(0, kids.length - 1) : 0) + Number(n.props?.marginLeft ?? 0) + Number(n.props?.marginRight ?? 0)
+  // the engine lays a gap between every two children, an empty spacer's too (owner case 2026-11-27: the spacer's
+  // uncounted gap pushed "Settings" onto a line of its own at 60 cells)
+  return kids.reduce((a: number, c) => a + minCells(c, surface, full), 0) + (n.type === 'Box' ? gap * Math.max(0, kids.length - 1) : 0) + Number(n.props?.marginLeft ?? 0) + Number(n.props?.marginRight ?? 0)
 }
-// A row that must stay one line (the band: a second line makes the chat jump): every child at its least width, gaps
+// A row that must stay one line (the band: a second line makes the chat jump): every child at its full width, gaps
 // included, as if it could not wrap. Returns the overflow in cells, 0 when it fits.
 export function oneRowOverflow(row: Node, width: number, surface = 'terminal'): number {
-  const kids = row.children ?? []
-  const gap = Number(row.props?.columnGap ?? row.props?.gap ?? 0)
-  const shown = kids.filter(c => typeof c === 'string' || !c.props?.flexGrow)
-  // a truncating text counts in full here: a cut model name or saving is a fault too, not room
-  const need = (c: Node | string) => (typeof c !== 'string' && c.props?.wrap === 'truncate-end' ? cells(textOf(c)) : minCells(c, surface))
-  return Math.max(0, shown.reduce((a: number, c) => a + need(c), 0) + gap * Math.max(0, shown.length - 1) - width)
+  return Math.max(0, minCells({ ...row, props: { ...row.props, marginLeft: 0, marginRight: 0 } }, surface, true) - width)
+}
+
+// ---- spacing and steadiness ----
+const isNode = (c: Node | string): c is Node => typeof c !== 'string'
+const prefix = (k: unknown) => String(k ?? '').replace(/-[^-]*$/, '')
+// Quiet ways out of an offer: they stay plain beside a framed primary on purpose.
+export const DECLINE = /^(Not now|Dismiss|Keep it all)$/
+// The options of one choice (Buttons beside the picked, primary one, sharing its key prefix) wear one frame: a plain
+// option beside a framed pick is 4 cells narrower, so every pick moves the row, and a dim plain word reads as text.
+export function choiceIssues(tree: Node): Array<string> {
+  const out: Array<string> = []
+  walk(tree, n => {
+    const kids = (n.children ?? []).filter(isNode).filter(c => c.type === 'Button')
+    for (const p of kids.filter(b => b.props?.variant === 'primary')) {
+      for (const b of kids) if (b !== p && prefix(b.props?.key) === prefix(p.props?.key) && b.props?.plain && !DECLINE.test(textOf(b))) out.push(`${String(n.props?.key ?? 'row')}: "${textOf(b)}" is plain beside the picked "${textOf(p)}" (a pick moves the row)`)
+    }
+  })
+  return out
+}
+// Spacing flows from the parent (the engine's Box docs): a margin on a child of a row with a gap doubles that gap for
+// one child only, and the row's rhythm goes uneven.
+export function marginIssues(tree: Node): Array<string> {
+  const out: Array<string> = []
+  walk(tree, n => {
+    if (n.type !== 'Box' || n.props?.flexDirection !== 'row' || !Number(n.props?.gap ?? n.props?.columnGap ?? 0)) return
+    for (const c of (n.children ?? []).filter(isNode)) if (c.props?.marginLeft || c.props?.marginRight) out.push(`${String(n.props?.key ?? 'row')}: "${textOf(c).slice(0, 30)}" has its own margin inside a gapped row`)
+  })
+  return out
+}
+// The band redraws as numbers change ("9 min" to "41 min", "$9.99" to "$10.00"): on the desktop's proportional font
+// every digit must be one width, or the row shifts each minute. A Button's label can't be tabular: draw a number in a
+// Button as a tabular Text child.
+export function tabularIssues(row: Node): Array<string> {
+  const out: Array<string> = []
+  const visit = (n: Node, tab: boolean) => {
+    const t = tab || Boolean(n.props?.tabular)
+    // the engine copies a Button's children's text into its label; children drawn as elements are checked below
+    if (n.type === 'Button' && typeof n.props?.label === 'string' && /\d/.test(n.props.label) && !(n.children ?? []).some(isNode)) out.push(`button "${n.props.label}": a number in a label (use a tabular Text child)`)
+    if (n.type === 'Text' && !t && (n.children ?? []).some(c => typeof c === 'string' && /\d/.test(c))) out.push(`text "${textOf(n).slice(0, 40)}": digits without tabular`)
+    for (const c of (n.children ?? []).filter(isNode)) visit(c, t)
+  }
+  visit(row, false)
+  return out
 }
 
 // Every row Box whose fixed parts do not fit the width it gets (its own, or what its parents leave after margins):

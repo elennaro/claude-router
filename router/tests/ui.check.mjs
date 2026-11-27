@@ -87,6 +87,13 @@ function staticChecks() {
     view.netWords({ actualUsd: 1, baselineUsd: 1.004, extraUsd: 0 }), view.netWords({ actualUsd: 1.5, baselineUsd: 1, extraUsd: 0.5 }), view.money(-0.001), view.money(-3),
   ]
   for (const w of words) for (const i of kit.numberIssues(w)) add('words', `"${w.slice(0, 60)}": ${i}`)
+  // the rows under the band, at their longest: one line at 120 cells, two at 60
+  const rows = [
+    view.coldWords({ cache: 1_000_000, resume: 123.45, extra: 12.34, perStep: 1.23, payback: 100 }),
+    ...[undefined, 'done', 'unlikely'].flatMap(stop => [false, true].flatMap(compacted => [false, true].map(back => view.awayWords({ pings: 12, usd: 12.34, rebuild: 123.45, compacted, back, saved: 123.45, stop }, 24)))),
+    `The work ahead looks lighter: Sonnet does it as well.${view.switchCost(123.45, false)}`,
+  ]
+  for (const r of rows) if (kit.cells(r) > kit.LIMITS.row) add('row words', `${kit.cells(r)} cells, over ${kit.LIMITS.row}: "${r.slice(0, 60)}…"`)
   for (const s of SURFACES.filter(x => x.kind === 'html')) {
     const body = s.src.replace(/<script>[\s\S]*<\/script>/, '').replace(/<style>[\s\S]*<\/style>/, '').replace(/<[^>]+>/g, ' ')
     for (const i of kit.numberIssues(body)) add(s.name, i)
@@ -223,7 +230,7 @@ function treeHtml(n, surface) {
   const sp = v => (v === 'sm' ? 0.5 : v === 'md' ? 1 : v === 'lg' ? 2 : Number(v ?? 0))
   if (n.type === 'Box') {
     const row = p.flexDirection === 'row'
-    const st = [`display:flex`, `flex-direction:${row ? 'row' : 'column'}`, p.width !== undefined ? `width:${p.width}ch;max-width:${p.width}ch` : '', p.gap !== undefined ? (row ? `column-gap:${sp(p.gap)}ch` : `row-gap:${sp(p.gap) * 1.25}em`) : '', p.rowGap !== undefined ? `row-gap:${sp(p.rowGap) * 1.25}em` : '', p.columnGap !== undefined ? `column-gap:${sp(p.columnGap)}ch` : '', p.marginLeft ? `margin-left:${p.marginLeft}ch` : '', p.marginRight ? `margin-right:${p.marginRight}ch` : '', p.flexGrow ? `flex-grow:${p.flexGrow}` : '', p.flexShrink !== undefined ? `flex-shrink:${p.flexShrink}` : '', p.flexWrap ? `flex-wrap:${p.flexWrap}` : '', p.alignItems ? `align-items:${p.alignItems}` : '', 'min-width:0']
+    const st = [`display:flex`, `flex-direction:${row ? 'row' : 'column'}`, p.width !== undefined ? `width:${p.width}ch;max-width:${p.width}ch` : '', p.gap !== undefined ? (row ? `column-gap:${sp(p.gap)}ch` : `row-gap:${sp(p.gap) * 1.25}em`) : '', p.rowGap !== undefined ? `row-gap:${sp(p.rowGap) * 1.25}em` : '', p.columnGap !== undefined ? `column-gap:${sp(p.columnGap)}ch` : '', p.marginLeft ? `margin-left:${p.marginLeft}ch` : '', p.marginRight ? `margin-right:${p.marginRight}ch` : '', p.flexGrow ? `flex-grow:${p.flexGrow}` : '', p.flexShrink !== undefined ? `flex-shrink:${p.flexShrink}` : '', p.flexWrap ? `flex-wrap:${p.flexWrap}` : '', p.alignItems ? `align-items:${p.alignItems}` : '', p.justifyContent ? `justify-content:${p.justifyContent}` : '', 'min-width:0']
     return `<div class="box" data-key="${esc(p.key ?? '')}" style="${st.filter(Boolean).join(';')}">${kids}</div>`
   }
   if (n.type === 'Text') {

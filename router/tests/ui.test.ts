@@ -2,7 +2,8 @@ import { expect, test } from 'claude-code/testing'
 
 declare const console: { log: (line: string) => void } // the test runner prints it; the strict config has no DOM or Node types
 
-import { type Node, cells, contrast, labelIssues, numberIssues, oneRowOverflow, overfullRows, textOf, walk } from './uikit'
+import { type BandPart, bandFit } from '../hooks/view'
+import { type Node, LIMITS, cells, choiceIssues, contrast, labelIssues, marginIssues, numberIssues, oneRowOverflow, overfullRows, repeatIssues, tabularIssues, textOf, walk } from './uikit'
 
 const ROUTING = JSON.stringify({ main: { model: 'opus', effort: 'medium' }, classes: { mechanical: { model: 'haiku', effort: 'low' } } })
 const USAGE = { model: 'claude-opus-5-5', input_tokens: 4000, output_tokens: 800, cache_read_input_tokens: 90_000, cache_creation_input_tokens: 2000 }
@@ -55,8 +56,13 @@ function audit(tree: Node, state: string, surface: string, width: number): Array
     // plain buttons have no chrome: 1 cell apart, "Board Stats Settings" reads as one phrase
     const plain = (n.children ?? []).filter(c => typeof c !== 'string' && c.type === 'Button' && c.props?.plain).length
     if (n.type === 'Box' && n.props?.flexDirection === 'row' && plain >= 2 && Number(n.props?.columnGap ?? n.props?.gap ?? 0) < 2) out.push(`${String(n.props?.key ?? 'row')}: plain buttons closer than 2 cells`)
+    if (n.type === 'Progress') for (const i of repeatIssues(String(n.props?.label ?? ''), String(n.props?.valueText ?? ''))) out.push(`progress: ${i}`)
+    if (n.type === 'Box' && /^router-(offer|cold|away-row)$/.test(String(n.props?.key))) for (const c of n.children ?? []) if (typeof c !== 'string' && c.type === 'Text' && cells(textOf(c)) > LIMITS.row) out.push(`${String(n.props?.key)}: ${cells(textOf(c))} cells of text, over ${LIMITS.row} ("${textOf(c).slice(0, 50)}…")`)
+    if (n.props?.key === 'router-row' && surface !== 'terminal') out.push(...tabularIssues(n)) // a terminal's digits are one cell each
+    // the band's lead is one glyph and a word, as the bands it stacks with ("● full"); two glyphs side by side are noise
+    if (n.props?.key === 'router-row' && (textOf(n).match(/[●■]/g) ?? []).length > 1) out.push(`router-row: more than one glyph ("${textOf(n).slice(0, 30)}")`)
   })
-  out.push(...overfullRows(tree, width, surface))
+  out.push(...overfullRows(tree, width, surface), ...choiceIssues(tree), ...marginIssues(tree))
   return [...new Set(out)].map(x => `${state} · ${surface} · ${width}: ${x}`).filter(x => !KNOWN.some(k => k.test(x)))
 }
 // Findings seen when the kit landed and not fixed yet: a ratchet. A fix deletes its line; nothing is ever added here.
@@ -116,6 +122,33 @@ test('the band with routing off fits every width', async (engine, on) => {
   expect(await states(engine as any, on, routing, async () => {}, [['off', undefined], ['off+settings', 'router-settings']])).toEqual([])
 })
 
+// The band's parts at every width are the same whether the numbers are short or long: a value gaining a digit as it
+// ticks never makes Board or the countdown come and go (owner case 2026-11-27: "nothing jumping").
+test('the band shows the same parts at every width as its numbers change length', () => {
+  const parts = (net: string, left: number, k: string, hit: string): Array<BandPart> => [
+    { key: 'lead', forms: ['● Opus high'], required: true },
+    { key: 'net', forms: [net], required: true },
+    { key: 'stats', forms: ['Stats'], button: true, required: true },
+    { key: 'settings', forms: ['Settings'], button: true, required: true },
+    { key: 'awake', forms: ['Stop nudges'], button: true },
+    { key: 'board', forms: ['Board'], button: true },
+    { key: 'cache', forms: [`Cache ${k} · ${left} min left`, `Cache · ${left} min left`, 'Cache'], button: true, required: true },
+    { key: 'hit', forms: [hit] },
+  ]
+  const moved: Array<string> = []
+  for (const desk of [false, true])
+    for (let w = 30; w <= 160; w++) {
+      const shape = (x: Record<string, string>) => Object.keys(x).sort().join(',') + ' / ' + (x.cache ?? '').replace(/\d+/g, '#')
+      const [a, b] = [bandFit(w, desk, parts('saved $1.07', 9, '9K', 'hit 9%')), bandFit(w, desk, parts('saved $102.70', 41, '184K', 'hit 99.4%'))]
+      if (shape(a) !== shape(b)) moved.push(`${desk ? 'desktop' : 'terminal'} ${w}: ${shape(a)}  vs  ${shape(b)}`)
+    }
+  expect(moved).toEqual([])
+  // and it fills the room it has: everything at 160, only the required parts at 30
+  expect(Object.keys(bandFit(160, true, parts('saved $1.07', 9, '9K', 'hit 9%'))).sort()).toEqual(['awake', 'board', 'cache', 'hit', 'lead', 'net', 'settings', 'stats'])
+  expect(bandFit(160, true, parts('saved $1.07', 9, '9K', 'hit 9%')).cache).toBe('Cache 9K · 9 min left')
+  expect(Object.keys(bandFit(30, false, parts('saved $1.07', 9, '9K', 'hit 9%'))).sort()).toEqual(['cache', 'lead', 'net', 'settings', 'stats'])
+})
+
 test('the rules themselves: contrast, labels, numbers, cell widths, row budgets', async () => {
   expect(Math.abs(contrast('#000000', '#ffffff') - 21) < 1e-9).toBe(true)
   expect(contrast('#767676', '#ffffff')).toBeGreaterThan(4.5) // the classic lightest grey that passes on white
@@ -137,9 +170,25 @@ test('the rules themselves: contrast, labels, numbers, cell widths, row budgets'
   expect(overfullRows(row(29), 29)).toHaveLength(1)
   // the desktop's buttons as measured (2026-11-27): "Settings" is 9 cells of text plus 4 of padding
   const band: Node = { type: 'Box', props: { key: 'router-row', flexDirection: 'row', flexWrap: 'wrap', columnGap: 2 }, children: [{ type: 'Text', children: ['● Router'] }, { type: 'Box', props: { flexGrow: 1 } }, { type: 'Button', props: { plain: true, label: 'Stats' } }, { type: 'Button', props: { plain: true, label: 'Settings' } }] }
-  expect(oneRowOverflow(band, 40, 'terminal')).toBe(0) // 8 + 5 + 8 + 2 gaps of 2 = 25
-  expect(oneRowOverflow(band, 40, 'desktop')).toBe(0) // 8 + 10 + 13 + 4 = 35
-  expect(oneRowOverflow(band, 30, 'desktop')).toBe(5)
+  expect(oneRowOverflow(band, 27, 'terminal')).toBe(0) // 8 + 5 + 8 + 3 gaps of 2 (the spacer has two) = 27
+  expect(oneRowOverflow(band, 26, 'terminal')).toBe(1)
+  expect(oneRowOverflow(band, 40, 'desktop')).toBe(0) // 8 + 10 + 13 + 6 = 37
+  expect(oneRowOverflow(band, 30, 'desktop')).toBe(7)
+  const grouped: Node = { type: 'Box', props: { key: 'router-row', flexDirection: 'row', flexWrap: 'wrap', columnGap: 2 }, children: [{ type: 'Box', props: { flexDirection: 'row', columnGap: 2 }, children: [{ type: 'Text', props: { wrap: 'truncate-end' }, children: ['● Haiku low (auto)'] }] }, { type: 'Box', props: { flexDirection: 'row', columnGap: 2, flexGrow: 1 }, children: [{ type: 'Button', props: { plain: true, label: 'Stats' } }] }] }
+  expect(oneRowOverflow(grouped, 25, 'terminal')).toBe(0) // the model in full (18) + 2 + 5: nested truncating text counts whole
+  expect(oneRowOverflow(grouped, 24, 'terminal')).toBe(1)
+  // steadiness: one frame per choice, no child margins in a gapped row, tabular digits in the band, no doubled words
+  const pick = (plain: boolean): Node => ({ type: 'Box', props: { key: 'router-model', flexDirection: 'row', columnGap: 2 }, children: [{ type: 'Button', props: { key: 'router-model-auto', variant: 'primary', label: 'Auto' } }, { type: 'Button', props: { key: 'router-model-opus', ...(plain ? { plain: true } : {}), label: 'Opus' } }, { type: 'Button', props: { key: 'router-model-no', plain: true, label: 'Not now' } }, { type: 'Button', props: { key: 'router-hide', plain: true, label: 'Hide' } }] })
+  expect(choiceIssues(pick(true))).toHaveLength(1)
+  expect(choiceIssues(pick(false))).toEqual([]) // "Not now" is a way out, "Hide" another group
+  expect(marginIssues({ type: 'Box', props: { flexDirection: 'row', gap: 2 }, children: [{ type: 'Box', props: { marginRight: 2 }, children: ['x'] }] })).toHaveLength(1)
+  expect(marginIssues({ type: 'Box', props: { flexDirection: 'column', gap: 1 }, children: [{ type: 'Box', props: { marginLeft: 13 }, children: ['x'] }] })).toEqual([])
+  expect(tabularIssues({ type: 'Box', children: [{ type: 'Text', children: ['saved $1.07'] }, { type: 'Button', props: { label: '60m left' } }] })).toHaveLength(2)
+  expect(tabularIssues({ type: 'Box', children: [{ type: 'Text', props: { tabular: true }, children: ['saved $1.07'] }, { type: 'Button', children: [{ type: 'Text', props: { tabular: true }, children: ['60 min'] }] }, { type: 'Text', children: ['Stats'] }] })).toEqual([])
+  expect(repeatIssues('Cache time left', '60 min left')).toHaveLength(1)
+  expect(repeatIssues('Cache warm', '60 min left')).toEqual([])
+  expect(labelIssues('Nudges off')).toEqual(['reads as a state, not an action'])
+  expect(labelIssues('Off')).toEqual([])
   const wrapping: Node ={ type: 'Box', props: { flexDirection: 'row', flexWrap: 'wrap' }, children: [{ type: 'Button', props: { label: 'Make 96K my default for every chat' } }] }
   expect(overfullRows(wrapping, 40)).toEqual([]) // 34 + 4 cells: fits on its own line
   expect(overfullRows(wrapping, 37)).toHaveLength(1)

@@ -1638,13 +1638,14 @@ test('the band says the cache in the longest words that fit, and "Cache expired"
   const at = async (cols: number) => {
     const band = await $.ui.mount({ ...BAND_SITE, surface: 'terminal', props: { ...BAND_SITE.props, bodyColumns: cols } })
     const b = await band.find({ key: 'router-cache' })
-    const label = String(b?.props.label ?? JSON.stringify(b?.children))
+    const txt = (n: any): string => (typeof n === 'string' ? n : (n?.children ?? []).map(txt).join(''))
+    const label = String(b?.props.label ?? txt(b))
     const hit = Boolean(await band.find({ type: 'Text', text: /^hit [\d.]+%$/ }))
     await band.unmount()
     return { label, hit }
   }
   const warm = await Promise.all([140, 100, 72, 40].map(at))
-  expect(warm.map(w => w.label)).toEqual(['Cache 100K · 60 min left', 'Cache 100K · 60m', '60m left', 'Cache'])
+  expect(warm.map(w => w.label)).toEqual(['Cache 100K · 60 min left', 'Cache 100K · 60 min left', 'Cache', 'Cache'])
   expect([warm[0]!.hit, warm[3]!.hit]).toEqual([true, false]) // the hit only where room is left over
   // the row never runs past one line from 72 cells, on either surface, with every part on (owner case 2026-11-27)
   const panel = await $.ui.mount({ ...PANEL, surface: 'terminal' })
@@ -1685,8 +1686,8 @@ test('with a real cache the widget and the Stats card show its size, what losing
   await band.press({ key: 'router-cache' })
   const sheet = (await band.panel.findAll({ type: 'Text' })).map((x: { text: string }) => x.text)
   for (const t of ['Cache: 100K of 200K', 'Lose the cache', '$0.80', 'Switch to Haiku', '$0.10', 'Switch to Sonnet', '$0.40', 'Switch to Fable', '$1.60', 'Compact now', 'about $0.60', 'Keep it warm', 'about $0.02']) expect(sheet).toContain(t)
-  expect(await band.panel.find({ type: 'Text', text: 'Cache time left 60 min left' })).toBeTruthy() // the hour left, as a bar
-  expect((await band.band.find({ key: 'router-cache' }))?.props.label).toBe('60m left') // the cache is the Cache button itself; a 100-cell desktop row has room for the short words
+  expect(await band.panel.find({ type: 'Text', text: 'Warm for 60 min more' })).toBeTruthy() // the hour left, as a bar
+  expect((await band.band.find({ key: 'router-cache' }))?.props.label).toBe('Cache') // the cache is the Cache button itself, its words a tabular Text inside; a 100-cell desktop row keeps Board and keep awake first
   // compact and proportional (owner ask 2026-11-26): a heading opens each block, blank lines only between blocks; the
   // note sits beside its price when there is room and under it when narrow
   type N = { type: string; props?: Record<string, unknown>; children?: Array<N | string> }
@@ -1833,7 +1834,7 @@ test('the band turns keep-awake off and on for this chat in one press (owner ask
   const band = await $.ui.mount({ ...BAND, surface: 'desktop', props: { ...BAND.props, bodyColumns: 140 } })
   expect((await band.find({ key: 'router-awake' }))?.props.label).toBe('Stop nudges')
   await band.press({ key: 'router-awake' })
-  expect((await band.find({ key: 'router-awake' }))?.props.label).toBe('Nudges off')
+  expect((await band.find({ key: 'router-awake' }))?.props.label).toBe('Keep awake')
   await clock.advance(3_000_000)
   expect(nudges.length).toBe(0) // off for this chat: no nudge at 50 minutes
   await band.press({ key: 'router-awake' })
@@ -1902,7 +1903,7 @@ test('keep awake: an unlikely-back stop with no nudge compacts as a handoff and 
   expect(nudges.length).toBe(0)
   expect(compacted.length).toBe(1)
   const band = await mountBoth($, { ...BAND, surface: 'desktop' })
-  expect(await band.find({ type: 'Text', text: /sent no nudges: a return at these hours is too unlikely.*compacted the chat into a handoff/ })).toBeTruthy()
+  expect(await band.find({ type: 'Text', text: /no nudges and compacted the chat: a return this late is unlikely/ })).toBeTruthy()
   await band.unmount()
 })
 
@@ -1983,13 +1984,13 @@ test('keep awake: a nudge every 50 minutes at low effort on the same model, book
   await clock.advance(3_000_000)
   expect(nudges.length).toBe(2)
   await step($, 'medium')
-  expect(await band.find({ type: 'Text', text: /kept this chat's cache warm: 2 nudges, \$0\.08 so far, against about \$1\.60/ })).toBeTruthy()
+  expect(await band.find({ type: 'Text', text: /2 nudges so far kept the cache warm for \$0\.08, against about \$1\.60/ })).toBeTruthy()
   // you come back after 1h40 with no router the cache would have lapsed: your step would have written 200K again
   await $.prompt.submit({ text: 'ok, where were we', origin: { kind: 'composer' }, wait: false })
   await step($, 'medium')
   expect(sent.at(-1)).not.toBe('low')
   // the report stays through your first turn back, with what it saved; your next message clears it
-  expect(await band.find({ type: 'Text', text: /2 nudges for \$0\.08, saving about \$1\.56 of re-reading it all/ })).toBeTruthy()
+  expect(await band.find({ type: 'Text', text: /2 nudges kept the cache warm for \$0\.08, saving about \$1\.56 of re-reading/ })).toBeTruthy()
   await $.prompt.submit({ text: 'next thing', origin: { kind: 'composer' }, wait: false })
   expect(await band.find({ type: 'Text', text: /While you were away/ })).toBeFalsy() // (a key lookup never matched: it proved nothing)
   await end($)
@@ -2073,7 +2074,7 @@ test('keep awake ends after the hours you set: the chat is compacted while warm 
   expect(nudges.length).toBe(1)
   expect(compacted.length).toBe(1)
   expect(compacted[0]!.instructions).toContain('continuation message')
-  expect(await band.find({ type: 'Text', text: /warm for 2 hours \(1 nudge, \$0\.04\), then compacted it into a handoff/ })).toBeTruthy()
+  expect(await band.find({ type: 'Text', text: /warm for 2 hours \(1 nudge, \$0\.04\), then compacted into a handoff/ })).toBeTruthy()
   await clock.advance(7_200_000)
   expect(nudges.length).toBe(1)
   await band.unmount()
@@ -2312,7 +2313,7 @@ test('with keep-awake off, once the cache lapses the band offers to compact firs
   expect(await band.find({ key: 'router-cold-compact' })).toBeFalsy()
   await clock.advance(1_700_000)
   expect(nudges.length).toBe(0)
-  const offerText = (await band.find({ type: 'Text', text: /re-reads the whole chat \(200K tokens, about \$1\.60\).*about \$0\.58.*22 steps/ }))?.text as string
+  const offerText = (await band.find({ type: 'Text', text: /re-reads 200K tokens \(\$1\.60\).*adds \$0\.58.*22 steps/ }))?.text as string
   expect(offerText.startsWith('Cache expired: ')).toBe(true)
   expect(offerText.length <= 200).toBe(true) // two lines on a normal window, not five (owner case 2026-11-27)
   await band.press({ key: 'router-cold-keep' })
@@ -2633,7 +2634,7 @@ test('cache math: rebuild cost, break-even and the survival curve decide a switc
   expect(quickPays(haiku, opus, 80_000, 1_000)).toBe(true)
   expect(quickPays(haiku, opus, 130_000, 1_000)).toBe(false)
   expect(autoModel('mechanical', 130_000, opus, CFG)).toBe(undefined)
-  expect(switchCost(1.6, false)).toMatch(/about \$1\.60 now/)
+  expect(switchCost(1.6, false)).toMatch(/about \$1\.60, less after/)
   expect(switchCost(1.6, true)).toBe('') // a new chat has no cache to re-read
 })
 
@@ -2779,7 +2780,7 @@ test('lighter work on a new topic keeps the offer (starting fresh is your call);
   await step($, 'medium')
   await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'summary', toolUses: [] }] })
   await clock.advance(600)
-  expect(await band.find({ type: 'Text', text: /looks lighter: Sonnet can do it/ })).toBeTruthy()
+  expect(await band.find({ type: 'Text', text: /looks lighter: Sonnet does it as well/ })).toBeTruthy()
   expect(await band.find({ key: 'router-chat-undo' })).toBeFalsy()
   await band.press({ key: 'router-offer-no' })
   expect(await band.find({ key: 'router-offer-fresh' })).toBeFalsy()
@@ -2805,7 +2806,7 @@ test('the offer button compacts, then the chat runs on the offered model; the of
   expect(said.text).toMatch(/Cache: 100K tokens\. Switching model re-reads it once: .*Sonnet \$0\.40.*Fable \$1\.60/)
   await $.tool.call({ tool: 'ExitPlanMode', plan: 'ship it' })
   await clock.advance(600)
-  expect(await band.find({ type: 'Text', text: /about \$1\.60 now, less after compacting/ })).toBeTruthy()
+  expect(await band.find({ type: 'Text', text: /about \$1\.60, less after compacting/ })).toBeTruthy()
   models.length = 0
   await band.press({ key: 'router-offer-compact' })
   expect(compactions).toBe(1) // the button's

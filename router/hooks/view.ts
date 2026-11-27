@@ -7,19 +7,43 @@ export const money = (n: number) => (n <= -0.005 ? `-$${(-n).toFixed(2)}` : `$${
 export const about = (n: number) => (n > 0 && n < 0.005 ? 'under $0.01' : `about ${money(n)}`)
 // What a switch offer says it costs: the new model writes the chat to its own cache once (less after compacting).
 // The offer after an hour away: resuming re-reads everything anyway; compacting first adds a little and saves per step.
+// At most 120 cells each (tests/uikit.ts LIMITS.row): one line on a wide band, two on a narrow one.
 export const coldWords = (c: { cache: number; resume: number; extra: number; perStep: number; payback: number }) =>
-  `Cache expired: your next message re-reads the whole chat (${Math.round(c.cache / 1000)}K tokens, about ${money(c.resume)}). Compacting first adds about ${money(c.extra)}, paid back in about ${c.payback} steps; it keeps the goal, plan, decisions and files.`
+  `Cache expired: your next message re-reads ${Math.round(c.cache / 1000)}K tokens (${money(c.resume)}). Compacting first adds ${money(c.extra)}, paid back in ${c.payback} steps.`
 // Keep-awake's report while you were away: what the nudges cost against re-reading the chat, and the compaction if any.
-export const STOP_WORDS = { done: 'the work looked finished', unlikely: 'a return at these hours is too unlikely to pay for more' } as const
+export const STOP_WORDS = { done: 'the work looked finished', unlikely: 'a return this late is unlikely' } as const
+const nudges = (n: number) => `${n} ${n === 1 ? 'nudge' : 'nudges'}`
 export const awayWords = (a: { pings: number; usd: number; rebuild: number; compacted: boolean; back?: boolean; saved?: number; stop?: keyof typeof STOP_WORDS }, hours: number) =>
   a.stop && !a.back
-    ? `While you were away the router ${a.pings ? `kept this chat's cache warm: ${a.pings} ${a.pings === 1 ? 'nudge' : 'nudges'} for ${money(a.usd)}, then stopped` : 'sent no nudges'}: ${STOP_WORDS[a.stop]}${a.compacted ? '. It compacted the chat into a handoff first' : ''}.`
+    ? `While away: ${a.pings ? `${nudges(a.pings)} kept the cache warm (${money(a.usd)}), then stopped` : 'no nudges'}${a.compacted ? ' and compacted the chat' : ''}: ${STOP_WORDS[a.stop]}.`
     : a.back && !a.compacted
-    ? `While you were away the router kept this chat's cache warm: ${a.pings} ${a.pings === 1 ? 'nudge' : 'nudges'} for ${money(a.usd)}${a.saved ? `, saving about ${money(a.saved)} of re-reading it all` : ' (back within the hour: no re-read was due)'}.`
+    ? `While away: ${nudges(a.pings)} kept the cache warm for ${money(a.usd)}${a.saved ? `, saving about ${money(a.saved)} of re-reading` : ' (back within the hour, so no re-read was due)'}.`
     : a.compacted
-    ? `While you were away the router kept this chat's cache warm for ${hours} hours (${a.pings} ${a.pings === 1 ? 'nudge' : 'nudges'}, ${money(a.usd)}), then compacted it into a handoff while still warm: the summary says what it was doing, where it stopped and the next step.`
-    : `While you were away the router kept this chat's cache warm: ${a.pings} ${a.pings === 1 ? 'nudge' : 'nudges'}, ${money(a.usd)} so far, against about ${money(a.rebuild)} to re-read it all on your return.`
-export const switchCost = (usd: number | undefined, isNew: boolean) => (usd && !isNew ? ` Switching re-reads the chat: about ${money(usd)} now, less after compacting.` : '')
+    ? `While away: kept warm for ${hours} hours (${nudges(a.pings)}, ${money(a.usd)}), then compacted into a handoff with the next step.`
+    : `While you are away: ${nudges(a.pings)} so far kept the cache warm for ${money(a.usd)}, against about ${money(a.rebuild)} to re-read it.`
+export const switchCost = (usd: number | undefined, isNew: boolean) => (usd && !isNew ? ` Switching re-reads the chat: about ${money(usd)}, less after compacting.` : '')
+
+// What the band row shows at a width. Required parts always show, at their shortest form first; then, in the order
+// given, each part takes the longest form that still fits (a required part may grow, an optional one appears). Every
+// number is counted at 3 digits or more, so a value growing a digit ("9 min" to "41 min", "$9.99" to "$10.00") never
+// makes a part appear or vanish: the row stays put as the numbers tick (owner case 2026-11-27).
+// A desktop button is ~1.1 cells a character plus 4 of padding (tests/uikit.ts DESK, measured on a screenshot).
+export type BandPart = { key: string; forms: Array<string>; button?: boolean; required?: boolean }
+export function bandFit(width: number, desk: boolean, parts: Array<BandPart>): Record<string, string> {
+  // a percent at its widest ("99.4%"), money at $999.99, any other number at 3 digits
+  // shortcut: a saving of $1000 or more is counted short by a cell; widen the money form if bands ever show that
+  const steady = (t: string) => t.replace(/\d+(\.\d+)?%/g, '##.#%').replace(/\$\d+(\.\d+)?/g, '$###.##').replace(/\d+/g, d => '#'.repeat(Math.max(3, d.length))).length
+  const cost = (t: string, p: BandPart) => (p.button && desk ? Math.ceil(steady(t) * 1.1) + 4 : steady(t)) + 2
+  const out: Record<string, string> = {}
+  let room = width - 2 // a glyph may be 2 cells wide in some locales
+  for (const p of parts) if (p.required && p.forms.length) { out[p.key] = p.forms[p.forms.length - 1]!; room -= cost(out[p.key]!, p) }
+  for (const p of parts) {
+    const now = out[p.key]
+    const t = p.forms.find(f => cost(f, p) - (now === undefined ? 0 : cost(now, p)) <= room)
+    if (t !== undefined && t !== now) { room -= cost(t, p) - (now === undefined ? 0 : cost(now, p)); out[p.key] = t }
+  }
+  return out
+}
 // Against running with no router: net above 0 saved money, below 0 spent more. Savings and extra spend are kept apart
 // step by step (a cheap subagent and a high-effort turn do not cancel out unseen).
 export const net = (t: Tally) => t.baselineUsd - t.actualUsd

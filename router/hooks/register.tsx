@@ -18,7 +18,7 @@ import {
   cheapestPoint, compactPoints, compactTone, compactStepUsd,
   SIZED, briefPaths, bucket, sizeOf, cacheSheet, PASTE_MIN, estTokens, keepsRaw, pasteModel, pasteSystem, pastePrompt, offloaded,
 } from './policy'
-import { type Cell, NAMES, TOOL_NAMES, about, addWhy, awayWords, cacheClock, minutesLeft, coldWords, whyWords, barsSvg, boardHtml, cardLayout, hitPct, switchCost, svgSize, isExtra, modelColor, money, shade, net, netPct, netWords, planFmt, planRate, savedUsd, statsSvg, toneColor, withMode } from './view'
+import { type Cell, NAMES, TOOL_NAMES, about, addWhy, awayWords, bandFit, cacheClock, minutesLeft, coldWords, whyWords, barsSvg, boardHtml, cardLayout, hitPct, switchCost, svgSize, isExtra, modelColor, money, shade, net, netPct, netWords, planFmt, planRate, savedUsd, statsSvg, toneColor, withMode } from './view'
 
 const PANE = 'router'
 const hint = atom({ plugin: 'router', key: 'hint' } as const, null)
@@ -1716,58 +1716,57 @@ export const register: Register = on => {
     const board = () => openBoard($, s).catch(() => $.ui.toast('router: could not open the board'))
     const picked = await read($, chat)
     const undo = () => update($, chat, (c): ChatModel => ({ ...c, model: null, by: 'you', routed: false, from: null })) // back to the default; auto stays off for this chat
-    // under 72 cells the row drops the word "Router" (the dot stays); narrower still, the buttons wrap onto a second line
-    // instead of running off the edge. Gaps stay 2 cells: at 1, plain buttons read as one phrase (tests/ui.test.ts)
-    const narrow = e.props.bodyColumns < 72
     // the cache's hour counts down in the row: redraw once a minute while it is warm (text changes, the height never)
     const left = s.lastContext >= 1000 ? minutesLeft(s.prev.at, f.at, 60) : undefined
     if (left && !s.minuteTick) s.minuteTick = $.clock.after(60_000, () => { s.minuteTick = undefined; $.ui.invalidate('ui.render') })
 
-    // What fits decides the words (owner ask 2026-11-26: "cache expired" must fit): the fixed parts are counted, then the
-    // cache takes the longest form that fits, then the hit. The cache is the Cache button itself, so it costs no extra cells.
+    // What fits decides the words (owner ask 2026-11-26: "cache expired" must fit; bandFit counts numbers at their widest
+    // so nothing comes and goes as they tick). Optional parts by priority: keep awake, Board, Switches, the longer cache
+    // words, the hit. Board and Switches are also tabs of the panel, so nothing is lost.
     const behind = Object.values((await read($, tools))?.tools ?? {}).some(x => x.isBehind)
     const undoLabel = f.v.isOn && picked.by === 'auto' && picked.model ? `Picked ${pretty(picked.model)} for this chat · Undo` : ''
     const net = netWords(f.chat, f.fmt)
-    // A desktop button is wider than its text (tests/uikit.ts DESK, measured on a screenshot): ~1.1 cells a character
-    // plus ~4 of padding. Parts go in by priority while they fit: the shortest cache words, Board, Switches, the word
-    // "Router", then longer cache words, then the hit. Board and Switches are also tabs of the panel, so nothing is lost.
-    const desk = e.surface === 'desktop'
-    const cost = (t: string, isButton = false) => (isButton && desk ? Math.ceil(t.length * 1.1) + 4 : t.length) + 2
-    let room = e.props.bodyColumns - 2 - [['●'], ...(f.v.isOn ? [[`■ ${f.now}`], [net]] : [[`off ${f.where}`]]), [undoLabel, 1], [behind ? 'Update available' : '', 1], ['Stats', 1], ['Settings', 1]]
-      .filter(([t]) => t).reduce((n, [t, b]) => n + cost(String(t), Boolean(b)), 0)
     const K = kt(s.lastContext)
-    const forms = !f.v.isOn || left === undefined ? ['Cache'] : left === 0 ? ['Cache expired'] : [`Cache ${K} · ${left} min left`, `Cache ${K} · ${left}m`, `${left}m left`, 'Cache']
-    let cacheLabel = forms[forms.length - 1]!
-    room -= cost(cacheLabel, true)
-    const fits = (t: string, isButton: boolean, gap = true) => { const c = cost(t, isButton) - (gap ? 0 : 2); if (c > room) return false; room -= c; return true }
-    // keep awake for this chat in one press (owner ask 2026-11-27), only where nudges could run; it goes in before Board
-    const awakeLabel = f.v.isOn && f.feats.awake && s.lastContext >= AWAKE_MIN ? (f.chatAwake ? 'Stop nudges' : 'Nudges off') : ''
-    const showAwake = !!awakeLabel && fits(awakeLabel, true)
-    const showBoard = fits('Board', true)
-    const showSwitches = f.feats.labels && fits('Switches', true)
-    const showWord = !narrow && fits(' Router', false, false) // inside the dot's text: no gap
-    const longer = forms.find(t => cost(t, true) - cost(cacheLabel, true) <= room)
-    if (longer) { room -= cost(longer, true) - cost(cacheLabel, true); cacheLabel = longer }
-    const hitLabel = f.v.isOn && f.hit !== undefined && fits(`hit ${f.hit}%`, false) ? `hit ${f.hit}%` : ''
+    // keep awake for this chat in one press (owner ask 2026-11-27), only where nudges could run
+    const awakeLabel = f.v.isOn && f.feats.awake && s.lastContext >= AWAKE_MIN ? (f.chatAwake ? 'Stop nudges' : 'Keep awake') : ''
+    const lead = f.v.isOn ? `● ${f.now}` : `● Router off ${f.where}`
+    const shown = bandFit(e.props.bodyColumns, e.surface === 'desktop', [
+      { key: 'lead', forms: [lead], required: true },
+      { key: 'undo', forms: undoLabel ? [undoLabel] : [], button: true, required: true },
+      { key: 'net', forms: f.v.isOn ? [net] : [], required: true },
+      { key: 'update', forms: behind ? ['Update available'] : [], button: true, required: true },
+      { key: 'stats', forms: ['Stats'], button: true, required: true },
+      { key: 'settings', forms: ['Settings'], button: true, required: true },
+      { key: 'awake', forms: awakeLabel ? [awakeLabel] : [], button: true },
+      { key: 'board', forms: ['Board'], button: true },
+      { key: 'switches', forms: f.feats.labels ? ['Switches'] : [], button: true },
+      { key: 'cache', forms: !f.v.isOn || left === undefined ? ['Cache'] : left === 0 ? ['Cache expired'] : [`Cache ${K} · ${left} min left`, `Cache · ${left} min left`, 'Cache'], button: true, required: true },
+      { key: 'hit', forms: f.v.isOn && f.hit !== undefined ? [`hit ${f.hit}%`] : [] },
+    ])
+    const cacheLabel = shown.cache!
     const warn = left !== undefined && left <= 10 && f.v.isOn
+    // Two groups, one gap between them: what is happening on the left, the buttons flush right. On a narrow band the
+    // button group wraps whole onto a second line, never one button alone. Numbers are tabular: the desktop's font is
+    // proportional, and a digit of another width would shift the row each minute.
     const row = (
       <Box key="router-row" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} width={e.props.bodyColumns}>
-        <Text><Text color={f.v.isOn ? 'success' : 'inactive'}>●</Text>{showWord ? ' Router' : ''}</Text>
-        {f.v.isOn && <Text wrap="truncate-end"><Text color={modelColor(f.main?.model ?? s.cfg.main.model)}>■</Text> {f.now}</Text>}
-        {!!undoLabel && <Button key="router-chat-undo" plain dimColor label={undoLabel} onPress={undo} />}
-        {f.v.isOn && <Text dimColor={!isExtra(f.chat)} color={isExtra(f.chat) ? 'warning' : undefined} wrap="truncate-end">{net}</Text>}
-        {!f.v.isOn && <Text dimColor wrap="truncate-end">off {f.where}</Text>}
-        {behind && <Button key="router-update-tip" plain label="Update available" onPress={open('settings')} />}
-        <Box flexGrow={1} />
-        {!!hitLabel && <Text dimColor>{hitLabel}</Text>}
-        {warn
-          ? <Button key="router-cache" plain onPress={open('cache')}><Text color="warning">{cacheLabel}</Text></Button>
-          : <Button key="router-cache" plain dimColor={cacheLabel !== 'Cache'} label={cacheLabel} onPress={open('cache')} />}
-        {showAwake && <Button key="router-awake" plain dimColor={!f.chatAwake} label={awakeLabel} onPress={() => setChatAwake($, s, !f.chatAwake).then(() => $.ui.toast(f.chatAwake ? 'Keep awake off for this chat' : 'Keep awake on for this chat'))} />}
-        {showSwitches && <Button key="router-switches" plain label="Switches" onPress={open('switches')} />}
-        {showBoard && <Button key="router-board" plain label="Board" onPress={board} />}
-        <Button key="router-stats" plain label="Stats" onPress={open('stats')} />
-        <Button key="router-settings" plain label="Settings" onPress={open('settings')} />
+        <Box key="router-now" flexDirection="row" alignItems="center" columnGap={2} flexShrink={1}>
+          {f.v.isOn
+            ? <Text wrap="truncate-end"><Text color={modelColor(f.main?.model ?? s.cfg.main.model)}>●</Text> {f.now}</Text>
+            : <Text dimColor wrap="truncate-end"><Text color="inactive">●</Text> Router off {f.where}</Text>}
+          {!!undoLabel && <Button key="router-chat-undo" plain dimColor label={undoLabel} onPress={undo} />}
+          {f.v.isOn && <Text tabular dimColor={!isExtra(f.chat)} color={isExtra(f.chat) ? 'warning' : undefined} wrap="truncate-end">{net}</Text>}
+          {behind && <Button key="router-update-tip" plain label="Update available" onPress={open('settings')} />}
+        </Box>
+        <Box key="router-buttons" flexDirection="row" alignItems="center" columnGap={2} flexGrow={1} justifyContent="flex-end">
+          {!!shown.hit && <Text tabular dimColor>{shown.hit}</Text>}
+          <Button key="router-cache" plain dimColor={!warn && cacheLabel !== 'Cache'} onPress={open('cache')}><Text tabular {...(warn ? { color: 'warning' as const } : {})}>{cacheLabel}</Text></Button>
+          {!!shown.awake && <Button key="router-awake" plain dimColor={!f.chatAwake} label={awakeLabel} onPress={() => setChatAwake($, s, !f.chatAwake).then(() => $.ui.toast(f.chatAwake ? 'router: keep awake off for this chat' : 'router: keep awake on for this chat'))} />}
+          {!!shown.switches && <Button key="router-switches" plain label="Switches" onPress={open('switches')} />}
+          {!!shown.board && <Button key="router-board" plain label="Board" onPress={board} />}
+          <Button key="router-stats" plain label="Stats" onPress={open('stats')} />
+          <Button key="router-settings" plain label="Settings" onPress={open('settings')} />
+        </Box>
       </Box>
     )
     // An offer gets its own row, so the model and the savings above never truncate; buttons do the switch.
@@ -1776,9 +1775,10 @@ export const register: Register = on => {
     const offerRow = offer
       ? (
           <Box key="router-offer" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} width={e.props.bodyColumns}>
-            <Text color="warning" wrap="wrap">{offer.action === 'up' ? `The work ahead looks harder: ${pretty(offer.model)} fits it better.` : `The work ahead looks lighter: ${pretty(offer.model)} can do it at the same quality.`}{switchCost(offer.usd, isNew)}</Text>
-            <Button key="router-offer-compact" {...(offer.kind === 'compact' ? { variant: 'primary' as const } : { plain: true as const })} label={`Compact and switch to ${pretty(offer.model)}`} onPress={() => switchChat($, s, offer.model, 'compact')} />
-            <Button key="router-offer-fresh" {...(offer.kind === 'fresh' ? { variant: 'primary' as const } : { plain: true as const })} label={`Fresh start on ${pretty(offer.model)}`} onPress={() => switchChat($, s, offer.model, 'fresh')} />
+            <Text color="warning" wrap="wrap">{offer.action === 'up' ? `The work ahead looks harder: ${pretty(offer.model)} fits it better.` : `The work ahead looks lighter: ${pretty(offer.model)} does it as well.`}{switchCost(offer.usd, isNew)}</Text>
+            {/* both framed, the advised one filled: the row keeps its shape whichever is advised */}
+            <Button key="router-offer-compact" {...(offer.kind === 'compact' ? { variant: 'primary' as const } : {})} label={`Compact and switch to ${pretty(offer.model)}`} onPress={() => switchChat($, s, offer.model, 'compact')} />
+            <Button key="router-offer-fresh" {...(offer.kind === 'fresh' ? { variant: 'primary' as const } : {})} label={`Fresh start on ${pretty(offer.model)}`} onPress={() => switchChat($, s, offer.model, 'fresh')} />
             <Button key="router-offer-no" plain dimColor label="Not now" onPress={() => decline($, s)} />
           </Box>
         )
@@ -1828,7 +1828,8 @@ export const register: Register = on => {
     const TABS: Array<[Tab, string]> = [['cache', 'Cache'], ['stats', 'Stats'], ['settings', 'Settings'], ...(f.feats.labels ? [['switches', 'Switches'] as [Tab, string]] : [])]
     const tabRow = (
       <Box key="router-tabs" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2}>
-        {TABS.map(([t, label]) => <Button key={`router-tab-${t}`} {...(t === shown ? { variant: 'primary' as const } : { plain: true as const })} label={label} onPress={() => update($, panel, () => t)} />)}
+        {/* every tab framed, the open one filled: a switch of tab never moves the others (owner pick 2026-11-27) */}
+        {TABS.map(([t, label]) => <Button key={`router-tab-${t}`} {...(t === shown ? { variant: 'primary' as const } : {})} label={label} onPress={() => update($, panel, () => t)} />)}
         <Box flexGrow={1} />
         <Button key="router-panel-board" plain label="Board" onPress={() => openBoard($, s).catch(() => $.ui.toast('router: could not open the board'))} />
       </Box>
@@ -1869,7 +1870,9 @@ export const register: Register = on => {
     const note = (text: string) => <Text dimColor wrap="wrap">{text}</Text>
     const choices = <V extends string>(key: string, options: Array<[V, string]>, value: V, set: (v: V) => unknown, dot?: (v: V) => string | undefined) =>
       options.map(([v, text]) => {
-        const look = v === value ? { variant: 'primary' as const } : { plain: true as const, dimColor: true }
+        // every option framed, the picked one filled: a pick never moves the row, and each option reads as a button
+        // (owner pick 2026-11-27; tests/uikit.ts choiceIssues)
+        const look = v === value ? { variant: 'primary' as const } : {}
         const color = dot?.(v)
         // no label with a dot: the desktop draws a label in place of the children
         return color
@@ -1904,14 +1907,14 @@ export const register: Register = on => {
       const cost = (key: string, label: string, value: string, note: string) => W < 64
         ? (
             <Box key={key} flexDirection="column">
-              <Box flexDirection="row" gap={1}>{pair(label, value)}</Box>
+              <Box flexDirection="row" gap={2}>{pair(label, value)}</Box>
               <Box marginLeft={2}><Text dimColor wrap="wrap">{note}</Text></Box>
             </Box>
           )
         : (
-            <Box key={key} flexDirection="row" gap={1}>
+            <Box key={key} flexDirection="row" gap={2}>
               {pair(label, value)}
-              <Box flexShrink={1} marginLeft={1}><Text dimColor wrap="wrap">{note}</Text></Box>
+              <Box flexShrink={1}><Text dimColor wrap="wrap">{note}</Text></Box>
             </Box>
           )
       const kept = await read($, away)
@@ -1921,7 +1924,7 @@ export const register: Register = on => {
         !cached && note('Nothing cached yet: this fills after the first reply.'),
         cached && (left !== undefined
           ? Progress
-            ? <Progress key="router-cache-time" label="Cache time left" value={left} max={60} valueText={left ? `${left} min left` : 'expired'} color={left > 10 ? 'success' : 'warning'} />
+            ? <Progress key="router-cache-time" label="Warm for" value={left} max={60} valueText={left ? `${left} min more` : 'expired'} color={left > 10 ? 'success' : 'warning'} />
             : <Text key="router-cache-time">{left ? `${left} min left before it expires` : 'Expired: the next message re-reads the chat'}</Text>
           : null),
         cached && note('Each message, a keep-awake nudge too, starts the hour again.'),
@@ -1997,9 +2000,11 @@ export const register: Register = on => {
     const busy = await read($, updating)
     const cli = (k: Tool) => {
       const x = t?.tools[k]
+      // one tool a line, the names in a column of their own, so versions and buttons line up
       return (
-        <Box key={`router-cli-${k}`} flexDirection="row" alignItems="center" gap={1} marginRight={2}>
-          <Text>{TOOL_NAMES[k]} {x?.have ?? (t ? 'not found' : '…')}</Text>
+        <Box key={`router-cli-${k}`} flexDirection="row" alignItems="center" columnGap={2}>
+          <Box width={11} flexShrink={0}><Text>{TOOL_NAMES[k]}</Text></Box>
+          <Text>{x?.have ?? (t ? 'not found' : '…')}</Text>
           {busy === k
             ? <Text dimColor>updating…</Text>
             : x?.isBehind
@@ -2094,8 +2099,9 @@ export const register: Register = on => {
       f.feats.awake && field('router-awake-hours', 'Keep it for', choices('router-awake-hours', AWAKE_HOURS.map(h => [String(h), `${h}h`] as [string, string]), String(f.hours), v => setAwakeHours($, Number(v)))),
       feat('labels', 'Training', 'log switches to rate (no prompt text)'),
       heading('router-h-tools', 'Tools'),
-      field('router-clis', 'Versions', [cli('claude'), cli('codex'), cli('antigravity'), <Button key="router-recheck" plain dimColor label="Re-check" onPress={() => refreshTools($, s, true)} />]),
+      field('router-clis', 'Versions', <Box key="router-clis-col" flexDirection="column" flexShrink={1}>{cli('claude')}{cli('codex')}{cli('antigravity')}</Box>),
       <Box key="router-more" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} marginLeft={LABEL + 1}>
+        <Button key="router-recheck" plain label="Re-check versions" onPress={() => refreshTools($, s, true)} />
         <Button key="router-widget" plain label={widgetOpen ? 'Hide widget' : 'Show widget'} onPress={() => showWidget($, !widgetOpen)} />
         <Button key="router-rules" plain label="Edit rules" onPress={() => editRules($, s).catch(() => $.ui.toast('router: could not open routing.json'))} />
       </Box>,
