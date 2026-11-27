@@ -153,9 +153,9 @@ Jev needs `TYPESAFE_API_KEY` in the environment.
 
 ## Precedents
 
-A table for grading a router pick, or training a second-stage picker, at no further cost: 170 cases, each answered once per pair (Haiku medium, Sonnet low, Sonnet medium, Sonnet high, Opus high) and once by the reference, Opus medium. Method, fixed before the first paid call:
+A table for grading a router pick, or training a second-stage picker, at no further cost: 200 cases, each answered once per pair (Haiku medium, Sonnet low, Sonnet medium, Sonnet high, Opus high) and once by the reference, Opus medium. Method, fixed before the first paid call:
 
-1. **Cases.** The 170 with the most answers and Opus verdicts already paid for, with every category kept in, saved once (`work/precedents-cases.json`) and run round-robin by category.
+1. **Cases.** The 200 with the most answers and Opus verdicts already paid for, with every category kept in, saved once (`work/precedents-cases.json`) and run round-robin by category (the first table was filled in two goes: 170, then the next 30 by the same ranking).
 2. **One judge.** The Opus part of the calibrated judge for every pair: Opus high, both orders, evidence before the verdict; score -1, 0 or +1 against Opus medium, seed 0. Opus verdicts from the per-class measurement are reused. A pair with no verdict has a null score and never wins.
 3. **Order.** A case finishes all its pairs before its worker takes the next (three at a time), so a spend cap leaves whole precedents.
 4. **Winner, by price** (Haiku medium < Sonnet low < Sonnet medium < Sonnet high < Opus medium < Opus high): where Opus high scored +1, the cheapest pair that also scored +1, else Opus high; otherwise the cheapest pair scoring 0 or better, else Opus medium. Every score is stored, so the rule can be changed later for free.

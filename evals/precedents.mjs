@@ -15,7 +15,7 @@ import { CAP_USD, CapReached, OfflineMiss, ROOT, WORK, appendJsonl, log, pool, r
 // cheapest first; Opus medium, the reference, sits between sonnet-high and opus-high
 export const PAIRS = ['haiku-medium', 'sonnet-low', 'sonnet-medium', 'sonnet-high', 'opus-high']
 export const REF = 'opus-medium'
-const N = 170
+const N = 200
 const CEILING = 99 // the owner's $100 for the whole table, less room for calls in flight past a run's cap
 // mean $ per replay answer and per Opus judge call in work/spend.jsonl, for the estimate only
 const ANSWER_USD = { 'haiku-medium': 0.01, 'sonnet-low': 0.016, 'sonnet-medium': 0.0231, 'sonnet-high': 0.049, 'opus-medium': 0.0776, 'opus-high': 0.096 }
@@ -93,7 +93,7 @@ function preflight() {
       const result = events.find(e => e.type === 'result')
       appendJsonl(SPEND, { at: new Date().toISOString(), tag: 'prec:preflight', model: 'haiku', usd: result?.total_cost_usd ?? 0 })
       log(`preflight: apiKeySource = ${source}`)
-      if (source !== 'ANTHROPIC_API_KEY' || !result || result.is_error) return reject(new Error(`billing preflight failed (apiKeySource ${source}, ${err?.message ?? String(result?.result).slice(0, 200)}); nothing else was bought`))
+      if (source !== 'ANTHROPIC_API_KEY' || !result || result.is_error) return reject(new Error(`billing preflight failed (apiKeySource ${source}, ${String(result?.result ?? err?.message).slice(0, 200)}); nothing else was bought`))
       resolve()
     })
     child.stdin.end('Reply with the word ok.')
