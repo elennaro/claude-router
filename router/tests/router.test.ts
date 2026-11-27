@@ -1124,6 +1124,53 @@ test('one prompt never proposes a cheaper model for the chat; a stronger one is 
   await band.unmount()
 })
 
+test('a model the account cannot use gives the chat back and is not offered again (owner case 2026-11-27)', async (engine, on) => {
+  const $ = engine as any
+  const models: Array<string> = []
+  const toasts: Array<string> = []
+  const routing = JSON.stringify({ main: { model: 'opus', effort: 'medium' }, classes: { 'rare-hard': { model: 'fable', effort: 'xhigh', floor: true } } })
+  wire(on, { sent: [], models, files: { '/home/.claude/routing.json': routing } })
+  on('ui.toast', (_: unknown, e: { text: string }) => { toasts.push(e.text); return { value: undefined } })
+  on('classic.StopFailure', () => ({}))
+  const spawned: Array<string | undefined> = []
+  on('agent.spawn', (_: unknown, e: { model?: string }) => { spawned.push(e.model); return { model: e.model ?? 'inherit', agentId: 'sub1' } })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
+  await $.prompt.submit({ text: 'Do a deep research of side jobs I could run online' }) // rare-hard: a Fable tip
+  await band.press({ key: 'router-tip-switch' })
+  await step($, 'medium')
+  expect(models).toEqual(['fable'])
+  // a Pro plan with usage credits off: the Fable request fails on billing
+  await $.classic.StopFailure({ error: 'billing_error' })
+  expect(toasts.some(t => /Fable is not available on this account.*back on the session's model/.test(t))).toBe(true)
+  await step($, 'medium') // "Try again": the session's own model, not Fable again
+  expect(models).toEqual(['fable', 'claude-opus-5-5'])
+  await $.agent.spawn({ prompt: 'research side jobs', parentModel: 'claude-opus-5-5', subagentType: 'general-purpose', model: 'fable' })
+  expect(spawned).toEqual(['opus']) // the main model asked for Fable: it would fail, so the parent's model runs
+  await $.session.end({ reason: 'clear', sessionId: 'sess-1', resume: { sessionId: 'sess-1' } }) // a new chat in the same process
+  await $.prompt.submit({ text: 'Now a deep research of bigger business ideas' })
+  expect(await band.find({ type: 'Text', text: /fits this task better/ })).toBeFalsy() // no Fable tip for the rest of the process
+  await band.unmount()
+})
+
+test("a model picked in the app beats the router's pick for the chat (owner case 2026-11-27)", async (engine, on) => {
+  const $ = engine as any
+  const models: Array<string> = []
+  wire(on, { sent: [], models })
+  on('ui.toast', () => ({ value: undefined }))
+  on('classic.PostModelSwitch', () => ({}))
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
+  await band.press({ key: 'router-settings' })
+  await band.press({ key: 'router-model-sonnet' })
+  await step($, 'medium')
+  expect(models).toEqual(['sonnet'])
+  await $.classic.PostModelSwitch({ from_model: 'claude-opus-5-5', to_model: 'claude-haiku-5-5', requested_model: 'haiku' })
+  await step($, 'medium') // the step helper sends Opus as the session's model: no router override on top
+  expect(models).toEqual(['sonnet', 'claude-opus-5-5'])
+  await band.unmount()
+})
+
 test('effort only: a subagent keeps its model but gets its tier effort', async (engine, on) => {
   const $ = engine as any // the test engine fills origin, wait and the other session-set fields
   const sent: Array<unknown> = []

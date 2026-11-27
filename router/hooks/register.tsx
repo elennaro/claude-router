@@ -112,6 +112,7 @@ type State = {
   hadClass: boolean // any class found yet (the first one may show a hint)
   aside: boolean // an ultrathink or ultracode turn: the router steps aside for it and its agents, and only measures (owner 2026-11-26)
   asideAgents: Set<string> // agents started while the router stood aside (a workflow's, an aside turn's): their children too
+  unavailable: Set<string> // model families this account refused (Fable with usage credits off): never offered or sent again in this process
   sure: boolean // the last class came from a rule or a confident (>= 0.85) classifier answer
   switchTurn: boolean // this prompt's own turn may run on its class model (a follow-up goes back to the picked model)
   headless: boolean // claude -p runs (scripts, agent harnesses): their frontmatter decides, the router only counts
@@ -585,7 +586,7 @@ async function sessionCheck($: EngineInterface, s: State, trigger: string) {
   const runs = await Promise.all([ask(), ask(), ask()])
   for (const r of runs) if (r?.isAnswered && r.usage) await record($, s, s.cfg.classifier.model, r.usage, 'router', 0)
   const a = adviseSwitch(runs.map(r => (r?.isAnswered ? parseSessionCheck(r.text) : undefined)), w.model, trigger, s.cfg, s.lastClass)
-  if (!a || family(a.model) === family(w.model)) return
+  if (!a || family(a.model) === family(w.model) || s.unavailable.has(family(a.model))) return
   s.quietUntil = s.turnCount + 10
   if (a.action === 'down' && a.kind === 'compact' && (await read($, features)).autoSwitch) {
     // the same work on a cheaper model: the router moves by itself only when the move pays back its cache rebuild
@@ -800,7 +801,7 @@ async function suggest($: EngineInterface, s: State, cls: string) {
   if (AUTO.includes(cls) && s.sure) { await update($, hint, () => null); return } // the turn itself moves to that model: no tip
   const current = (await read($, chat)).model ?? (await $.session.model()) // the chat's own pick, when it has one
   const isShift = prevRank !== null && prevRank !== rank(tier.model)
-  if (family(tier.model) === family(current)) {
+  if (family(tier.model) === family(current) || s.unavailable.has(family(tier.model))) {
     await update($, hint, () => null)
   } else if ((isFirst || isShift) && rank(tier.model) > rank(current) && s.lastHintModel !== tier.model) {
     // upgrades only: one prompt's class can't judge a whole session, so it never proposes a cheaper model for the chat (owner, 2026-11-18)
@@ -1195,7 +1196,7 @@ async function answer($: EngineInterface, s: State, agent: AgentName, call: Call
 export const register: Register = on => {
   const s: State = {
     cfg: BUILTIN, home: '', root: '', project: 'unknown', sources: 'built-in only', lastClass: null, lastHintModel: null,
-    hasClassified: false, hadClass: false, aside: false, asideAgents: new Set(), headless: false, agentEffort: new Map(), defs: new Map(),
+    hasClassified: false, hadClass: false, aside: false, asideAgents: new Set(), unavailable: new Set(), headless: false, agentEffort: new Map(), defs: new Map(),
     prev: NO_PREV, lastContext: 0, mainSteps: 0, mainOut: 0, cleanChanges: 0, baseEffort: '', rerouted: 0, lastRerouted: '', lastSwitch: '', lastEffortSwitch: '', lastQuick: '', promptText: '', turnRows: [], lastRows: [], lastStay: -1, agentType: new Map(), agentAsked: new Map(), agentSpend: new Map(), briefRun: new Map(), wastedRuns: new Set(), paneOpened: false, pasted: false, coldTimer: undefined, minuteTick: undefined, awakeSince: 0, pinging: false, gapStart: 0, doneChecked: 0, awakeStop: '', ownPrompt: false, scopeAt: 0, scopeQueued: false, openTurn: '', seg: { ctx: 0, steps: 0 },
     session: 'session', label: '', lastLedgerTurn: '', pending: [], scheduled: false, warned: false, trimmed: false, totals: { proj: EMPTY_TALLY, since: undefined }, routeModels: true, chatMode: null, sure: false, switchTurn: false,
     ask: undefined, stickyAsk: undefined, v: undefined, seenPrompt: false, samples: [], turnCount: 0, quietUntil: 0, declined: null, switching: false,
@@ -1277,6 +1278,24 @@ export const register: Register = on => {
     const r = await go(e)
     if (e.agentId === undefined && s.cfg.mode !== 'off' && !s.headless) $.clock.after(500, async () => { await autoCompact($, s) })
     return r
+  }))
+  // The account refused the request (Fable on a plan with usage credits off): the router's pick for the chat goes, so
+  // "Try again" runs on the session's model, and that model is not offered or sent again in this process (owner case 2026-11-27)
+  on('classic.StopFailure', async ($, e, next) => shield($, e, next, async go => {
+    const picked = await read($, chat)
+    if (!e.agent_id && picked.model && (e.error === 'billing_error' || e.error === 'model_not_found') && family(picked.model) !== family(await $.session.model())) {
+      s.unavailable.add(family(picked.model))
+      await update($, chat, (c): ChatModel => ({ ...c, model: null, by: 'you', routed: false, from: null }))
+      await update($, hint, () => null)
+      await update($, advice, () => null)
+      $.ui.toast(`router: ${pretty(picked.model)} is not available on this account (${e.error.replace('_', ' ')}); the chat is back on the session's model. Press Try again.`)
+    }
+    return go(e)
+  }))
+  // A model picked in the app (the model menu, /model) beats the router's pick for this chat (owner case 2026-11-27)
+  on('classic.PostModelSwitch', async ($, e, next) => shield($, e, next, async go => {
+    if (!e.agent_id && family(e.from_model) !== family(e.to_model)) await update($, chat, (c): ChatModel => ({ ...c, model: null, by: 'you', routed: false, from: null }))
+    return go(e)
   }))
   on('tool.call', { tool: new RegExp(`^(${TODO_TOOLS.join('|')})$`) }, async ($, e, next) => shield($, e, next, async go => {
     const r = await go(e)
@@ -1449,6 +1468,7 @@ export const register: Register = on => {
     const said = s.cfg.mode === 'off' || aside ? undefined : explicitAsk(e.prompt)
     // every started run counts on the Board (a denied one does not); a resume is the same run going on
     const named = async (x: typeof e, routed = false, respawned = false) => {
+      if (x.model && s.unavailable.has(family(x.model))) x = { ...x, model: family(e.parentModel) } // the account refused it: it would fail
       const r = await go(x)
       if (r.agentId && aside) s.asideAgents.add(r.agentId)
       if (r.agentId && said?.effort) s.agentEffort.set(r.agentId, said.effort)
