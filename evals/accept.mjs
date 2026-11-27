@@ -3,28 +3,33 @@
 // pair), so every cheaper tier looked worse. Here each answer is graded alone against a checklist written from the
 // request only, by a grader that is not told the model. A tier fits a category when it is accepted about as often as
 // Opus medium; the second Opus medium sample shows how much that moves by chance.
-// Usage: node accept.mjs   (env EVAL_CAP_USD, EVAL_OFFLINE=1 for a $0 rebuild, ACCEPT_TIERS, ACCEPT_CATS)
+// Usage: node accept.mjs   (env EVAL_CAP_USD, EVAL_OFFLINE=1 for a $0 rebuild, ACCEPT_TIERS, ACCEPT_CATS, LIMIT,
+//   ACCEPT_IDS=<case list json> to grade exactly those cases in that order, ACCEPT_GRADER=sonnet-medium for another
+//   grader, ACCEPT_OUT=<name> for results/<name>*.{jsonl,md} instead of accept*, DRY=1 to count what is not cached)
 //   -> results/accept-checklists.jsonl, results/accept.jsonl, results/accept-report.md
-import { readdirSync, writeFileSync } from 'node:fs'
+import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { CASES as OWN } from './accept/cases.mjs'
-import { answer, key } from './judge.mjs'
-import { CapReached, ROOT, claude, log, pool, readJsonl, writeJsonl } from './lib.mjs'
+import { answer, hasAnswer, key } from './judge.mjs'
+import { CapReached, ROOT, cacheGet, cacheKey, claude, log, pool, readJsonl, writeJsonl } from './lib.mjs'
 
 const T = m => { const [model, effort] = m.split('-'); return { model, effort } }
 // graded tiers; s1 is Opus medium's second answer, the chance yardstick
 // in the order a spend cap should keep them: what the Sonnet decision needs first
-const ALL_TIERS = [['opus-medium', 0], ['sonnet-medium', 0], ['sonnet-high', 0], ['opus-medium', 1], ['opus-high', 0], ['haiku-medium', 0]]
+const ALL_TIERS = [['opus-medium', 0], ['sonnet-medium', 0], ['sonnet-high', 0], ['opus-medium', 1], ['opus-high', 0], ['haiku-medium', 0], ['sonnet-low', 0]]
 // ACCEPT_TIERS=opus-medium,sonnet-medium and ACCEPT_CATS=docs,explore narrow a run; answers and grades come from the store
 const only = v => (process.env[v] ? process.env[v].split(',') : undefined)
 const TIERS = ALL_TIERS.filter(([t, s]) => !only('ACCEPT_TIERS') || only('ACCEPT_TIERS').includes(s ? `${t}.s${s}` : t))
 const WRITER = { model: 'opus', effort: 'high' }
-const GRADER = { model: 'opus', effort: 'medium' }
+const GRADER = process.env.ACCEPT_GRADER ? T(process.env.ACCEPT_GRADER) : { model: 'opus', effort: 'medium' }
+const NAME = process.env.ACCEPT_OUT ?? 'accept'
 
 const fromCases = readdirSync(join(ROOT, 'cases')).filter(f => f.endsWith('.jsonl')).map(f => readJsonl(join(ROOT, 'cases', f)))
 // round-robin over categories, so a spend cap still leaves every category covered
 const mixed = Array.from({ length: Math.max(...fromCases.map(x => x.length)) }, (_, i) => fromCases.map(x => x[i]).filter(Boolean)).flat()
-const CASES = [...OWN, ...mixed].filter(c => !only('ACCEPT_CATS') || only('ACCEPT_CATS').includes(c.category)).slice(0, Number(process.env.LIMIT ?? Infinity)) // LIMIT: a pilot on the first few
+const byId = new Map(mixed.map(c => [c.id, c]))
+const listed = process.env.ACCEPT_IDS && JSON.parse(readFileSync(process.env.ACCEPT_IDS, 'utf8')).cases.map(x => byId.get(x.id))
+const CASES = (listed || [...OWN, ...mixed]).filter(c => !only('ACCEPT_CATS') || only('ACCEPT_CATS').includes(c.category)).slice(0, Number(process.env.LIMIT ?? Infinity)) // LIMIT: a pilot on the first few
 
 const request = c => [
   ...(c.history ?? []).map(h => `[earlier] user: ${h.user}\n[earlier] assistant: ${h.assistant}`),
@@ -70,6 +75,22 @@ async function checklist(c) {
   return r.structured.items
 }
 
+if (listed && listed.some(c => !c)) throw new Error(`${process.env.ACCEPT_IDS} names a case that is not in cases/`)
+if (process.env.DRY) {
+  const hit = o => cacheGet(cacheKey(o)) !== undefined
+  let lists = 0, grades = 0, answers = 0
+  for (const c of CASES) {
+    const l = cacheGet(cacheKey({ ...WRITER, prompt: checklistPrompt(c), json: LIST }))
+    if (!l) lists++
+    for (const [tier, seed] of TIERS) {
+      if (!hasAnswer(c, T(tier), seed)) { answers++; grades++ }
+      else if (!l || !hit({ ...GRADER, prompt: gradePrompt(c, l.structured.items, (await answer(c, T(tier), seed))), json: GRADE })) grades++
+    }
+  }
+  log(`${CASES.length} cases, grader ${key(GRADER)}: to buy ${lists} checklists, ${answers} answers, ${grades} grades`)
+  process.exit(0)
+}
+
 const lists = new Map()
 const rows = []
 let stop
@@ -86,8 +107,8 @@ for (const [tier, seed] of stop ? [] : TIERS) {
   if (stop) break
 }
 
-writeJsonl(join(ROOT, 'results', 'accept-checklists.jsonl'), CASES.filter(c => lists.has(c.id)).map(c => ({ id: c.id, items: lists.get(c.id) })))
-writeJsonl(join(ROOT, 'results', 'accept.jsonl'), rows.sort((a, b) => a.id.localeCompare(b.id) || a.tier.localeCompare(b.tier)))
+writeJsonl(join(ROOT, 'results', `${NAME}-checklists.jsonl`), CASES.filter(c => lists.has(c.id)).map(c => ({ id: c.id, items: lists.get(c.id) })))
+writeJsonl(join(ROOT, 'results', `${NAME}.jsonl`), rows.sort((a, b) => a.id.localeCompare(b.id) || a.tier.localeCompare(b.tier)))
 
 // ---- report ----
 const tiers = TIERS.map(([t, s]) => (s ? `${t}.s${s}` : t))
@@ -135,6 +156,6 @@ const lines = [
   ...rows.filter(r => r.tier.startsWith('sonnet') && !r.accept && rows.find(o => o.id === r.id && o.tier === 'opus-medium')?.accept)
     .map(r => `| ${r.id} | ${r.tier} | ${r.fails.join('; ').replace(/\|/g, '/').slice(0, 300)} |`),
 ]
-writeFileSync(join(ROOT, 'results', 'accept-report.md'), lines.join('\n') + '\n')
-log(`accept: ${rows.length} grades -> results/accept-report.md`)
+writeFileSync(join(ROOT, 'results', `${NAME}-report.md`), lines.join('\n') + '\n')
+log(`${NAME}: ${rows.length} grades -> results/${NAME}-report.md`)
 if (stop) throw stop

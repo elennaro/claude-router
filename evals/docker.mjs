@@ -73,7 +73,7 @@ function main() {
   process.env.EVAL_CAP_USD = String(capFor(process.env.EVAL_CAP_USD))
   console.log(`running ${what} in a fresh container, cap $${process.env.EVAL_CAP_USD}`)
   // a paid run also reads and appends evals/results; the free checks stay off the host's files
-  process.exitCode = inBox('evals', ['node', ...process.argv.slice(2)], ['ANTHROPIC_API_KEY', 'EVAL_CAP_USD'], [`${join(evals, 'results')}:/repo/evals/results`])
+  process.exitCode = inBox('evals', ['node', ...process.argv.slice(2)], ['ANTHROPIC_API_KEY', 'EVAL_CAP_USD', ...Object.keys(process.env).filter(k => /^ACCEPT_|^LIMIT$/.test(k))], [`${join(evals, 'results')}:/repo/evals/results`])
 }
 
 if (process.argv[2] === '--self-test') {
