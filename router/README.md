@@ -28,6 +28,7 @@ Every row is detailed under *What it does* below.
 
 ## What's new
 
+- **0.9.11** The band holds still and lines up with the bands around it: one dot in the model's colour, then the model and the saving; the buttons sit flush right as a group, and nothing appears, vanishes or shifts as the countdown or the saving ticks. In the panel and Settings every option is a framed button with the picked one filled, so a pick never moves the row. No `hit 0%` after a first reply, shorter offers and away reports, and a status line that reads `router: default task`.
 - **0.9.10** A model your account refuses (Fable with usage credits off) no longer kills the chat: it goes back to the session's model and **Try again** works. A model picked in the app's menu or with `/model` replaces the router's pick.
 - **0.9.9** **Stop nudges** in the band turns keep awake off for this chat in one press (**Nudges off** turns it back on).
 - **0.9.8** The band never wraps: when short of room it drops the hit, the word "Router", **Switches** and **Board** in turn (the panel still has them). The expired-cache offer is two short sentences.

@@ -84,6 +84,13 @@ real usage. Per-move detail is in [LESSONS.md](LESSONS.md); the numbers come fro
    deleted unused. Lesson: read the terms before the paid data run, not after. First measurement, int8 in Node on a
    desktop CPU: 3 ms for a short prompt and 13 ms for a paragraph once loaded, but about 1 s for a fresh process, 850 MB
    of memory to keep it loaded, and a 379 MB runtime install. Whether the runtime cost is worth it is the next decision.
+15. **Making the UI hold still, by rule.** The owner's screenshot showed the router's band row ragged next to another
+   plugin's neat one, while every UI check passed. The checks measured fit, overlap and contrast, not steadiness. New
+   rules, each written to fail first: the engine lays a gap on both sides of an empty spacer (the uncounted gap had
+   pushed "Settings" onto a line of its own); the parts shown are chosen with every number at its widest, so a saving
+   going from $9.99 to $10.00 never hides a button; a choice's options all wear one frame, so a pick never moves the
+   row; no child margins inside a gapped row; band numbers in same-width digits. A live terminal run then caught what
+   no mock-up had: "hit 0%" after the first reply, which only writes the cache.
 
 ## How the savings are measured
 

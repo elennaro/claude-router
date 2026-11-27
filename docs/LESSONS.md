@@ -183,3 +183,9 @@ Newest at the bottom. Each entry: what we did, what happened, what we learned. N
     raises effort. A false raise now needs two misreads in one task (about 1%), while a real struggle still gets help
     by its second complaint (89%). Lesson: when a classifier's error rate won't move, change the action so a single
     error costs nothing.
+
+21. **Green checks, ragged screen.** Every UI check passed while the band looked uneven to the owner: the checks asked
+    whether things fit, not whether they stay put. Each defect got a rule that failed on the old code (a spacer's two
+    gaps, numbers counted at their widest, one frame per choice) before the fix. Then one real terminal session showed
+    "hit 0%" after a first reply, which no fixture produced. Lesson: test the property the person sees (steady,
+    aligned), and look at the live surface once before shipping.
