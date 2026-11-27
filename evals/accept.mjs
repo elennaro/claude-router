@@ -94,8 +94,10 @@ if (process.env.DRY) {
 const lists = new Map()
 const rows = []
 let stop
+// a failed call (an API error, a usage limit) is kept out of the rows; say how many and the first reason, never stay silent
+const said = out => { const bad = out.filter(o => o?.error); if (bad.length) log(`${bad.length} of ${out.length} calls failed, first: ${bad[0].error.slice(0, 300)}`) }
 // checklists first (every grade needs one), then grades tier by tier, so a cap leaves whole tiers graded
-await pool(CASES, 6, async c => { lists.set(c.id, await checklist(c)) }).catch(e => { if (e instanceof CapReached) stop = e; else throw e })
+await pool(CASES, 6, async c => { lists.set(c.id, await checklist(c)) }).then(said).catch(e => { if (e instanceof CapReached) stop = e; else throw e })
 for (const [tier, seed] of stop ? [] : TIERS) {
   await pool(CASES.filter(c => lists.has(c.id)), 6, async c => {
     const items = lists.get(c.id)
@@ -103,7 +105,7 @@ for (const [tier, seed] of stop ? [] : TIERS) {
     const r = await claude({ ...GRADER, prompt: gradePrompt(c, items, a), json: GRADE, cache: true, tag: `accept-grade:${c.id}:${tier}:${seed}`, timeoutMs: 300_000 })
     const g = r.structured
     rows.push({ id: c.id, category: c.category, tier: seed ? `${tier}.s${seed}` : tier, accept: g.accept, passed: g.items.filter(x => x.pass).length, of: items.length, fails: g.items.map((x, i) => (x.pass ? null : `${i + 1}: ${x.why}`)).filter(Boolean) })
-  }).catch(e => { if (e instanceof CapReached) stop = e; else throw e })
+  }).then(said).catch(e => { if (e instanceof CapReached) stop = e; else throw e })
   if (stop) break
 }
 
