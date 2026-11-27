@@ -22,13 +22,17 @@ const ANSWER_USD = { 'haiku-medium': 0.01, 'sonnet-low': 0.016, 'sonnet-medium':
 const JUDGE_USD = 0.0739
 const T = s => { const [model, effort] = s.split('-'); return { model, effort } }
 
-// The cheapest pair not worse than Opus medium; where Opus high beat it, the cheapest pair that also beat it.
-// A missing verdict (null) never wins.
-export function winner(s) {
-  const cheaper = PAIRS.slice(0, -1)
-  if (s['opus-high'] === 1) return cheaper.find(p => s[p] === 1) ?? 'opus-high'
-  return cheaper.find(p => s[p] === 0 || s[p] === 1) ?? REF
+// sums: the judge's two orders added, -4..+4 against Opus medium (the reference itself counts as 0). The best of the
+// pairs and the reference sets the bar; the cheapest within BAND of it wins (1 point: owner, 2026-11-27; 2 points
+// is the null pairs' noise and hands Haiku most of the table). A missing sum (null) never wins.
+export const BAND = 1
+const ORDER = [...PAIRS.slice(0, -1), REF, PAIRS.at(-1)] // price order
+export function winner(sums) {
+  const s = { ...sums, [REF]: 0 }
+  const best = Math.max(...ORDER.map(p => s[p] ?? -Infinity))
+  return ORDER.find(p => s[p] != null && s[p] >= best - BAND)
 }
+export const sumOf = r => (r.scores ? r.scores.reduce((a, v) => a + (v ?? 0), 0) : null)
 
 // The n best-covered cases (a category with none among them takes the place of the worst-covered case whose category
 // has another), ordered round-robin over categories so any prefix of the run is spread evenly.
@@ -70,8 +74,8 @@ export function tableRows(list, verdicts, spend) {
   return list.flatMap(c => {
     const got = PAIRS.map(p => v.get(`${c.id}|${p}`))
     if (got.some(r => !r)) return []
-    const win = winner(Object.fromEntries(got.map(r => [r.cand, r.score])))
-    return got.map(r => ({ id: c.id, category: c.category, pair: r.cand, ...T(r.cand), seed: r.seed, score: r.score, judge: r.by, answer_usd: usd.get(`${c.id}|${r.cand}`) ?? null, ref_answer_usd: usd.get(`${c.id}|${REF}`) ?? null, is_winner: r.cand === win, winner: win }))
+    const win = winner(Object.fromEntries(got.map(r => [r.cand, r.sum ?? null])))
+    return got.map(r => ({ id: c.id, category: c.category, pair: r.cand, ...T(r.cand), seed: r.seed, score: r.score, sum: r.sum ?? null, judge: r.by, answer_usd: usd.get(`${c.id}|${r.cand}`) ?? null, ref_answer_usd: usd.get(`${c.id}|${REF}`) ?? null, is_winner: r.cand === win, winner: win }))
   })
 }
 
@@ -134,19 +138,19 @@ async function main(arg) {
   if (before + CAP_USD > CEILING) throw new Error(`$${before.toFixed(2)} spent + this run's cap $${CAP_USD} passes $${CEILING}: set EVAL_CAP_USD to at most ${(CEILING - before).toFixed(0)}`)
   await preflight()
 
-  const save = (c, cand, score, by) => appendJsonl(OUT, { id: c.id, category: c.category, cand, seed: 0, score, by })
+  const save = (c, cand, score, by, sum) => appendJsonl(OUT, { id: c.id, category: c.category, cand, seed: 0, score, by, sum })
   const errors = []
   let complete = 0, completeEstimate = 0
   try {
     await pool(jobs, 3, async j => {
-      for (const p of j.pairs.filter(p => !j.buy.includes(p))) save(j.c, p, reuse.get(`${j.c.id}|${p}`).score, 'opus')
       let failed = false
-      if (j.buy.length) {
-        // the reference first and alone, so five pairs never buy it five times
+      {
+        // the reference first and alone, so five pairs never buy it five times; reused verdicts come from the store
+        // for $0 and give the per-order scores the sum needs
         const ref = await answer(j.c, T(REF))
-        const done = await Promise.allSettled(j.buy.map(async p => {
+        const done = await Promise.allSettled(j.pairs.map(async p => {
           const r = await judgeOpus(j.c, await answer(j.c, T(p)), ref, `prec:${j.c.id}:${key(T(p))}`)
-          save(j.c, p, r.by === 'none' ? null : r.score, r.by)
+          save(j.c, p, r.by === 'none' ? null : r.score, r.by, sumOf(r))
         }))
         const bad = done.filter(d => d.status === 'rejected').map(d => d.reason)
         const stop = bad.find(e => e instanceof CapReached && !(e instanceof OfflineMiss))
