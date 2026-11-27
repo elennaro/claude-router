@@ -28,6 +28,7 @@ Every row is detailed under *What it does* below.
 
 ## What's new
 
+- **0.9.12** `/route cache`, `/route stats` and `/route settings` open the Router panel on that tab, like the band buttons. Settings fits the docked panel: options sit 1 cell apart so Routing stays on one line, the Compact legend has no `now 0K` before anything is cached, and cache categories show their full names.
 - **0.9.11** The band holds still and lines up with the bands around it: one dot in the model's colour, then the model and the saving; the buttons sit flush right as a group, and nothing appears, vanishes or shifts as the countdown or the saving ticks. In the panel and Settings every option is a framed button with the picked one filled, so a pick never moves the row. No `hit 0%` after a first reply, shorter offers and away reports, and a status line that reads `router: default task`.
 - **0.9.10** A model your account refuses (Fable with usage credits off) no longer kills the chat: it goes back to the session's model and **Try again** works. A model picked in the app's menu or with `/model` replaces the router's pick.
 - **0.9.9** **Stop nudges** in the band turns keep awake off for this chat in one press (**Nudges off** turns it back on).
