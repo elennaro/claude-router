@@ -555,6 +555,8 @@ const HAIKU_LONG = 100_000
 
 // longCache: the write is a 1-hour cache entry (2x input) instead of a 5-minute one (1.25x). Claude Code's main thread
 // writes 1-hour entries and subagents 5-minute ones (every transcript of 2026-11-18/19: 143M vs 69M tokens, no mix).
+// shortcut: fast mode (/fast, Opus and Fable) costs 2x on every side, but a step's usage doesn't say which speed ran, so
+// the live ledger prices it as standard (bin/check-savings.mjs prices it from the transcript); add it if the engine reports speed.
 export function costUsd(model: string, u: Usage, longCache = false): number {
   const f = family(model)
   const [i0, o0, r0] = PRICE[f] ?? [4, 20, 0.2]

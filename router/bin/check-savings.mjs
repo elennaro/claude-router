@@ -6,11 +6,11 @@
 // baseline, saved and extra. A ledger figure far from the transcript figure means steps were missed or double counted.
 // Classifier and session-check calls never reach a transcript, so they are shown apart ("router").
 import { DatabaseSync } from 'node:sqlite'
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, mkdtempSync, openSync, readSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-// platform.claude.com/docs/en/about-claude/pricing, read 2026-11-19: input, 5m write, 1h write, cache read, output per MTok
+// platform.claude.com/docs/en/about-claude/pricing, read 2026-11-27: input, 5m write, 1h write, cache read, output per MTok
 const PRICE = {
   fable: [8, 10, 16, 0.2, 40],
   opus: [4, 5, 8, 0.2, 20],
@@ -26,7 +26,8 @@ export function stepUsd(model, u) {
   const w1h = c.ephemeral_1h_input_tokens ?? 0
   const w5m = c.ephemeral_5m_input_tokens ?? Math.max(0, (u.cache_creation_input_tokens ?? 0) - w1h)
   const prompt = (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + w5m + w1h
-  const k = f === 'haiku' && prompt > 100_000 ? 5 : 1
+  // fast mode (Opus, Fable): 2x input and output, and the cache multipliers stack on the fast input price (pricing page, 2026-11-27)
+  const k = (f === 'haiku' && prompt > 100_000 ? 5 : 1) * (u.speed === 'fast' ? 2 : 1)
   const [i, five, hour, r, o] = PRICE[f].map(x => x * k)
   return ((u.input_tokens ?? 0) * i + w5m * five + w1h * hour + (u.cache_read_input_tokens ?? 0) * r + (u.output_tokens ?? 0) * o) / 1e6
 }
@@ -37,10 +38,28 @@ const tokens = u => (u.input_tokens ?? 0) + (u.output_tokens ?? 0) + (u.cache_re
 // partial usage: keep each id's fullest line, counted once across the session's files (main chat and subagents).
 // shortcut: a resumed or forked chat's copies in another session's file still count there too; dedupe globally if that shows up.
 // Models with no price are added to `unpriced` instead of silently costing $0.
+// A file's lines, read in chunks: a long chat's transcript passes 1 GB, over the longest string Node can hold.
+// Chunks are cut at a newline byte, which never falls inside a UTF-8 character.
+export function* lines(path, chunk = 64 << 20) {
+  const fd = openSync(path, 'r')
+  try {
+    let rest = Buffer.alloc(0)
+    const buf = Buffer.alloc(chunk)
+    for (let n; (n = readSync(fd, buf, 0, chunk, null)) > 0;) {
+      const data = Buffer.concat([rest, buf.subarray(0, n)])
+      const cut = data.lastIndexOf(10)
+      if (cut < 0) { rest = data; continue }
+      yield* data.subarray(0, cut).toString('utf8').split('\n')
+      rest = data.subarray(cut + 1)
+    }
+    if (rest.length) yield rest.toString('utf8')
+  } finally { closeSync(fd) }
+}
+
 export function sessionUsd(paths, from = 0, unpriced = new Set()) {
   const best = new Map()
   for (const path of paths) {
-    for (const line of readFileSync(path, 'utf8').split('\n')) {
+    for (const line of lines(path)) {
       if (!line.includes('"usage"')) continue
       let o
       try { o = JSON.parse(line) } catch { continue }
@@ -109,6 +128,8 @@ function selfTest() {
   assert(near(stepUsd('claude-opus-5-5', w), 5), 'a write with no split is 5m')
   assert(near(stepUsd('claude-haiku-5-5', { input_tokens: 100_001, output_tokens: 1e6, cache_read_input_tokens: 0 }), (100_001 * 0.5) / 1e6 + 2.5), 'haiku long x5')
   assert(stepUsd('gpt-x', w) === 0, 'unknown model')
+  assert(near(stepUsd('claude-opus-5-5', { input_tokens: 1e6, output_tokens: 1e6, cache_read_input_tokens: 1e6, speed: 'fast' }), 8 + 40 + 0.4), 'fast mode x2 on every side')
+  assert(near(stepUsd('claude-opus-5-5', { input_tokens: 1e6, output_tokens: 0, cache_read_input_tokens: 0, speed: 'standard' }), 4), 'standard speed x1')
   // two files of one session: the same message streamed (partial first line), and copied into the second file
   const dir = mkdtempSync(join(tmpdir(), 'check-savings-'))
   try {
@@ -119,6 +140,10 @@ function selfTest() {
     const unpriced = new Set()
     assert(near(sessionUsd([a, b], 0, unpriced), 20), 'fullest line per message, once per session')
     assert(unpriced.has('gpt-x'), 'unpriced models are flagged')
+    // chunks of 7 bytes cut lines and two-byte letters: every line still comes back whole
+    const c = join(dir, 'c.jsonl')
+    writeFileSync(c, 'ёлка one\nдва\n\nthree без конца')
+    assert(JSON.stringify([...lines(c, 7)]) === JSON.stringify(['ёлка one', 'два', '', 'three без конца']), 'chunked lines')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
