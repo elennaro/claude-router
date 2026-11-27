@@ -778,6 +778,28 @@ test('/route effort off stops the rewrite; /route off stops the classifier', asy
   expect(asked.n).toBe(0)
 })
 
+test('/route settings, stats and cache open the Router panel on that tab, as the band buttons do', async (engine, on) => {
+  const $ = engine as any
+  const opened: Array<{ id?: string }> = []
+  wire(on, { sent: [], opened })
+  await $.session.start({ cwd: '/proj', surface: 'terminal', isInteractive: true })
+  for (const tab of ['settings', 'stats', 'cache']) {
+    const r = await $.command.run({ command: 'route', args: tab })
+    expect(r.text).toBe(`Router ${tab} opened.`)
+    const panel = await $.ui.mount({ ...PANEL, surface: 'terminal' })
+    expect((await panel.find({ key: `router-tab-${tab}` }))?.props.variant).toBe('primary')
+    await panel.unmount()
+  }
+  expect(opened.filter(o => o.id === 'router-panel').length).toBe(3)
+  // seen live in the docked panel (~52 cells): Routing's four options fit one line beside the label, and nothing is
+  // cached yet, so the Compact legend has no "▲ now 0K"
+  await $.command.run({ command: 'route', args: 'settings' })
+  const panel = await $.ui.mount({ ...PANEL, surface: 'terminal', props: { ...PANEL.props, bodyColumns: 52 } })
+  expect(oneRowOverflow(await panel.find({ key: 'router-chat-opts' }), 52 - 13, 'terminal')).toBe(0)
+  expect(await panel.find({ type: 'Text', text: /now 0K/ })).toBeFalsy()
+  await panel.unmount()
+})
+
 test('an unpinned subagent is routed to the table model; an explicit one is left alone', async (engine, on) => {
   const $ = engine as any // the test engine fills origin, wait and the other session-set fields
   const seen: Array<string | undefined> = []

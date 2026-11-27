@@ -1364,6 +1364,11 @@ export const register: Register = on => {
       await showWidget($, true)
       return { text: 'Router widget opened. Drag it into the session rail to keep it there.' }
     }
+    // the band's buttons, typed: the same Router panel tab opens
+    if (arg === 'cache' || arg === 'stats' || arg === 'settings') {
+      await openPanel($, arg)
+      return { text: `Router ${arg} opened.` }
+    }
     if (arg === 'board') {
       await openBoard($, s)
       return { text: 'Router board opened in the browser.' }
@@ -1870,8 +1875,10 @@ export const register: Register = on => {
       </Box>
     )
     const note = (text: string) => <Text dimColor wrap="wrap">{text}</Text>
-    const choices = <V extends string>(key: string, options: Array<[V, string]>, value: V, set: (v: V) => unknown, dot?: (v: V) => string | undefined) =>
-      options.map(([v, text]) => {
+    // one wrapping group, 1 cell apart: the frames already part them, and in the docked panel (~52 cells) a 2-cell gap
+    // left "[ Both ]" alone on a line (live terminal, 2026-11-27)
+    const choices = <V extends string>(key: string, options: Array<[V, string]>, value: V, set: (v: V) => unknown, dot?: (v: V) => string | undefined) => [
+      <Box key={`${key}-opts`} flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={1}>{options.map(([v, text]) => {
         // every option framed, the picked one filled: a pick never moves the row, and each option reads as a button
         // (owner pick 2026-11-27; tests/uikit.ts choiceIssues)
         const look = v === value ? { variant: 'primary' as const } : {}
@@ -1880,7 +1887,8 @@ export const register: Register = on => {
         return color
           ? <Button key={`${key}-${v}`} {...look} onPress={() => set(v)}><Text color={color}>●</Text> {text}</Button>
           : <Button key={`${key}-${v}`} label={text} {...look} onPress={() => set(v)} />
-      })
+      })}</Box>,
+    ]
     const ONOFF: Array<['on' | 'off', string]> = [['on', 'On'], ['off', 'Off']]
     const model = f.main?.model ?? s.cfg.main.model
     const usage = await $.session.usage({ breakdown: 'summary' }).catch(() => undefined)
@@ -1934,7 +1942,8 @@ export const register: Register = on => {
         ...used.map(c => (
           <Box key={`router-cache-row-${c.name}`} flexDirection="row" gap={1}>
             <Text color={c.color}>■</Text>
-            <Box width={15} flexShrink={0}><Text wrap="truncate-end">{c.name}</Text></Box>
+            {/* 23: "MCP server instructions", the longest category, whole (it was cut at 15, live terminal 2026-11-27) */}
+            <Box width={23} flexShrink={0}><Text wrap="truncate-end">{c.name}</Text></Box>
             <Box width={11} flexShrink={0} justifyContent="flex-end"><Text dimColor>{kt(c.tokens)}</Text></Box>
           </Box>
         )),
@@ -2054,7 +2063,8 @@ export const register: Register = on => {
           ? [<Select key="router-compact-select" label="Compact at" options={[{ value: 'off', label: `Claude Code (${kt(engineAt)})` }, ...points.map(p => ({ value: String(p), label: p === best ? `${kt(p)}, cheapest` : kt(p) }))]} value={at ? String(at) : 'off'} onSelect={v => setCompactAt($, s, v === 'off' ? null : Number(v))} />]
           : []
     const src = bd?.autocompactSource === 'env' ? ' (CLAUDE_CODE_AUTO_COMPACT_WINDOW)' : bd?.autocompactSource === 'settings' ? ' (your settings.json)' : ''
-    const legend = [`▲ now ${kt(s.lastContext)}`, best ? `★ cheapest ${kt(best)}` : '', `│ Claude Code ${kt(engineAt)}${src}`].filter(Boolean).join('   ')
+    // one Text a mark, so a narrow panel wraps between marks, never inside one; no "now" mark before anything is cached
+    const legend = [cached ? `▲ now ${kt(s.lastContext)}` : '', best ? `★ cheapest ${kt(best)}` : '', `│ Claude Code ${kt(engineAt)}${src}`].filter(Boolean)
     const here = at ?? engineAt
     const grows = growth === undefined ? "" : growth < 1000 ? `${Math.round(growth / 10) * 10} tokens` : kt(growth) // "0K" read as no growth; the house style has no decimals on K
     const acCost = growth === undefined
@@ -2076,7 +2086,7 @@ export const register: Register = on => {
           </Box>
           {slider}
           <Box flexDirection="column">
-            <Text dimColor wrap="wrap">{legend}</Text>
+            <Box key="router-compact-legend" flexDirection="row" flexWrap="wrap" columnGap={2}>{legend.map(t => <Text key={t} dimColor wrap="wrap">{t}</Text>)}</Box>
             <Text dimColor wrap="wrap">{acCost}</Text>
             {!!reach && <Text color="warning" wrap="wrap">{reach}</Text>}
           </Box>
