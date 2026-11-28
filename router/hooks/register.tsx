@@ -624,6 +624,15 @@ function arm($: EngineInterface, s: State, model: string) {
   // a timer that outlives its session must not throw
   s.coldTimer = $.clock.after(AWAKE_PING_MS, () => { void tick($, s, model).catch(() => undefined) })
 }
+// Keep-awake's two switches (everywhere, this chat), in this copy's atoms and in the store: a copy of this module still
+// running after a reload (an update) keeps its own atoms, and the store is what every copy shares. Any off wins, so
+// neither a stale copy nor a save still under way lets a nudge through (owner case 2026-11-28).
+async function awakeOn($: EngineInterface, s: State): Promise<boolean> {
+  if (!(await read($, features)).awake || !(await read($, chatAwake))) return false
+  const saved = (await $.store.get('features').catch(() => undefined)) as Partial<Features> | undefined
+  const prefs = (await $.store.get(`chat:${s.session}`).catch(() => undefined)) as ChatPrefs | undefined
+  return saved?.awake !== false && prefs?.awake !== false
+}
 async function tick($: EngineInterface, s: State, model: string) {
   // a turn still open (a question or a permission waiting on you): a nudge would only queue behind it; its next step re-arms
   if (s.switching || s.cfg.mode === 'off' || s.headless || s.openTurn) return
@@ -634,7 +643,7 @@ async function tick($: EngineInterface, s: State, model: string) {
     await putGap($, { s: s.session, start: s.awakeSince, end: null })
   }
   const hours = await read($, awakeHours)
-  const on = (await read($, features)).awake && (await read($, chatAwake))
+  const on = await awakeOn($, s)
   const next = awakeNext({ on, now, lastStep: s.prev.at, since: s.awakeSince, hours, cache: s.lastContext })
   if (next === 'ping') {
     const last = s.prev.at
@@ -656,6 +665,7 @@ async function tick($: EngineInterface, s: State, model: string) {
   }
   if (next === 'cold') return armCold($, s, model, now)
   if (next === 'ping') {
+    if (!(await awakeOn($, s))) return armCold($, s, model, now) // switched off while the stop check was asked
     // marked here, not in our prompt hook: a plugin's own prompt need not pass through its own hooks
     s.pinging = true
     s.switchTurn = false
@@ -1404,6 +1414,8 @@ export const register: Register = on => {
       // our own keep-awake nudge: no classifier, no mood, no paste reading; the chat's model at the lowest effort.
       // Dropped when the chat was used after the timer fired: its cache is warm already.
       if ((await $.clock.now()) - s.prev.at < AWAKE_PING_MS - 60_000) { s.pinging = false; return { drop: 'router: the chat was used meanwhile' } }
+      // switched off since the timer was set, or by another copy of this module: whoever sent it, it stops here
+      if (!(await awakeOn($, s))) { s.pinging = false; return { drop: 'router: keep awake is off for this chat' } }
       s.pinging = true
       s.switchTurn = false
       return go(e)

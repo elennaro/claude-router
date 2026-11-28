@@ -101,7 +101,8 @@ const stepped = async ($: any) => {
   for await (const _ of $.turn.step({ turnId: 't', index: 0, model: 'claude-opus-5-5', effort: 'high', messageCount: 1 })) { /* drain */ }
 }
 
-test('the band, Stats and Settings fit 40 to 120 cells, with sentence-case labels and clean numbers', async (engine, on) => {
+// 81 widths x 4 surfaces: 2.4-4.4 s on the CI runners, so the default 5 s timed out on macOS (2026-11-28)
+test('the band, Stats and Settings fit 40 to 120 cells, with sentence-case labels and clean numbers', { timeoutMs: 20_000 }, async (engine, on) => {
   const issues = await states(engine as any, on, ROUTING, stepped, [['band', undefined], ['cache', 'router-cache'], ['stats', 'router-stats'], ['settings', 'router-settings']])
   expect(issues).toEqual([])
 })
