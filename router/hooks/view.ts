@@ -21,7 +21,7 @@ export const awayWords = (a: { pings: number; usd: number; rebuild: number; comp
     : a.compacted
     ? `While away: kept warm for ${hours} hours (${nudges(a.pings)}, ${money(a.usd)}), then compacted into a handoff with the next step.`
     : `While you are away: ${nudges(a.pings)} so far kept the cache warm for ${money(a.usd)}, against about ${money(a.rebuild)} to re-read it.`
-export const switchCost = (usd: number | undefined, isNew: boolean) => (usd && !isNew ? ` Switching re-reads the chat: about ${money(usd)}, less after compacting.` : '')
+export const switchCost = (usd: number | undefined, isNew: boolean, compacts = false) => (usd && !isNew ? ` Switching re-reads the chat: about ${money(usd)}${compacts ? ', less after compacting' : ''}.` : '')
 
 // What the band row shows at a width. Required parts always show, at their shortest form first; then, in the order
 // given, each part takes the longest form that still fits (a required part may grow, an optional one appears). Every

@@ -11,7 +11,7 @@ export async function shield<E, R>($: Toaster, e: E, next: (x: E) => Promise<R>,
   try {
     return await fn(x => (out = next(x)))
   } catch (err) {
-    if (!shown) $.ui.toast(`router: skipped routing after an internal error (${String(err).slice(0, 100)})`)
+    if (!shown) $.ui.toast(`Skipped routing after an internal error (${String(err).slice(0, 100)})`)
     shown = true
     return out ?? next(e)
   }

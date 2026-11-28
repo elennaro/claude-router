@@ -2,6 +2,15 @@
 
 Newest first. Update with `/plugin marketplace update claude-router`, then `/plugin update router@claude-router`, then restart Claude Code.
 
+## 0.9.14: your model picker wins, switches wait for the turn
+
+- **The app's model picker always wins.** When the router or a band button moves the chat to another model, it switches the session's own model (`/model`, for this session only), so the picker shows what actually runs. Anything you pick there is yours for the chat, the model it already shows included. An effort you set in the picker stays yours too.
+- **A switch pressed during a turn is queued.** A toast and the offer row say so, with **Cancel**. It runs once when the turn ends; if the engine still refuses, a toast says why.
+- **Short chats swap, long chats compact first.** Under 100K tokens or 5 answered turns the model just changes and every detail stays. Above both, the button says **Compact and switch**, used only when compacting costs less than re-reading the whole chat.
+- **The router never clears a chat.** The **Fresh start** button is gone.
+- **Stop router** / **Start router** in the band turns the whole router off or on for this chat in one press. It's kept after a restart. Off also clears the router's status line.
+- Toasts say "router:" once.
+
 ## 0.9.9: stop the nudges from the band
 
 **Stop nudges** in the band turns keep awake off for this chat only, in one press. It then reads **Nudges off**; press it again to turn them back on. It shows once the chat is over 20K tokens and keep awake is on in Settings, and on a narrow row it gives way before the Stats and Settings buttons.

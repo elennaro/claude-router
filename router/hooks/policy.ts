@@ -612,6 +612,12 @@ export function cacheSheet(model: string, cache: number) {
 // Compacting while the cache is warm: read the chat from cache, write the summary out, then write the kept part once.
 export const COMPACT_OUT = 3_000 // shortcut: a typical summary's length, guessed; measure from transcripts if the figure misleads
 export const compactUsd = (model: string, cache: number) => stepUsd(model, cache, COMPACT_OUT) + rebuildUsd(model, Math.min(cache, COMPACT_KEEP))
+// A model switch compacts first only on a long chat (owner 2026-11-28: 100K tokens and 5 answered turns), and only when
+// compacting and the new model writing the kept part cost less than it re-reading the whole chat. A shorter chat just
+// swaps and keeps every detail; the router never starts a chat over.
+export const LONG_CHAT = { tokens: 100_000, turns: 5 }
+export const compactsFirst = (from: string, to: string, cache: number, turns: number) =>
+  cache >= LONG_CHAT.tokens && turns >= LONG_CHAT.turns && stepUsd(from, cache, COMPACT_OUT) + rebuildUsd(to, Math.min(cache, COMPACT_KEEP)) < rebuildUsd(to, cache)
 
 // Keep awake (docs/PLAN-v3.md, slice 4). Two weeks of the owner's chats: resuming after over an hour idle cost about 22%
 // of all spend, and keeping chats warm up to 12 hours, then compacting, would have cost about a sixth of that.

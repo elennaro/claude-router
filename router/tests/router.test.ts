@@ -341,7 +341,7 @@ function wire(on: any, opts: { batches?: Array<Array<Step>>; runFails?: boolean;
   on('turn.step', async function* (_: unknown, e: { effort?: unknown; model: string; turnId: string; index: number }) {
     opts.sent.push(e.effort)
     opts.models?.push(e.model)
-    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: { ...USAGE, cache_read_input_tokens: opts.read ?? 0, cache_creation_input_tokens: opts.write ?? 0, model: ({ haiku: 'claude-haiku-5-5', sonnet: 'claude-sonnet-5-5', fable: 'claude-fable-5-2' } as Record<string, string>)[e.model] ?? USAGE.model } }
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: { ...USAGE, cache_read_input_tokens: opts.read ?? 0, cache_creation_input_tokens: opts.write ?? 0, model: ({ haiku: 'claude-haiku-5-5', sonnet: 'claude-sonnet-5-5', fable: 'claude-fable-5-2' } as Record<string, string>)[['haiku', 'sonnet', 'fable'].find(f => e.model.includes(f)) ?? ''] ?? USAGE.model } }
   })
 }
 
@@ -1159,12 +1159,12 @@ test('a model the account cannot use gives the chat back and is not offered agai
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
   const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await $.prompt.submit({ text: 'Do a deep research of side jobs I could run online' }) // rare-hard: a Fable tip
-  await band.press({ key: 'router-tip-switch' })
+  await band.press({ key: 'router-switch' })
   await step($, 'medium')
   expect(models).toEqual(['fable'])
   // a Pro plan with usage credits off: the Fable request fails on billing
   await $.classic.StopFailure({ error: 'billing_error' })
-  expect(toasts.some(t => /Fable is not available on this account.*back on the session's model/.test(t))).toBe(true)
+  expect(toasts.some(t => /Fable is not available on this account.*back on Opus/.test(t))).toBe(true)
   await step($, 'medium') // "Try again": the session's own model, not Fable again
   expect(models).toEqual(['fable', 'claude-opus-5-5'])
   await $.agent.spawn({ prompt: 'research side jobs', parentModel: 'claude-opus-5-5', subagentType: 'general-purpose', model: 'fable' })
@@ -1579,7 +1579,7 @@ test('Training: 👎 on a model pick over $0.10 of cache says the price first, s
   await band.press({ key: 'router-tab-switches' })
   await band.press({ key: (await thumbs(band, '👎')).at(-1)!.props.key })
   await band.unmount()
-  expect(toasts.join('\n')).toMatch(/back to Opus; the next request re-reads this chat once, about \$/)
+  expect(toasts.join('\n')).toMatch(/Back to Opus; the next request re-reads this chat once, about \$/)
 })
 
 test('first prompt: split samples keep the default; the auto pick steps back for a floor task', async (engine, on) => {
@@ -1667,7 +1667,7 @@ test('the band says the cache in the longest words that fit, and "Cache expired"
     return { label, hit }
   }
   const warm = await Promise.all([140, 100, 72, 40].map(at))
-  expect(warm.map(w => w.label)).toEqual(['Cache 100K · 60 min left', 'Cache 100K · 60 min left', 'Cache', 'Cache'])
+  expect(warm.map(w => w.label)).toEqual(['Cache 100K · 60 min left', 'Cache', 'Cache', 'Cache'])
   expect([warm[0]!.hit, warm[3]!.hit]).toEqual([true, false]) // the hit only where room is left over
   // the row never runs past one line from 72 cells, on either surface, with every part on (owner case 2026-11-27)
   const panel = await $.ui.mount({ ...PANEL, surface: 'terminal' })
@@ -2211,7 +2211,7 @@ test('a nudge is dropped when the chat was just used, and a nudge that finds the
   opts.write = 200_000 // the cache was gone: the nudge wrote the whole chat again (a 5-minute cache)
   await step($, 'medium')
   expect(store.get('features')).toEqual({ autoSwitch: true, sizing: true, pastes: true, awake: false, labels: false })
-  expect(toasts.some(t => t.includes('keep-awake found the cache already gone'))).toBe(true)
+  expect(toasts.some(t => t.includes('Keep-awake found the cache already gone'))).toBe(true)
 })
 
 test('auto-compact cost: the cheapest point follows the chat\'s growth, up to the model\'s context limit; each point is coloured', () => {
@@ -2263,7 +2263,7 @@ test('auto-compact: the chat compacts after the turn that passes its own point, 
   expect(compacted.length).toBe(0) // a subagent's run ending mid-turn: the main turn still runs
   await done()
   expect(compacted.length).toBe(1)
-  expect(toasts.some(t => t.includes('compacted this chat at 310K (your point: 300K)'))).toBe(true)
+  expect(toasts.some(t => t.includes('Compacted this chat at 310K (your point: 300K)'))).toBe(true)
   await done()
   expect(compacted.length).toBe(1) // the next step tells the new size; nothing to do meanwhile
   await band.press({ key: 'router-compact-off' })
@@ -2449,7 +2449,7 @@ test('a switched-off feature stays off in the next session', async (engine, on) 
   await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'summary', toolUses: [] }] })
   await clock.advance(600)
   expect(await band.find({ key: 'router-chat-undo' })).toBeFalsy() // Move down is off: no automatic move
-  expect(await band.find({ key: 'router-offer-compact' })).toBeTruthy() // the offer is still made
+  expect(await band.find({ key: 'router-switch' })).toBeTruthy() // the offer is still made
   await band.unmount()
 })
 
@@ -2717,7 +2717,7 @@ test('cache math: rebuild cost, break-even and the survival curve decide a switc
   expect(quickPays(haiku, opus, 80_000, 1_000)).toBe(true)
   expect(quickPays(haiku, opus, 130_000, 1_000)).toBe(false)
   expect(autoModel('mechanical', 130_000, opus, CFG)).toBe(undefined)
-  expect(switchCost(1.6, false)).toMatch(/about \$1\.60, less after/)
+  expect(switchCost(1.6, false, true)).toMatch(/about \$1\.60, less after/)
   expect(switchCost(1.6, true)).toBe('') // a new chat has no cache to re-read
 })
 
@@ -2735,7 +2735,7 @@ test('after a compaction the same work moves to a lighter model by itself: the c
   await step($, 'medium') // 40K tokens cached on Opus
   await $.session.compact({ trigger: 'manual', messages: [{ role: 'user', text: 'summary', toolUses: [] }] })
   await clock.advance(600)
-  expect(await band.find({ key: 'router-offer-compact' })).toBeFalsy() // no offer to press: the router moved
+  expect(await band.find({ key: 'router-switch' })).toBeFalsy() // no offer to press: the router moved
   expect(await band.find({ key: 'router-chat-undo' })).toBeTruthy()
   expect(toasts.some(t => /Sonnet for the same work/.test(t))).toBe(true) // one family down at a time
   models.length = 0
@@ -2760,7 +2760,7 @@ test('lighter work in mid-chat stays put when the cache rebuild would not pay ba
   await $.tool.call({ tool: 'ExitPlanMode', plan: 'ship it' })
   await clock.advance(600)
   expect(await band.find({ key: 'router-chat-undo' })).toBeFalsy()
-  expect(await band.find({ key: 'router-offer-compact' })).toBeFalsy() // and no offer either
+  expect(await band.find({ key: 'router-switch' })).toBeFalsy() // and no offer either
   await band.unmount()
 })
 
@@ -2806,7 +2806,7 @@ test('after a move down in mid-chat, a harder prompt keeps the cheaper model and
   await $.prompt.submit({ text: 'now design the next part of the system in detail for me' })
   await step($, 'medium')
   expect(models).toEqual(['sonnet'])
-  expect(await band.find({ key: 'router-tip-switch' })).toBeTruthy() // Opus is offered, with its cost
+  expect(await band.find({ key: 'router-switch' })).toBeTruthy() // Opus is offered, with its cost
   await band.unmount()
 })
 
@@ -2873,29 +2873,259 @@ test('lighter work on a new topic keeps the offer (starting fresh is your call);
   await band.unmount()
 })
 
-test('the offer button compacts, then the chat runs on the offered model; the offer says what the switch costs', async (engine, on) => {
+test('on a long chat (100K+ tokens, 5+ answered turns) the offer button compacts, then the chat runs on the offered model; the offer says what the switch costs (owner 2026-11-28)', async (engine, on) => {
   const $ = engine as any // the test engine fills origin, wait and the other session-set fields
   const models: Array<string> = []
-  wire(on, { sent: [], models, haiku: 'fable 0.9 same', tokens: 40_000, write: 100_000, ownClock: true })
+  wire(on, { sent: [], models, haiku: 'fable 0.9 same', tokens: 40_000, write: 150_000, ownClock: true })
   const clock = mock.clock(on, { now: 1_000 })
   let compactions = 0
   on('session.compact', () => { compactions++; return { messages: [{ role: 'user', text: 'summary', toolUses: [] }] } })
   on('tool.call', () => ({ result: { content: 'ok' } }))
-  on('session.messages', () => ({ value: [{ role: 'user', text: 'set up the release pipeline for the app', toolUses: [] }, { role: 'user', text: 'now write the changelog entries', toolUses: [] }] }))
+  // a resumed chat: its 5 answered turns count from the transcript
+  on('session.messages', () => ({ value: ['set up the release pipeline for the app', 'add the staging job', 'add the deploy job', 'now the smoke tests', 'now write the changelog entries'].map(text => ({ role: 'user', text, toolUses: [] })) }))
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
   const band = await mountBoth($, { ...BAND, surface: 'desktop' })
-  await step($, 'medium') // 100K tokens cached on Opus: Fable writes them at $16/M, about $1.60
+  await step($, 'medium') // 150K tokens cached on Opus: Fable writes them at $16/M, about $2.40
   const said = await $.command.run({ command: 'route', args: '' })
-  expect(said.text).toMatch(/Cache: 100K tokens\. Switching model re-reads it once: .*Sonnet \$0\.40.*Fable \$1\.60/)
+  expect(said.text).toMatch(/Cache: 150K tokens\. Switching model re-reads it once: .*Sonnet \$0\.60.*Fable \$2\.40/)
   await $.tool.call({ tool: 'ExitPlanMode', plan: 'ship it' })
   await clock.advance(600)
-  expect(await band.find({ type: 'Text', text: /about \$1\.60, less after compacting/ })).toBeTruthy()
+  expect(await band.find({ type: 'Text', text: /about \$2\.40, less after compacting/ })).toBeTruthy()
+  expect((await band.find({ key: 'router-switch' }))?.props.label).toBe('Compact and switch to Fable')
+  expect(await band.find({ key: 'router-offer-fresh' })).toBeFalsy() // never a fresh start: the router never clears a chat
   models.length = 0
-  await band.press({ key: 'router-offer-compact' })
+  await band.press({ key: 'router-switch' })
   expect(compactions).toBe(1) // the button's
-  expect(await band.find({ key: 'router-offer-compact' })).toBeFalsy()
+  expect(await band.find({ key: 'router-switch' })).toBeFalsy()
   await step($, 'medium')
   expect(models).toEqual(['fable'])
+  await band.unmount()
+})
+
+// The app's model picker as the engine runs it: /model sets the session's model and reports the switch.
+function appModel(on: any, $: any, opts: { model?: string }, ran: Array<string>) {
+  on('classic.PostModelSwitch', () => ({}))
+  on('turn.start', (_: unknown, e: { turnId: string }) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  on('command.run', async (_: unknown, e: { command: string; args: string }) => {
+    ran.push(`${e.command} ${e.args}`.trim())
+    if (e.command === 'model') {
+      const from = opts.model ?? 'claude-opus-5-5'
+      opts.model = `claude-${e.args}-5-5`
+      await $.classic.PostModelSwitch({ from_model: from, to_model: opts.model, requested_model: e.args, source: 'command' })
+    }
+    return { text: '' }
+  })
+}
+// One main turn on the session's model as it stands; the turn ends after `ends` (false: it keeps running).
+async function turnOn($: any, opts: { model?: string }, clock: any, effort = 'medium', ends = true) {
+  await $.turn.start({ turnId: 'u', text: '' })
+  for await (const _ of $.turn.step({ turnId: 'u', index: 0, model: opts.model ?? 'claude-opus-5-5', effort, messageCount: 1 })) { /* drain */ }
+  if (!ends) return
+  await $.turn.complete({ turnId: 'u', answer: '', durationMs: 1, isAborted: false, reason: 'answer' })
+  await clock.advance(600)
+}
+const FABLE_TIP = JSON.stringify({ main: { model: 'opus', effort: 'medium' }, classes: { 'rare-hard': { model: 'fable', effort: 'xhigh', floor: true } } })
+
+test('a short chat just swaps the model: no compaction, never a /clear, and the app picker shows the new model (owner 2026-11-28)', async (engine, on) => {
+  const $ = engine as any
+  const opts = { sent: [] as Array<unknown>, models: [] as Array<string>, tokens: 40_000, read: 40_000, ownClock: true, files: { '/home/.claude/routing.json': FABLE_TIP } } as any
+  const ran: Array<string> = []
+  wire(on, opts)
+  appModel(on, $, opts, ran)
+  const clock = mock.clock(on, { now: 1_000 })
+  let compactions = 0
+  on('session.compact', () => { compactions++; return { messages: [{ role: 'user', text: 'summary', toolUses: [] }] } })
+  on('ui.toast', () => ({ value: undefined }))
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
+  await turnOn($, opts, clock)
+  await $.prompt.submit({ text: 'Do a deep research of side jobs I could run online' }) // rare-hard: a Fable tip
+  expect((await band.find({ key: 'router-switch' }))?.props.label).toBe('Switch to Fable')
+  expect(await band.find({ type: 'Text', text: /less after compacting/ })).toBeFalsy()
+  await band.press({ key: 'router-switch' })
+  expect(compactions).toBe(0)
+  expect(ran).toEqual(['model fable']) // the session's own model: the picker shows Fable
+  expect(opts.models.at(-1)).toBe('claude-opus-5-5')
+  await turnOn($, opts, clock)
+  expect(opts.models.at(-1)).toBe('claude-fable-5-5') // runs on the session's model, nothing swapped inside the request
+  expect(ran.some(r => r.startsWith('clear'))).toBe(false)
+  await band.unmount()
+})
+
+test('a long chat compacts before the swap; after a /clear the count starts over and it just swaps (owner 2026-11-28)', async (engine, on) => {
+  const $ = engine as any
+  const opts = { sent: [] as Array<unknown>, models: [] as Array<string>, tokens: 150_000, read: 150_000, ownClock: true, files: { '/home/.claude/routing.json': FABLE_TIP } } as any
+  const ran: Array<string> = []
+  wire(on, opts)
+  appModel(on, $, opts, ran)
+  const clock = mock.clock(on, { now: 1_000 })
+  let compactions = 0
+  on('session.compact', () => { compactions++; return { messages: [{ role: 'user', text: 'summary', toolUses: [] }] } })
+  on('ui.toast', () => ({ value: undefined }))
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
+  for (let i = 0; i < 4; i++) await turnOn($, opts, clock)
+  await $.prompt.submit({ text: 'Do a deep research of side jobs I could run online' })
+  expect((await band.find({ key: 'router-switch' }))?.props.label).toBe('Switch to Fable') // 150K but 4 answered turns
+  await turnOn($, opts, clock)
+  expect((await band.find({ key: 'router-switch' }))?.props.label).toBe('Compact and switch to Fable')
+  await band.press({ key: 'router-switch' })
+  expect(compactions).toBe(1)
+  expect(ran).toEqual(['model fable'])
+  await $.session.end({ reason: 'clear', sessionId: 'sess-1', resume: { sessionId: 'sess-1' } }) // your own /clear: a new chat
+  opts.model = undefined
+  await turnOn($, opts, clock)
+  await $.prompt.submit({ text: 'Now a deep research of bigger business ideas' })
+  expect((await band.find({ key: 'router-switch' }))?.props.label).toBe('Switch to Fable')
+  await band.unmount()
+})
+
+test('a switch pressed during a turn is queued with a Cancel, runs once when the turn ends, and says why when it cannot (owner case 2026-11-28)', async (engine, on) => {
+  const $ = engine as any
+  const opts = { sent: [] as Array<unknown>, models: [] as Array<string>, tokens: 40_000, read: 40_000, ownClock: true, files: { '/home/.claude/routing.json': FABLE_TIP } } as any
+  const ran: Array<string> = []
+  const toasts: Array<string> = []
+  wire(on, opts)
+  appModel(on, $, opts, ran)
+  const clock = mock.clock(on, { now: 1_000 })
+  on('ui.toast', (_: unknown, e: { text: string }) => { toasts.push(e.text); return { value: undefined } })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
+  await turnOn($, opts, clock)
+  await $.prompt.submit({ text: 'Do a deep research of side jobs I could run online' })
+  await turnOn($, opts, clock, 'medium', false) // the turn runs
+  await band.press({ key: 'router-switch' })
+  expect(ran).toEqual([]) // nothing during the turn
+  expect(toasts.at(-1)).toBe('Switch to Fable is queued: it runs when this turn ends')
+  expect(await band.find({ type: 'Text', text: /Switch to Fable: queued, it runs when this turn ends/ })).toBeTruthy()
+  for await (const _ of $.turn.step({ turnId: 'u', index: 1, model: opts.model ?? 'claude-opus-5-5', effort: 'medium', messageCount: 2 })) { /* drain */ }
+  expect(opts.models.at(-1)).toBe('claude-opus-5-5') // the running turn keeps its model
+  await $.turn.complete({ turnId: 'u', answer: '', durationMs: 1, isAborted: false, reason: 'answer' })
+  await clock.advance(600)
+  expect(ran).toEqual(['model fable']) // once, at the turn's end
+  expect(await band.find({ key: 'router-wait-cancel' })).toBeFalsy()
+  await turnOn($, opts, clock)
+  expect(ran).toEqual(['model fable'])
+  expect(toasts.every(t => !t.startsWith('router:'))).toBe(true) // the app puts the plugin's name before every toast
+  await band.unmount()
+})
+
+test('a queued switch is dropped by Cancel or by turning the router off; nothing runs after (owner case 2026-11-28)', async (engine, on) => {
+  const $ = engine as any
+  const opts = { sent: [] as Array<unknown>, models: [] as Array<string>, tokens: 40_000, read: 40_000, ownClock: true, files: { '/home/.claude/routing.json': FABLE_TIP } } as any
+  const ran: Array<string> = []
+  wire(on, opts)
+  appModel(on, $, opts, ran)
+  const clock = mock.clock(on, { now: 1_000 })
+  on('ui.toast', () => ({ value: undefined }))
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
+  await turnOn($, opts, clock)
+  await $.prompt.submit({ text: 'Do a deep research of side jobs I could run online' })
+  await turnOn($, opts, clock, 'medium', false)
+  await band.press({ key: 'router-switch' })
+  await band.press({ key: 'router-wait-cancel' })
+  expect(await band.find({ key: 'router-switch' })).toBeTruthy() // the tip is back
+  await $.turn.complete({ turnId: 'u', answer: '', durationMs: 1, isAborted: false, reason: 'answer' })
+  await clock.advance(600)
+  expect(ran).toEqual([])
+  await turnOn($, opts, clock, 'medium', false)
+  await band.press({ key: 'router-switch' })
+  await band.press({ key: 'router-power' }) // Stop router
+  await band.press({ key: 'router-power' }) // and Start again before the turn ends: the dropped switch stays dropped
+  await $.turn.complete({ turnId: 'u', answer: '', durationMs: 1, isAborted: false, reason: 'answer' })
+  await clock.advance(600)
+  expect(ran).toEqual([])
+  await band.unmount()
+})
+
+test('a switch the engine refuses with no turn running waits for the next turn end with the reason, then says it did not run (owner case 2026-11-28)', async (engine, on) => {
+  const $ = engine as any
+  const opts = { sent: [] as Array<unknown>, models: [] as Array<string>, tokens: 150_000, read: 150_000, ownClock: true, files: { '/home/.claude/routing.json': FABLE_TIP } } as any
+  const ran: Array<string> = []
+  const toasts: Array<string> = []
+  wire(on, opts)
+  appModel(on, $, opts, ran)
+  const clock = mock.clock(on, { now: 1_000 })
+  on('session.compact', () => { throw new Error('the summary request failed') })
+  on('ui.toast', (_: unknown, e: { text: string }) => { toasts.push(e.text); return { value: undefined } })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
+  for (let i = 0; i < 5; i++) await turnOn($, opts, clock)
+  await $.prompt.submit({ text: 'Do a deep research of side jobs I could run online' })
+  await band.press({ key: 'router-switch' })
+  expect(toasts.at(-1)).toMatch(/^Compact and switch to Fable is queued: it runs when the next turn ends \(now: .+\)$/)
+  await turnOn($, opts, clock)
+  expect(toasts.at(-1)).toMatch(/^Compact and switch to Fable did not run: .+/)
+  expect(ran).toEqual([]) // no model switch without its compaction
+  await turnOn($, opts, clock)
+  expect(toasts.filter(t => /did not run/.test(t)).length).toBe(1) // once, not at every turn
+  await band.unmount()
+})
+
+test("a pick in the app's model picker is yours, the model it already shows included; the router's own /model is not (owner case 2026-11-28)", async (engine, on) => {
+  const $ = engine as any
+  const batches: Array<Array<Step>> = []
+  const opts = { sent: [] as Array<unknown>, models: [] as Array<string>, batches, tokens: 40_000, read: 40_000, ownClock: true, files: { '/home/.claude/routing.json': FABLE_TIP } } as any
+  const ran: Array<string> = []
+  wire(on, opts)
+  appModel(on, $, opts, ran)
+  const clock = mock.clock(on, { now: 1_000 })
+  on('ui.toast', () => ({ value: undefined }))
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
+  await turnOn($, opts, clock)
+  await $.prompt.submit({ text: 'Do a deep research of side jobs I could run online' })
+  await band.press({ key: 'router-switch' }) // the session moves to Fable through the router's own /model
+  await turnOn($, opts, clock)
+  await $.classic.PostModelSwitch({ from_model: 'claude-fable-5-5', to_model: 'claude-fable-5-5', requested_model: 'fable', source: 'picker' }) // you pick Fable, as shown
+  await turnOn($, opts, clock)
+  await end($)
+  const main = rows(batches, 'usage').filter(r => r[2] === 'main')
+  expect(main.map(r => r[3])).toEqual(['opus', 'fable', 'fable'])
+  expect(Number(main[1]![7])).toBeGreaterThan(0) // the router's move: measured against Opus, the model before it (Fable costs more)
+  expect(Number(main[2]![6])).toBeGreaterThan(Number(main[1]![6])) // your own pick is its own baseline: priced on Fable now, not Opus
+})
+
+test('an effort set in the app picker stays yours for the chat, also when set back to where it started (owner case 2026-11-28)', async (engine, on) => {
+  const $ = engine as any
+  const sent: Array<unknown> = []
+  wire(on, { sent, tokens: 5_000, haiku: 'critique 0.95' })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await $.prompt.submit({ text: 'please review this PR for bugs and missing edge cases' })
+  await step($, 'medium') // critique: routed to high
+  await step($, 'low') // you set low in the picker
+  await step($, 'medium') // and back to medium: still yours
+  expect(sent).toEqual(['high', 'low', 'medium'])
+})
+
+test('Stop router in the band turns the whole router off for this chat in one press, clears its status line, and keeps it after a restart; Start router brings it back (owner ask 2026-11-28)', async (engine, on) => {
+  const $ = engine as any
+  const sent: Array<unknown> = []
+  const lines: Array<string | undefined> = []
+  const store = new Map<string, unknown>()
+  const toasts: Array<string> = []
+  wire(on, { sent, lines, store, tokens: 5_000, haiku: 'critique 0.95' })
+  on('ui.toast', (_: unknown, e: { text: string }) => { toasts.push(e.text); return { value: undefined } })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
+  await $.prompt.submit({ text: 'please review this PR for bugs and missing edge cases' })
+  await step($, 'medium')
+  expect(lines.at(-1)).toMatch(/task · effort high/)
+  expect((await band.find({ key: 'router-power' }))?.props.label).toBe('Stop router')
+  await band.press({ key: 'router-power' })
+  expect(lines.at(-1)).toBeUndefined() // no stale "effort high (picker medium)"
+  expect(toasts.at(-1)).toBe('Router off for this chat')
+  await step($, 'medium') // off: the step runs as the app sent it, mid-turn too
+  expect(sent.at(-1)).toBe('medium')
+  expect(lines.at(-1)).toBeUndefined()
+  expect(store.get('chat:sess-1')).toMatchObject({ mode: 'off' })
+  expect((await band.find({ key: 'router-power' }))?.props.label).toBe('Start router')
+  await band.press({ key: 'router-power' })
+  expect(store.get('chat:sess-1')).toMatchObject({ mode: 'both' })
+  await step($, 'medium')
+  expect(sent.at(-1)).toBe('high')
   await band.unmount()
 })
 
@@ -2909,7 +3139,7 @@ test("a model reached through the router's own offer is measured against the mod
   await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
   const band = await mountBoth($, { ...BAND, surface: 'desktop' })
   await $.prompt.submit({ text: 'write the launch post for the new product, for our blog' })
-  await band.press({ key: 'router-tip-switch' }) // the Opus chat goes to Fable on the router's tip
+  await band.press({ key: 'router-switch' }) // the Opus chat goes to Fable on the router's tip
   await step($, 'medium')
   await band.unmount()
   await end($)

@@ -14,7 +14,7 @@ import {
   type Ask, AUTO, BUILTIN, DELEGATE_ID, delegateSection, wantsDelegate, CLASS_LABELS, type Config, type Usage, type SessionWindow, adviseSwitch, agentTier, autoModel, classifierPrompt, firstModel, parseSessionCheck, sessionCheckPrompt, sessionCheckSystem, classifierSystem, classifyByRules, costUsd, explicitAsk, family,
   classifyPlan, isCacheBreak, merge, settleAnswers, readLabel, prices, rank, setPrices, turnEffort, briefHash, isHarder, needsSecondSample, spawnPick, withoutRouter,
   type Mood, longRun, moodPrompt, moodSystem, parseMood, raiseEffort, raiseSteps, stepUp, rebuildUsd, stepUsd, switchMath, FAMILIES, coldMath,
-  AWAKE_DEFAULT_HOURS, AWAKE_HOURS, AWAKE_MIN, AWAKE_PING_MS, AWAKE_TEXT, AWAY_COMPACT, awakeNext, isNudgeReply, type Gap, GAPS_KEPT, returnCurve, nudgePays, backAtAll, writeOverRead, doneSystem, donePrompt, parseDone, COMPACT_KEEP, compactUsd,
+  AWAKE_DEFAULT_HOURS, AWAKE_HOURS, AWAKE_MIN, AWAKE_PING_MS, AWAKE_TEXT, AWAY_COMPACT, awakeNext, isNudgeReply, type Gap, GAPS_KEPT, returnCurve, nudgePays, backAtAll, writeOverRead, doneSystem, donePrompt, parseDone, COMPACT_KEEP, compactUsd, compactsFirst,
   cheapestPoint, compactPoints, compactTone, compactStepUsd,
   SIZED, briefPaths, bucket, sizeOf, cacheSheet, PASTE_MIN, estTokens, keepsRaw, pasteModel, pasteSystem, pastePrompt, offloaded,
 } from './policy'
@@ -146,6 +146,10 @@ type State = {
   awakeStop: '' | 'done' | 'unlikely' // why keep-awake stopped early in this idle stretch
   ownPrompt: boolean // the running turn came from the person's own message (not a notification or a peer)
   openTurn: string // the main chat's turn still running ('' when idle): keep-awake waits while one is open
+  waiting?: { model: string | null; label: string } // a switch button pressed during a turn: it runs when the turn ends
+  ownSwitch?: string // the family our own /model is moving to: its model-switch event is ours, not the person's
+  answered?: number // the chat's answered turns: a long chat compacts before a model switch
+  effortMine?: boolean // the person changed the picker's effort in this chat: it stays theirs
   keptGrowth?: number // the growth per step last kept for this chat, for after a restart (until 3 new steps tell it again)
   seg: { ctx: number; steps: number } // where the chat stood at its first step since the last compaction or clear: its growth per step
   briefRun: Map<string, string> // brief hash -> the agentId of its latest run
@@ -253,7 +257,7 @@ async function readJson($: EngineInterface, path: string): Promise<any> {
     if (!(await $.fs.exists(path))) return undefined
     return JSON.parse(String(await $.fs.read(path)))
   } catch {
-    $.ui.toast(`router: ${path} is not valid JSON, ignored`)
+    $.ui.toast(`${path} is not valid JSON, ignored`)
     return undefined
   }
 }
@@ -343,7 +347,7 @@ function flush($: EngineInterface, s: State) {
       s.totals = totalsOf(rows.slice(steps.length))
     } catch (err) {
       s.pending = [...waiting, ...s.pending].slice(-MAX_PENDING)
-      if (!s.warned) $.ui.toast(`router: savings stats need Node.js 22.13 or newer on PATH; routing works without it. (${String(err).slice(0, 100)})`)
+      if (!s.warned) $.ui.toast(`Savings stats need Node.js 22.13 or newer on PATH; routing works without it. (${String(err).slice(0, 100)})`)
       s.warned = true
     }
     await keepAgents($, s)
@@ -448,11 +452,11 @@ async function offload($: EngineInterface, s: State, text: string): Promise<stri
   if (estTokens(text) <= PASTE_MIN || keepsRaw(text)) return undefined
   const model = pasteModel(text)
   const tokens = estTokens(text)
-  const fail = (why: string) => { $.ui.toast(`router: couldn't read your paste first (${why}); sent as typed.`); return undefined }
+  const fail = (why: string) => { $.ui.toast(`Couldn't read your paste first (${why}); sent as typed.`); return undefined }
   const path = `${pasteDir(s)}/${s.session}-${await $.clock.now()}.txt`
   try { await $.fs.write(path, text) } catch (err) { return fail(`saving it: ${String(err).slice(0, 80)}`) }
   s.pasted = true
-  $.ui.toast(`router: your message is about ${Math.round(tokens / 1000)}K tokens; ${model} is reading it so the chat keeps only what matters. Put "raw" in it to skip this.`)
+  $.ui.toast(`Your message is about ${Math.round(tokens / 1000)}K tokens; ${model} is reading it so the chat keeps only what matters. Put "raw" in it to skip this.`)
   const r = await $.model.complete({ model, effort: 'low', maxTokens: 2000, timeoutMs: 120_000, system: pasteSystem, prompt: pastePrompt(text) }).catch(() => undefined)
   if (!r?.isAnswered || !r.text.trim()) return fail('no answer from the reader')
   if (r.usage) {
@@ -599,8 +603,8 @@ async function sessionCheck($: EngineInterface, s: State, trigger: string) {
     // routed + from: the no-router baseline stays on the model before the move, and the move is never undone by itself
     await update($, chat, (c): ChatModel => ({ ...c, model: a.model, by: 'auto', routed: true, from: c.routed ? (c.from ?? null) : (c.model ?? w.model) }))
     $.ui.toast(free
-      ? `router: ${pretty(a.model)} for the same work from the next request (the cache was rebuilt anyway, so the move costs almost nothing)`
-      : `router: ${pretty(a.model)} for the same work from the next request (re-reading the chat costs about ${money(m.rebuild)}, paid back in about ${Math.ceil(m.breakEven)} steps)`)
+      ? `${pretty(a.model)} for the same work from the next request (the cache was rebuilt anyway, so the move costs almost nothing)`
+      : `${pretty(a.model)} for the same work from the next request (re-reading the chat costs about ${money(m.rebuild)}, paid back in about ${Math.ceil(m.breakEven)} steps)`)
     return
   }
   await update($, advice, () => ({ ...a, usd: rebuildUsd(a.model, s.lastContext) }))
@@ -609,7 +613,7 @@ async function sessionCheck($: EngineInterface, s: State, trigger: string) {
 // Our own compaction (our compact hook skips it): false when the engine skipped it.
 async function compactChat($: EngineInterface, s: State, skipped: string, instructions = 'Keep the goal, the plan, open tasks, decisions made, file paths and the next step.'): Promise<boolean> {
   const r = await $.session.compact({ instructions })
-  if ('skip' in r && r.skip) { $.ui.toast(`router: compaction was skipped (${r.skip})${skipped}`); return false }
+  if ('skip' in r && r.skip) { $.ui.toast(`Compaction was skipped (${r.skip})${skipped}`); return false }
   s.prev = NO_PREV
   s.lastContext = 0
   s.seg = { ctx: 0, steps: 0 }
@@ -732,26 +736,54 @@ async function coldOffer($: EngineInterface, s: State, model: string) {
   if (m.pays) await update($, cold, (): Cold => ({ cache: s.lastContext, resume: m.resume, extra: m.extra, perStep: m.perStep, payback: m.payback }))
 }
 
-async function compactFirst($: EngineInterface, s: State) {
-  await update($, cold, () => null)
-  s.switching = true
-  try { await compactChat($, s, '') } catch { $.ui.toast('router: wait for the current turn to finish, then press it again') } finally { s.switching = false }
-}
-
-// The offer's buttons. Compact first so the new model re-reads a short summary, not the whole chat; or start fresh.
-async function switchChat($: EngineInterface, s: State, model: string, kind: 'compact' | 'fresh' | 'now') {
+// The band's switch buttons (owner 2026-11-28): a long chat compacts, then swaps; any other just swaps; never a /clear.
+// model null: compact only (the cold offer). The engine compacts and switches models only between turns, so a press
+// during one waits for its end, and a refusal the router did not see coming waits for the next end with its reason.
+const switchLabel = (s: State, from: string, model: string | null) => (model === null ? 'Compact first' : `${compactsFirst(from, model, s.lastContext, s.answered ?? 0) ? 'Compact and switch' : 'Switch'} to ${pretty(model)}`)
+async function switchChat($: EngineInterface, s: State, model: string | null, isRetry = false) {
+  const from = await $.session.model()
+  const label = switchLabel(s, from, model)
+  if (s.openTurn) return wait($, s, { model, label })
   s.switching = true
   try {
-    if (kind === 'compact' && !(await compactChat($, s, '; the model stays'))) return
-    if (kind === 'fresh') await $.command.run({ command: 'clear' })
-    await update($, chat, (c): ChatModel => ({ ...c, model, by: 'you', routed: true, from: c.routed ? (c.from ?? null) : c.model }))
+    if (label.startsWith('Compact') && !(await compactChat($, s, model ? '; the model stays' : ''))) return
+    if (model === null) return void (await update($, cold, () => null))
+    await update($, chat, (c): ChatModel => ({ ...c, model, by: 'you', routed: true, from: c.routed ? (c.from ?? null) : (c.model ?? from) }))
     await update($, advice, () => null)
     await update($, hint, () => null)
-  } catch {
-    $.ui.toast('router: wait for the current turn to finish, then press it again')
+    await syncPicker($, s)
+  } catch (err) {
+    const why = err instanceof Error ? err.message : String(err)
+    if (isRetry) $.ui.toast(`${label} did not run: ${why}`)
+    else wait($, s, { model, label }, why)
   } finally {
     s.switching = false
   }
+}
+function wait($: EngineInterface, s: State, w: NonNullable<State['waiting']>, why?: string) {
+  s.waiting = w
+  $.ui.toast(why ? `${w.label} is queued: it runs when the next turn ends (now: ${why})` : `${w.label} is queued: it runs when this turn ends`)
+  $.ui.invalidate('ui.render')
+}
+// A turn ended: the queued switch runs once.
+async function runWaiting($: EngineInterface, s: State) {
+  const w = s.waiting
+  if (!w || s.openTurn) return
+  s.waiting = undefined
+  $.ui.invalidate('ui.render')
+  if (s.cfg.mode !== 'off') await switchChat($, s, w.model, true)
+}
+
+// The app's model picker shows what runs (owner 2026-11-28): the chat's model, set by the router or in the band, becomes
+// the session's own through /model (this session only, no model call, between turns), so a pick in the picker is always
+// the person's. With no model of its own, the chat goes back to the one it had before the router moved it.
+async function syncPicker($: EngineInterface, s: State) {
+  if (s.cfg.mode === 'off' || s.headless || s.openTurn) return
+  const c = await read($, chat)
+  const want = c.model ?? c.from
+  if (!want || family(want) === family(await $.session.model())) return
+  s.ownSwitch = family(want)
+  await $.command.run({ command: 'model', args: family(want) }).catch(() => { s.ownSwitch = undefined })
 }
 
 // After a /clear the process goes on with a new chat: its ledger file, label, asks, first-prompt pick, subagent memory,
@@ -762,6 +794,7 @@ async function clearChat($: EngineInterface, s: State) {
     session: '', label: '', lastLedgerTurn: '', stickyAsk: undefined, ask: undefined, seenPrompt: false, hasClassified: false,
     hadClass: false, lastClass: null, lastHintModel: null, switchTurn: false, sure: false, samples: [], turnCount: 0, quietUntil: 0, declined: null, unhappy: 0,
     prev: NO_PREV, lastContext: 0, mainSteps: 0, mainOut: 0, rerouted: 0, lastRerouted: '', lastSwitch: '', lastEffortSwitch: '', lastQuick: '', promptText: '', turnRows: [], lastRows: [], lastStay: -1,
+    waiting: undefined, answered: 0, effortMine: false,
   })
   for (const m of [s.briefs, s.asideAgents, s.agentEffort, s.agentType, s.agentAsked, s.agentSpend, s.briefRun, s.wastedRuns]) m.clear()
   s.savedAgents = NO_AGENTS // the old chat's memory stays in the store, for a resume of it
@@ -786,13 +819,15 @@ async function clearChat($: EngineInterface, s: State) {
 }
 
 // Settings: the person picks this chat's model (no auto moves for the chat then), or Auto gives it back to the router.
-async function pickModel($: EngineInterface, v: string) {
-  if (v === 'auto') { await update($, chat, (c): ChatModel => ({ ...c, model: null, by: null, routed: false, from: null })); return }
-  await update($, chat, (c): ChatModel => ({ ...c, model: v, by: 'you', routed: false, from: null }))
+async function pickModel($: EngineInterface, s: State, v: string) {
+  if (v === 'auto') { await update($, chat, (c): ChatModel => ({ ...c, model: null, by: null, routed: false })); return syncPicker($, s) }
+  const from = await $.session.model()
+  await update($, chat, (c): ChatModel => ({ ...c, model: v, by: 'you', routed: false, from: c.from ?? from }))
   await update($, advice, () => null)
   await update($, hint, () => null)
   const isNew = (await $.session.usage().catch(() => undefined))?.context.tokens === undefined
-  if (!isNew) $.ui.toast(`router: ${pretty(v)} from the next request; it reads this chat once without cache`)
+  if (!isNew) $.ui.toast(`${pretty(v)} from the next request; it reads this chat once without cache`)
+  await syncPicker($, s)
 }
 
 // "Not now": the same trigger stays quiet until a different one fires.
@@ -894,7 +929,7 @@ async function autoCompact($: EngineInterface, s: State) {
   const was = s.lastContext
   s.switching = true
   try {
-    if (await compactChat($, s, '')) $.ui.toast(`router: compacted this chat at ${Math.round(was / 1000)}K (your point: ${at / 1000}K)`)
+    if (await compactChat($, s, '')) $.ui.toast(`Compacted this chat at ${Math.round(was / 1000)}K (your point: ${at / 1000}K)`)
   } catch { /* a turn started meanwhile: the next turn's end tries again */ } finally { s.switching = false }
 }
 
@@ -905,11 +940,11 @@ async function setDefaultWindow($: EngineInterface, s: State, at: number | null)
   let cfg: Record<string, unknown> = {}
   try {
     if (await $.fs.exists(path)) cfg = JSON.parse(String(await $.fs.read(path)))
-  } catch { $.ui.toast(`router: ${path} is not valid JSON, so it was left as it is`); return }
+  } catch { $.ui.toast(`${path} is not valid JSON, so it was left as it is`); return }
   if (at) cfg.autoCompactWindow = at
   else delete cfg.autoCompactWindow
   await $.fs.write(path, `${JSON.stringify(cfg, null, 2)}\n`)
-  $.ui.toast(at ? `router: Claude Code now compacts every chat at ${at / 1000}K (settings.json; new sessions pick it up)` : 'router: Claude Code is back on its own compaction window (settings.json)')
+  $.ui.toast(at ? `Claude Code now compacts every chat at ${at / 1000}K (settings.json; new sessions pick it up)` : 'Claude Code is back on its own compaction window (settings.json)')
 }
 
 // A saving feature on or off, for this session and every later one.
@@ -948,8 +983,8 @@ async function rateSwitch($: EngineInterface, s: State, id: string, label: 'good
   const c = await read($, chat)
   if (w.kind === 'pick' && c.model && family(c.model) === w.toModel && (c.by !== 'you' || c.routed)) {
     const usd = rebuildUsd(w.fromModel, s.lastContext)
-    if (usd > WARN_UNDO_USD) $.ui.toast(`router: back to ${pretty(w.fromModel)}; the next request re-reads this chat once, about ${money(usd)}`)
-    await update($, chat, (x): ChatModel => ({ ...x, model: null, by: 'you', routed: false, from: null }))
+    if (usd > WARN_UNDO_USD) $.ui.toast(`Back to ${pretty(w.fromModel)}; the next request re-reads this chat once, about ${money(usd)}`)
+    await update($, chat, (x): ChatModel => ({ ...x, model: null, by: 'you', routed: false }))
   }
   if (w.kind === 'effort' && w.fromEffort && !c.effort) await setChatEffort($, s, w.fromEffort)
 }
@@ -978,7 +1013,7 @@ async function setScope($: EngineInterface, s: State, scope: 'global' | 'project
     const old = (await $.fs.exists(path)) ? String(await $.fs.read(path)) : undefined
     await $.fs.write(path, withMode(old, mode))
   } catch {
-    $.ui.toast(`router: could not update ${path} (is it valid JSON?)`)
+    $.ui.toast(`Could not update ${path} (is it valid JSON?)`)
     return
   }
   // switched from this chat: it should follow the switch just made, not its own older choice
@@ -1094,6 +1129,8 @@ const reroutedNote = (v: RouterView) => `${v.rerouted} ${v.rerouted === 1 ? 'tur
 async function setMode($: EngineInterface, s: State, isOn: boolean) {
   s.cfg = { ...s.cfg, mode: isOn ? 'on' : 'off' }
   await update($, view, (v): RouterView => ({ ...v, isOn }))
+  // off is off: no queued switch runs, and the status line no longer tells what the router did (owner case 2026-11-28)
+  if (!isOn) { s.waiting = undefined; await $.ui.status(undefined) }
 }
 
 async function setAutoEffort($: EngineInterface, s: State, isOn: boolean) {
@@ -1159,7 +1196,7 @@ async function guardCache($: EngineInterface, s: State, sent: string, read0: num
     if (isCacheBreak(s.prev.read, read0, now - s.prev.at)) {
       await $.store.set('perMessage', 'unsupported')
       await update($, view, (v): RouterView => ({ ...v, perMessage: 'unsupported' }))
-      $.ui.toast('router: an effort change broke the prompt cache; auto effort is off (/route effort retest to measure again)')
+      $.ui.toast('An effort change broke the prompt cache; auto effort is off (/route effort retest to measure again)')
     } else if (s.prev.read > 20000 && ++s.cleanChanges >= 2) {
       await $.store.set('perMessage', 'ok')
       await update($, view, (v): RouterView => ({ ...v, perMessage: 'ok' }))
@@ -1177,7 +1214,7 @@ async function refreshTools($: EngineInterface, s: State, force = false) {
   await update($, tools, () => t)
   const p = await checkPrices($, prices(), force).catch(() => undefined)
   if (p) setPrices(p.table)
-  if (p?.note && Date.now() - p.at < 60_000) $.ui.toast(`router: ${p.note}`)
+  if (p?.note && Date.now() - p.at < 60_000) $.ui.toast(`${p.note}`)
 }
 
 // The Settings buttons and /route update: run the update, then re-check versions and model lists.
@@ -1187,7 +1224,7 @@ async function runUpdate($: EngineInterface, s: State, tool: Tool): Promise<stri
     const msg = await updateTool($, await where($, s), tool)
     const t = ((await $.store.get('versions')) as Versions | undefined) ?? null
     await update($, tools, () => t)
-    $.ui.toast(`router: ${msg}`.slice(0, 200))
+    $.ui.toast(`${msg}`.slice(0, 200))
     return msg
   } finally {
     await update($, updating, () => null)
@@ -1221,6 +1258,9 @@ export const register: Register = on => {
     s.gapStart = (await gapsOf($)).find(g => g.s === s.session && g.end === null)?.start ?? 0 // a gap left open before a restart
     await restoreAgents($, s)
     await restoreChat($, s)
+    // a resumed chat's answered turns count toward a long one (a model switch compacts it first)
+    const said = ((await $.session.messages().catch(() => [])) as Array<SessionMessage> | undefined) ?? []
+    s.answered = said.filter(m => m.role === 'user' && m.text.trim() && !m.toolResults?.length && m.text !== AWAKE_TEXT).length
     await seedMix($).catch(() => undefined)
     const kept = ((await $.store.get('features').catch(() => undefined)) ?? {}) as Partial<Features>
     // only today's switches: an older version's key (0.8.1's "idle") is dropped
@@ -1286,27 +1326,34 @@ export const register: Register = on => {
   on('turn.complete', async ($, e, next) => shield($, e, next, async go => {
     if (e.turnId === s.openTurn) s.openTurn = ''
     // the nudge's turn is over: a later turn no prompt hook sees (a notification, a meta prompt) is not a nudge
+    if (e.agentId === undefined && !s.pinging && !e.isAborted) s.answered = (s.answered ?? 0) + 1
     if (e.agentId === undefined) { s.pinging = false; s.ownPrompt = false }
     const r = await go(e)
-    if (e.agentId === undefined && s.cfg.mode !== 'off' && !s.headless) $.clock.after(500, async () => { await autoCompact($, s) })
+    // between turns: a switch pressed during this one, else this chat's own compact point; then the picker catches up
+    if (e.agentId === undefined && s.cfg.mode !== 'off' && !s.headless) $.clock.after(500, async () => { await (s.waiting ? runWaiting($, s) : autoCompact($, s)); await syncPicker($, s) })
     return r
   }))
   // The account refused the request (Fable on a plan with usage credits off): the router's pick for the chat goes, so
   // "Try again" runs on the session's model, and that model is not offered or sent again in this process (owner case 2026-11-27)
   on('classic.StopFailure', async ($, e, next) => shield($, e, next, async go => {
     const picked = await read($, chat)
-    if (!e.agent_id && picked.model && (e.error === 'billing_error' || e.error === 'model_not_found') && family(picked.model) !== family(await $.session.model())) {
+    if (!e.agent_id && picked.model && (e.error === 'billing_error' || e.error === 'model_not_found')) {
       s.unavailable.add(family(picked.model))
-      await update($, chat, (c): ChatModel => ({ ...c, model: null, by: 'you', routed: false, from: null }))
+      const back = picked.from && family(picked.from) !== family(picked.model) ? picked.from : s.cfg.main.model
+      await update($, chat, (c): ChatModel => ({ ...c, model: null, by: 'you', routed: false, from: back }))
       await update($, hint, () => null)
       await update($, advice, () => null)
-      $.ui.toast(`router: ${pretty(picked.model)} is not available on this account (${e.error.replace('_', ' ')}); the chat is back on the session's model. Press Try again.`)
+      $.ui.toast(`${pretty(picked.model)} is not available on this account (${e.error.replace('_', ' ')}); the chat is back on ${pretty(back)}. Press Try again.`)
+      await syncPicker($, s)
     }
     return go(e)
   }))
-  // A model picked in the app (the model menu, /model) beats the router's pick for this chat (owner case 2026-11-27)
+  // A model picked in the app (the model menu, /model) beats the router's pick for this chat, the same model included
+  // (owner cases 2026-11-27, 2026-11-28); the router's own /model (syncPicker) and a fallback or resume are not a pick
   on('classic.PostModelSwitch', async ($, e, next) => shield($, e, next, async go => {
-    if (!e.agent_id && family(e.from_model) !== family(e.to_model)) await update($, chat, (c): ChatModel => ({ ...c, model: null, by: 'you', routed: false, from: null }))
+    const isOwn = !!s.ownSwitch && family(e.to_model) === s.ownSwitch
+    if (isOwn) { s.ownSwitch = undefined; s.baseEffort = '' } // the switch may reset the picker's effort: learn its default again
+    else if (!e.agent_id && e.source !== 'auto' && e.source !== 'resume') await update($, chat, (c): ChatModel => ({ ...c, model: null, by: 'you', routed: false, from: null }))
     return go(e)
   }))
   on('tool.call', { tool: new RegExp(`^(${TODO_TOOLS.join('|')})$`) }, async ($, e, next) => shield($, e, next, async go => {
@@ -1465,7 +1512,7 @@ export const register: Register = on => {
     s.switchTurn = !midTurn && Boolean(cls) && s.sure // every prompt starts on the picked model; only a sure quick task moves its own turn
     if (isFirst && !asked?.model && s.routeModels && !chosen.by) {
       const m = firstModel(s.samples, await $.session.model(), s.cfg)
-      if (m) await update($, chat, (c): ChatModel => ({ ...c, model: m, by: 'auto' }))
+      if (m) { const from = await $.session.model(); await update($, chat, (c): ChatModel => ({ ...c, model: m, by: 'auto', from: c.from ?? from })) }
     } else if (strict && cls !== undefined && (cls === null || rank(s.cfg.classes[cls]?.model ?? s.cfg.main.model) > rank(chosen.model!))) {
       // a new task the router's own pick may be too weak for (or one it can't place): back to the default; the chat is still short
       await update($, chat, (c): ChatModel => ({ ...c, model: null, by: null }))
@@ -1561,7 +1608,9 @@ export const register: Register = on => {
     const ask = isMain ? s.ask : undefined
     const asked = ask?.model && family(ask.model) !== family(e.model) ? ask.model : undefined
     // then the chat's model, and under it a sure quick task's one-turn move, unless the person chose the model
-    const base = picked?.model && family(picked.model) !== family(e.model) ? picked.model : undefined
+    // (with no model of its own after an undo, the model before the router moved it, until the picker catches up)
+    const want = picked?.model ?? picked?.from
+    const base = want && family(want) !== family(e.model) ? want : undefined
     // a named model always wins, also when it is the chat's own: "use opus" on an Opus chat keeps the turn on Opus (audit 2026-11-19)
     // an aside turn (ultrathink, ultracode) keeps only the person's own picks: no router pick of the chat's model, no move
     const aside = isMain && s.aside
@@ -1579,7 +1628,9 @@ export const register: Register = on => {
         // every second unhappy reply in this task raises it a step (effort keeps the prompt cache; a model switch would not)
         const target = raiseEffort(turnEffort(s.lastClass, s.cfg, model ?? e.model) ?? s.cfg.main.effort, raiseSteps(s.unhappy))
         // the starting effort is the app picker's default and gets routed; one the person changes to later (/effort, ultrathink) is theirs
-        const isDefault = String(e.effort) === s.baseEffort
+        // and stays theirs for the chat, also when they set it back to where it started (owner case 2026-11-28)
+        if (!s.aside && String(e.effort) !== s.baseEffort) s.effortMine = true // an ultrathink turn raises only its own
+        const isDefault = !s.effortMine
         if (s.cfg.mode !== 'off' && !s.headless && s.cfg.autoEffort && isDefault && v.perMessage !== 'unsupported' && !s.aside && target) { effort = target as typeof effort; why = raiseSteps(s.unhappy) > 0 ? 'unhappy' : 'class' }
       }
     } else if (e.agentId && e.effort !== undefined && s.agentEffort.has(e.agentId)) {
@@ -1601,7 +1652,7 @@ export const register: Register = on => {
     // an aside turn ran as the person set it: with no router it would have run the same
     const noRouter = aside ? { model: model ?? e.model, effort: effort as string | undefined } : {
       // a model reached through a router tip or offer is the router's doing: the baseline stays on the model before it (owner 2026-11-21)
-      model: e.agentId ? (s.agentAsked.get(e.agentId) ?? u.model) : (asked ?? (picked?.routed ? (picked.from ?? e.model) : picked?.by === 'you' ? base : undefined) ?? e.model),
+      model: e.agentId ? (s.agentAsked.get(e.agentId) ?? u.model) : (asked ?? (picked?.by === 'you' && !picked.routed ? base : picked?.from) ?? e.model),
       effort: (ask?.effort ?? picked?.effort ?? e.effort) as string | undefined,
     }
     const longCache = e.agentId === undefined
@@ -1664,7 +1715,7 @@ export const register: Register = on => {
         // a nudge that found the cache gone (a 5-minute cache, as API keys get): nudges can't keep it, so they stop
         if (u.cache_creation_input_tokens > s.lastContext / 2) {
           await setFeature($, 'awake', false)
-          $.ui.toast('router: keep-awake found the cache already gone (here it lasts under 50 minutes), so it is now off. You can turn it on again in Settings.')
+          $.ui.toast('Keep-awake found the cache already gone (here it lasts under 50 minutes), so it is now off. You can turn it on again in Settings.')
         }
         await update($, away, (a): Away => ({ pings: (a?.pings ?? 0) + 1, usd: (a?.usd ?? 0) + usd, rebuild: rebuildUsd(u.model, s.lastContext), compacted: false }))
       } else {
@@ -1732,9 +1783,9 @@ export const register: Register = on => {
     const tip = await read($, hint)
     const isHint = tip !== null && !(await read($, isHidden)) && f.v.isOn
     const open = (tab: Tab) => () => openPanel($, tab)
-    const board = () => openBoard($, s).catch(() => $.ui.toast('router: could not open the board'))
+    const board = () => openBoard($, s).catch(() => $.ui.toast('Could not open the board'))
     const picked = await read($, chat)
-    const undo = () => update($, chat, (c): ChatModel => ({ ...c, model: null, by: 'you', routed: false, from: null })) // back to the default; auto stays off for this chat
+    const undo = () => update($, chat, (c): ChatModel => ({ ...c, model: null, by: 'you', routed: false })).then(() => syncPicker($, s)) // back to the model before; auto stays off for this chat
     // the cache's hour counts down in the row: redraw once a minute while it is warm (text changes, the height never)
     const left = s.lastContext >= 1000 ? minutesLeft(s.prev.at, f.at, 60) : undefined
     if (left && !s.minuteTick) s.minuteTick = $.clock.after(60_000, () => { s.minuteTick = undefined; $.ui.invalidate('ui.render') })
@@ -1748,6 +1799,8 @@ export const register: Register = on => {
     const K = kt(s.lastContext)
     // keep awake for this chat in one press (owner ask 2026-11-27), only where nudges could run
     const awakeLabel = f.v.isOn && f.feats.awake && s.lastContext >= AWAKE_MIN ? (f.chatAwake ? 'Stop nudges' : 'Keep awake') : ''
+    // the whole router on or off for this chat in one press (owner ask 2026-11-28): Settings > This chat > Routing, kept per chat
+    const power = f.v.isOn ? 'Stop router' : 'Start router'
     const lead = f.v.isOn ? `● ${f.now}` : `● Router off ${f.where}`
     const shown = bandFit(e.props.bodyColumns, e.surface === 'desktop', [
       { key: 'lead', forms: [lead], required: true },
@@ -1756,6 +1809,7 @@ export const register: Register = on => {
       { key: 'update', forms: behind ? ['Update available'] : [], button: true, required: true },
       { key: 'stats', forms: ['Stats'], button: true, required: true },
       { key: 'settings', forms: ['Settings'], button: true, required: true },
+      { key: 'power', forms: [power], button: true },
       { key: 'awake', forms: awakeLabel ? [awakeLabel] : [], button: true },
       { key: 'board', forms: ['Board'], button: true },
       { key: 'switches', forms: f.feats.labels ? ['Switches'] : [], button: true },
@@ -1780,7 +1834,8 @@ export const register: Register = on => {
         <Box key="router-buttons" flexDirection="row" alignItems="center" columnGap={2} flexGrow={1} justifyContent="flex-end">
           {!!shown.hit && <Text tabular dimColor>{shown.hit}</Text>}
           <Button key="router-cache" plain dimColor={!warn && cacheLabel !== 'Cache'} onPress={open('cache')}><Text tabular {...(warn ? { color: 'warning' as const } : {})}>{cacheLabel}</Text></Button>
-          {!!shown.awake && <Button key="router-awake" plain dimColor={!f.chatAwake} label={awakeLabel} onPress={() => setChatAwake($, s, !f.chatAwake).then(() => $.ui.toast(f.chatAwake ? 'router: keep awake off for this chat' : 'router: keep awake on for this chat'))} />}
+          {!!shown.power && <Button key="router-power" plain dimColor={f.v.isOn} label={power} onPress={() => setChat($, s, f.v.isOn ? 'off' : 'both').then(() => $.ui.toast(f.v.isOn ? 'Router off for this chat' : 'Router on for this chat'))} />}
+          {!!shown.awake && <Button key="router-awake" plain dimColor={!f.chatAwake} label={awakeLabel} onPress={() => setChatAwake($, s, !f.chatAwake).then(() => $.ui.toast(f.chatAwake ? 'Keep awake off for this chat' : 'Keep awake on for this chat'))} />}
           {!!shown.switches && <Button key="router-switches" plain label="Switches" onPress={open('switches')} />}
           {!!shown.board && <Button key="router-board" plain label="Board" onPress={board} />}
           <Button key="router-stats" plain label="Stats" onPress={open('stats')} />
@@ -1791,31 +1846,41 @@ export const register: Register = on => {
     // An offer gets its own row, so the model and the savings above never truncate; buttons do the switch.
     const offer = f.v.isOn ? await read($, advice) : null
     const isNew = (await $.session.usage().catch(() => undefined))?.context.tokens === undefined // nothing answered yet: no cache to lose
-    const offerRow = offer
+    const from = await $.session.model()
+    const press = (model: string) => <Button key="router-switch" variant="primary" label={switchLabel(s, from, model)} onPress={() => switchChat($, s, model)} />
+    const costs = (model: string, usd?: number) => switchCost(usd, isNew, switchLabel(s, from, model).startsWith('Compact'))
+    // a switch pressed during a turn waits for its end; Cancel drops it
+    const waitRow = s.waiting
       ? (
           <Box key="router-offer" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} width={e.props.bodyColumns}>
-            <Text color="warning" wrap="wrap">{offer.action === 'up' ? `The work ahead looks harder: ${pretty(offer.model)} fits it better.` : `The work ahead looks lighter: ${pretty(offer.model)} does it as well.`}{switchCost(offer.usd, isNew)}</Text>
-            {/* both framed, the advised one filled: the row keeps its shape whichever is advised */}
-            <Button key="router-offer-compact" {...(offer.kind === 'compact' ? { variant: 'primary' as const } : {})} label={`Compact and switch to ${pretty(offer.model)}`} onPress={() => switchChat($, s, offer.model, 'compact')} />
-            <Button key="router-offer-fresh" {...(offer.kind === 'fresh' ? { variant: 'primary' as const } : {})} label={`Fresh start on ${pretty(offer.model)}`} onPress={() => switchChat($, s, offer.model, 'fresh')} />
+            <Text color="warning" wrap="wrap">{s.waiting.label}: queued, it runs when this turn ends.</Text>
+            <Button key="router-wait-cancel" plain dimColor label="Cancel" onPress={() => { s.waiting = undefined; $.ui.invalidate('ui.render') }} />
+          </Box>
+        )
+      : null
+    const offerRow = waitRow ?? (offer
+      ? (
+          <Box key="router-offer" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} width={e.props.bodyColumns}>
+            <Text color="warning" wrap="wrap">{offer.action === 'up' ? `The work ahead looks harder: ${pretty(offer.model)} fits it better.` : `The work ahead looks lighter: ${pretty(offer.model)} does it as well.`}{costs(offer.model, offer.usd)}</Text>
+            {press(offer.model)}
             <Button key="router-offer-no" plain dimColor label="Not now" onPress={() => decline($, s)} />
           </Box>
         )
       : isHint && tip
         ? (
             <Box key="router-offer" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} width={e.props.bodyColumns}>
-              <Text color="warning" wrap="wrap">{pretty(tip.model)} fits this task better{tip.cls === 'this task' ? '' : ` (${tip.cls})`}.{switchCost(tip.usd, isNew)}</Text>
-              <Button key="router-tip-switch" variant="primary" label={isNew ? `Switch to ${pretty(tip.model)}` : `Compact and switch to ${pretty(tip.model)}`} onPress={() => switchChat($, s, tip.model, isNew ? 'now' : 'compact')} />
+              <Text color="warning" wrap="wrap">{pretty(tip.model)} fits this task better{tip.cls === 'this task' ? '' : ` (${tip.cls})`}.{costs(tip.model, tip.usd)}</Text>
+              {press(tip.model)}
               <Button key="router-hide" plain dimColor label="Dismiss" onPress={() => update($, isHidden, () => true)} />
             </Box>
           )
-        : null
+        : null)
     const lapsed = f.v.isOn && !offerRow ? await read($, cold) : null
     const coldRow = lapsed
       ? (
           <Box key="router-cold" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} width={e.props.bodyColumns}>
             <Text color="warning" wrap="wrap">{coldWords(lapsed)}</Text>
-            <Button key="router-cold-compact" variant="primary" label="Compact first" onPress={() => compactFirst($, s)} />
+            <Button key="router-cold-compact" variant="primary" label="Compact first" onPress={() => switchChat($, s, null)} />
             <Button key="router-cold-keep" plain dimColor label="Keep it all" onPress={() => update($, cold, () => null)} />
           </Box>
         )
@@ -1850,7 +1915,7 @@ export const register: Register = on => {
         {/* every tab framed, the open one filled: a switch of tab never moves the others (owner pick 2026-11-27) */}
         {TABS.map(([t, label]) => <Button key={`router-tab-${t}`} {...(t === shown ? { variant: 'primary' as const } : {})} label={label} onPress={() => update($, panel, () => t)} />)}
         <Box flexGrow={1} />
-        <Button key="router-panel-board" plain label="Board" onPress={() => openBoard($, s).catch(() => $.ui.toast('router: could not open the board'))} />
+        <Button key="router-panel-board" plain label="Board" onPress={() => openBoard($, s).catch(() => $.ui.toast('Could not open the board'))} />
       </Box>
     )
     // A block is its heading and its rows packed tight; one blank line between blocks, none inside one.
@@ -2087,7 +2152,7 @@ export const register: Register = on => {
     return page([
       heading('router-h-chat', 'This chat', 'kept after a restart'),
       field('router-chat', 'Routing', choices('router-chat', [['off', 'Off'], ['effort', 'Effort'], ['models', 'Models'], ['both', 'Both']], f.chatMode, v => setChat($, s, v))),
-      field('router-model', 'Model', choices('router-model', [['auto', 'Auto'], ['haiku', 'Haiku'], ['sonnet', 'Sonnet'], ['opus', 'Opus'], ['fable', 'Fable']], picked.by === 'you' ? family(picked.model ?? s.cfg.main.model) : 'auto', v => pickModel($, v), v => (v === 'auto' ? undefined : modelColor(v)))),
+      field('router-model', 'Model', choices('router-model', [['auto', 'Auto'], ['haiku', 'Haiku'], ['sonnet', 'Sonnet'], ['opus', 'Opus'], ['fable', 'Fable']], picked.by === 'you' ? family(picked.model ?? s.cfg.main.model) : 'auto', v => pickModel($, s, v), v => (v === 'auto' ? undefined : modelColor(v)))),
       field('router-effort', 'Effort', choices('router-effort', [['auto', 'Auto'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra high'], ['max', 'Max']], picked.effort ?? 'auto', v => setChatEffort($, s, v === 'auto' ? null : v), v => (v === 'auto' ? undefined : shade(model, v, 'dark')))),
       f.feats.awake && field('router-chat-awake', 'Keep awake', choices('router-chat-awake', ONOFF, f.chatAwake ? 'on' : 'off', v => setChatAwake($, s, v === 'on'))),
       field('router-compact', 'Compact at', (
@@ -2127,7 +2192,7 @@ export const register: Register = on => {
       <Box key="router-more" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} marginLeft={LABEL + 1}>
         <Button key="router-recheck" plain label="Re-check versions" onPress={() => refreshTools($, s, true)} />
         <Button key="router-widget" plain label={widgetOpen ? 'Hide widget' : 'Show widget'} onPress={() => showWidget($, !widgetOpen)} />
-        <Button key="router-rules" plain label="Edit rules" onPress={() => editRules($, s).catch(() => $.ui.toast('router: could not open routing.json'))} />
+        <Button key="router-rules" plain label="Edit rules" onPress={() => editRules($, s).catch(() => $.ui.toast('Could not open routing.json'))} />
       </Box>,
     ])
   })
@@ -2188,7 +2253,7 @@ export const register: Register = on => {
           : c.map(x => line(`p-${x.label}`, x.label, `${x.value} · ${x.sub}`))}
         {sheetLine(s, f) && <Text key="p-sheet" dimColor wrap="wrap">{sheetLine(s, f)}</Text>}
         <Box flexDirection="row" gap={2}>
-          <Button key="p-board" plain label="Open board" onPress={() => openBoard($, s).catch(() => $.ui.toast('router: could not open the board'))} />
+          <Button key="p-board" plain label="Open board" onPress={() => openBoard($, s).catch(() => $.ui.toast('Could not open the board'))} />
         </Box>
       </Box>
     )
