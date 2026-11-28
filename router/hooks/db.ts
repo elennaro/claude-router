@@ -150,6 +150,11 @@ export const adjustRow = (id: string, toEffort: string, why: 'lower' | 'higher' 
   sql: 'UPDATE switches SET to_effort = ?, why = ?, label = ?, source = ?, labelled = ? WHERE id = ?',
   params: [toEffort, why, why === 'right' ? null : 'bad', why === 'right' ? null : 'adjust', why === 'right' ? null : at, id],
 })
+// The same for the Settings move buttons: the chat's model, set right by your hand.
+export const adjustModelRow = (id: string, toModel: string, why: 'lower' | 'higher' | 'right', at: number): Step => ({
+  sql: 'UPDATE switches SET to_model = ?, why = ?, label = ?, source = ?, labelled = ? WHERE id = ?',
+  params: [toModel, why, why === 'right' ? null : 'bad', why === 'right' ? null : 'adjust', why === 'right' ? null : at, id],
+})
 // Balance (owner, 2026-11-26): unlabelled rows would swamp the labelled ones and teach a model to keep everything as is,
 // so from before `day` (today's can still be rated) at most SILENT_PER_LABEL unlabelled rows per labelled one stay, the
 // newest, counted apart for switches and for stays.

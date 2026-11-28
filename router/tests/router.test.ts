@@ -3011,6 +3011,83 @@ test('a switch pressed during a turn is queued with a Cancel, runs once when the
   await band.unmount()
 })
 
+test('Settings Move: one model step now or after a compaction, with its cost; auto stays; the ends dim (owner ask 2026-11-28)', async (engine, on) => {
+  const $ = engine as any
+  const opts = { sent: [] as Array<unknown>, models: [] as Array<string>, tokens: 40_000, read: 40_000, ownClock: true, files: { '/home/.claude/routing.json': ROUTING } } as any
+  const ran: Array<string> = []
+  const toasts: Array<string> = []
+  wire(on, opts)
+  appModel(on, $, opts, ran)
+  const clock = mock.clock(on, { now: 1_000 })
+  let compactions = 0
+  on('session.compact', () => { compactions++; return { messages: [{ role: 'user', text: 'summary', toolUses: [] }] } })
+  on('ui.toast', (_: unknown, e: { text: string }) => { toasts.push(e.text); return { value: undefined } })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
+  await turnOn($, opts, clock)
+  await band.press({ key: 'router-settings' })
+  const label = async (k: string) => (await band.find({ key: `router-move-${k}` }))?.props.label
+  expect(await band.find({ type: 'Text', text: 'After compact' })).toBeTruthy()
+  expect(await label('down-compact')).toMatch(/^Sonnet · \$\d/)
+  expect(await label('down')).toMatch(/^Sonnet · \$\d/)
+  expect(await label('up')).toMatch(/^Fable · \$\d/)
+  expect(await label('up-compact')).toMatch(/^Fable · \$\d/)
+  expect(await label('down-compact')).not.toBe(await label('down')) // compacting first writes less on the new model
+  await band.press({ key: 'router-move-down' }) // a short chat: just the swap
+  expect(compactions).toBe(0)
+  expect(ran).toEqual(['model sonnet'])
+  expect(await band.find({ key: 'router-model-auto', variant: 'primary' })).toBeTruthy() // the model stays on auto
+  await band.press({ key: 'router-move-down-compact' }) // after compact: compacts whatever the length
+  expect(compactions).toBe(1)
+  expect(ran).toEqual(['model sonnet', 'model haiku'])
+  expect(await label('down')).toBe('Lower')
+  expect((await band.find({ key: 'router-move-down' }))?.props.dimColor).toBe(true) // stays, dimmed: the row never shifts
+  await band.press({ key: 'router-move-down' })
+  expect(ran.length).toBe(2)
+  expect(toasts.at(-1)).toBe('Haiku is already the lowest model')
+  for (let i = 0; i < 3; i++) await band.press({ key: 'router-move-up' }) // up to Fable, never past it
+  expect(ran.slice(2)).toEqual(['model sonnet', 'model opus', 'model fable'])
+  expect(await label('up-compact')).toBe('Higher')
+  await turnOn($, opts, clock, 'medium', false) // a press while Claude answers is queued
+  await band.press({ key: 'router-move-down' })
+  expect(ran.length).toBe(5)
+  expect(toasts.at(-1)).toBe("Switch to Opus is queued: it runs when Claude's reply finishes")
+  await $.turn.complete({ turnId: 'u', answer: '', durationMs: 1, isAborted: false, reason: 'answer' })
+  await clock.advance(600)
+  expect(ran.at(-1)).toBe('model opus')
+  await band.unmount()
+})
+
+test('with Training on, the Move buttons label the prompt: the model the router chose, the one you wanted, which way (owner ask 2026-11-28)', async (engine, on) => {
+  const $ = engine as any
+  const batches: Array<Array<Step>> = []
+  const store = new Map<string, unknown>([['features', { labels: true }]])
+  const opts = { sent: [] as Array<unknown>, batches, store, tokens: 5_000, haiku: 'critique 0.95', files: { '/home/.claude/routing.json': ROUTING } } as any
+  const ran: Array<string> = []
+  wire(on, opts)
+  appModel(on, $, opts, ran)
+  on('ui.toast', () => ({ value: undefined }))
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
+  await $.prompt.submit({ text: 'please review this PR for bugs and missing edge cases' })
+  await step($, 'medium')
+  await band.press({ key: 'router-settings' })
+  await band.press({ key: 'router-move-up' })
+  await end($)
+  const all = batches.flat()
+  const added = all.filter(x => x.sql.includes('INTO switches') && x.params?.[5] === 'adjust')
+  expect(added.length).toBe(1)
+  expect([added[0]!.params![6], added[0]!.params![8]]).toEqual(['opus', 'fable'])
+  expect(added[0]!.params!.at(-1)).toBe('please review this PR for bugs and missing edge cases')
+  expect(all.filter(x => x.sql.startsWith('UPDATE switches SET to_model')).at(-1)!.params!.slice(0, 4)).toEqual(['fable', 'higher', 'bad', 'adjust'])
+  await band.press({ key: 'router-move-down' }) // back to the router's own model, the same prompt: one row, no label
+  await end($)
+  const after = batches.flat()
+  expect(after.filter(x => x.sql.includes('INTO switches') && x.params?.[5] === 'adjust').length).toBe(1)
+  expect(after.filter(x => x.sql.startsWith('UPDATE switches SET to_model')).at(-1)!.params!.slice(0, 4)).toEqual(['opus', 'right', null, null])
+  await band.unmount()
+})
+
 test('a queued switch is dropped by Cancel or by turning the router off; nothing runs after (owner case 2026-11-28)', async (engine, on) => {
   const $ = engine as any
   const opts = { sent: [] as Array<unknown>, models: [] as Array<string>, tokens: 40_000, read: 40_000, ownClock: true, files: { '/home/.claude/routing.json': FABLE_TIP } } as any

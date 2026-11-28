@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionMessage } from 'claude-code'
 
 import type { Advice, Away, Bucket, Cache, ChatModel, Cold, Features, Hint, Mix, Plan, Switch, Tally, RouterView, TurnLog, Why } from '../types'
-import { BOARD, SWEEP, cleanupSteps, effortRow, type EffortOf, type EffortWhy, livesQuery, livesOf, type Step, type Totals, IMPORTED, addCache, bucketsOf, dayRow, isAlreadyImported, labelOf, legacySteps, run, sessionRow, spawnRow, spendOf, spendSinceQuery, totalsOf, totalsQuery, usageRow, switchRow, labelRow, moodRow, adjustRow } from './db'
+import { BOARD, SWEEP, cleanupSteps, effortRow, type EffortOf, type EffortWhy, livesQuery, livesOf, type Step, type Totals, IMPORTED, addCache, bucketsOf, dayRow, isAlreadyImported, labelOf, legacySteps, run, sessionRow, spawnRow, spendOf, spendSinceQuery, totalsOf, totalsQuery, usageRow, switchRow, labelRow, moodRow, adjustRow, adjustModelRow } from './db'
 import { shield } from './guard'
 import { type SliderProps, sliderSvg } from './slider'
 import { claudeFamily } from './latest'
@@ -14,7 +14,7 @@ import {
   type Ask, AUTO, BUILTIN, DELEGATE_ID, delegateSection, wantsDelegate, CLASS_LABELS, type Config, type Usage, type SessionWindow, adviseSwitch, agentTier, autoModel, classifierPrompt, firstModel, parseSessionCheck, sessionCheckPrompt, sessionCheckSystem, classifierSystem, classifyByRules, costUsd, explicitAsk, family,
   classifyPlan, isCacheBreak, merge, settleAnswers, readLabel, prices, rank, setPrices, turnEffort, briefHash, isHarder, needsSecondSample, spawnPick, withoutRouter,
   type Mood, longRun, moodPrompt, moodSystem, parseMood, raiseEffort, raiseSteps, shiftEffort, stepUp, rebuildUsd, stepUsd, switchMath, FAMILIES, coldMath,
-  AWAKE_DEFAULT_HOURS, AWAKE_HOURS, AWAKE_MIN, AWAKE_PING_MS, AWAKE_TEXT, AWAY_COMPACT, awakeNext, isNudgeReply, type Gap, GAPS_KEPT, returnCurve, nudgePays, backAtAll, writeOverRead, doneSystem, donePrompt, parseDone, COMPACT_KEEP, compactUsd, compactsFirst,
+  AWAKE_DEFAULT_HOURS, AWAKE_HOURS, AWAKE_MIN, AWAKE_PING_MS, AWAKE_TEXT, AWAY_COMPACT, awakeNext, isNudgeReply, type Gap, GAPS_KEPT, returnCurve, nudgePays, backAtAll, writeOverRead, doneSystem, donePrompt, parseDone, COMPACT_KEEP, COMPACT_OUT, compactUsd, compactsFirst,
   cheapestPoint, compactPoints, compactTone, compactStepUsd,
   SIZED, briefPaths, bucket, sizeOf, cacheSheet, PASTE_MIN, estTokens, keepsRaw, pasteModel, pasteSystem, pastePrompt, offloaded,
 } from './policy'
@@ -146,13 +146,14 @@ type State = {
   awakeStop: '' | 'done' | 'unlikely' // why keep-awake stopped early in this idle stretch
   ownPrompt: boolean // the running turn came from the person's own message (not a notification or a peer)
   openTurn: string // the main chat's turn still running ('' when idle): keep-awake waits while one is open
-  waiting?: { model: string | null; label: string } // a switch button pressed during a turn: it runs when the turn ends
+  waiting?: { model: string | null; label: string; how?: How }  // a switch button pressed during a turn: it runs when the turn ends
   ownSwitch?: string // the family our own /model is moving to: its model-switch event is ours, not the person's
   answered?: number // the chat's answered turns: a long chat compacts before a model switch
   effortMine?: boolean // the person changed the picker's effort in this chat: it stays theirs
   adjust?: number // the band's effort arrows: steps from the router's pick, for this task (a new task starts at 0)
   autoTarget?: string // the effort the router picked at the last main step, before the arrows ('' when it did not route it)
   adjustRow?: { id: string; turn: number } // this prompt's training row for the arrows, so more presses change one row
+  modelRow?: { id: string; turn: number; from: string } // the same for the Settings move buttons
   keptGrowth?: number // the growth per step last kept for this chat, for after a restart (until 3 new steps tell it again)
   seg: { ctx: number; steps: number } // where the chat stood at its first step since the last compaction or clear: its growth per step
   briefRun: Map<string, string> // brief hash -> the agentId of its latest run
@@ -742,23 +743,26 @@ async function coldOffer($: EngineInterface, s: State, model: string) {
 // The band's switch buttons (owner 2026-11-28): a long chat compacts, then swaps; any other just swaps; never a /clear.
 // model null: compact only (the cold offer). The engine compacts and switches models only between turns, so a press
 // during one waits for its end, and a refusal the router did not see coming waits for the next end with its reason.
-const switchLabel = (s: State, from: string, model: string | null) => (model === null ? 'Compact first' : `${compactsFirst(from, model, s.lastContext, s.answered ?? 0) ? 'Compact and switch' : 'Switch'} to ${pretty(model)}`)
-async function switchChat($: EngineInterface, s: State, model: string | null, isRetry = false) {
+// how: the Settings move buttons say it themselves (now, or after a compaction, whatever the chat's length), and leave
+// the model to auto (the router may move it again); the band's offers decide by length and make the pick yours.
+type How = { compact: boolean; by: 'auto' }
+const switchLabel = (s: State, from: string, model: string | null, how?: How) => (model === null ? 'Compact first' : `${(how ? how.compact : compactsFirst(from, model, s.lastContext, s.answered ?? 0)) ? 'Compact and switch' : 'Switch'} to ${pretty(model)}`)
+async function switchChat($: EngineInterface, s: State, model: string | null, isRetry = false, how?: How) {
   const from = await $.session.model()
-  const label = switchLabel(s, from, model)
-  if (s.openTurn) return wait($, s, { model, label })
+  const label = switchLabel(s, from, model, how)
+  if (s.openTurn) return wait($, s, { model, label, ...(how ? { how } : {}) })
   s.switching = true
   try {
     if (label.startsWith('Compact') && !(await compactChat($, s, model ? '; the model stays' : ''))) return
     if (model === null) return void (await update($, cold, () => null))
-    await update($, chat, (c): ChatModel => ({ ...c, model, by: 'you', routed: true, from: c.routed ? (c.from ?? null) : (c.model ?? from) }))
+    await update($, chat, (c): ChatModel => ({ ...c, model, by: how?.by ?? 'you', routed: true, from: c.routed ? (c.from ?? null) : (c.model ?? from) }))
     await update($, advice, () => null)
     await update($, hint, () => null)
     await syncPicker($, s)
   } catch (err) {
     const why = err instanceof Error ? err.message : String(err)
     if (isRetry) $.ui.toast(`${label} did not run: ${why}`)
-    else wait($, s, { model, label }, why)
+    else wait($, s, { model, label, ...(how ? { how } : {}) }, why)
   } finally {
     s.switching = false
   }
@@ -774,7 +778,7 @@ async function runWaiting($: EngineInterface, s: State) {
   if (!w || s.openTurn) return
   s.waiting = undefined
   $.ui.invalidate('ui.render')
-  if (s.cfg.mode !== 'off') await switchChat($, s, w.model, true)
+  if (s.cfg.mode !== 'off') await switchChat($, s, w.model, true, w.how)
 }
 
 // The app's model picker shows what runs (owner 2026-11-28): the chat's model, set by the router or in the band, becomes
@@ -855,6 +859,26 @@ async function adjustEffort($: EngineInterface, s: State, dir: 1 | -1) {
     later($, s, [switchRow(at.day, s.session, { id: s.adjustRow.id, at: at.now, who: 'main', kind: 'adjust', fromModel: model, fromEffort: pick, toModel: model, toEffort: to, cls: s.lastClass ?? 'default', why, undoUsd: 0, label: null }, s.promptText || null)])
   }
   later($, s, [adjustRow(s.adjustRow.id, to, why, at.now)])
+}
+
+// Settings > This chat > Move (owner ask 2026-11-28): one model step lower or higher (Haiku, Sonnet, Opus, Fable), now or
+// after a compaction, queued while Claude answers; the model stays on auto. With Training on, the prompt's row says the
+// router's model was wrong and which way.
+async function moveModel($: EngineInterface, s: State, dir: 1 | -1, compact: boolean) {
+  const cur = family((await read($, chat)).model ?? (await $.session.model()))
+  const to = FAMILIES[FAMILIES.indexOf(cur) + dir]
+  if (!to) return void $.ui.toast(`${pretty(cur)} is already the ${dir < 0 ? 'lowest' : 'highest'} model`)
+  if (!s.headless && (await read($, features)).labels) {
+    const at = await stamp($, s)
+    if (s.modelRow?.turn !== s.turnCount) {
+      const effort = s.autoTarget ? shiftEffort(s.autoTarget, s.adjust ?? 0) : ''
+      s.modelRow = { id: `${s.session}:${at.now}:move`, turn: s.turnCount, from: cur }
+      later($, s, [switchRow(at.day, s.session, { id: s.modelRow.id, at: at.now, who: 'main', kind: 'adjust', fromModel: cur, fromEffort: effort, toModel: to, toEffort: effort, cls: s.lastClass ?? 'default', why: 'model', undoUsd: 0, label: null }, s.promptText || null)])
+    }
+    const why = to === s.modelRow.from ? 'right' : FAMILIES.indexOf(to) < FAMILIES.indexOf(s.modelRow.from) ? 'lower' : 'higher'
+    later($, s, [adjustModelRow(s.modelRow.id, to, why, at.now)])
+  }
+  await switchChat($, s, to, false, { compact, by: 'auto' })
 }
 
 async function decline($: EngineInterface, s: State) {
@@ -2196,6 +2220,25 @@ export const register: Register = on => {
       heading('router-h-chat', 'This chat', 'kept after a restart'),
       field('router-chat', 'Routing', choices('router-chat', [['off', 'Off'], ['effort', 'Effort'], ['models', 'Models'], ['both', 'Both']], f.chatMode, v => setChat($, s, v))),
       field('router-model', 'Model', choices('router-model', [['auto', 'Auto'], ['haiku', 'Haiku'], ['sonnet', 'Sonnet'], ['opus', 'Opus'], ['fable', 'Fable']], picked.by === 'you' ? family(picked.model ?? s.cfg.main.model) : 'auto', v => pickModel($, s, v), v => (v === 'auto' ? undefined : modelColor(v)))),
+      (() => {
+        // one step down or up, now or after a compaction; at the ends the buttons stay, dimmed, so the row never shifts
+        const cur = family(picked.model ?? model)
+        const ctx = s.lastContext
+        const move = (dir: 1 | -1, compact: boolean) => {
+          const to = FAMILIES[FAMILIES.indexOf(cur) + dir]
+          const key = `router-move-${dir < 0 ? 'down' : 'up'}${compact ? '-compact' : ''}`
+          if (!to) return <Button key={key} plain dimColor label={dir < 0 ? 'Lower' : 'Higher'} onPress={() => moveModel($, s, dir, compact)} />
+          const usd = compact ? stepUsd(cur, ctx, COMPACT_OUT) + rebuildUsd(to, Math.min(ctx, COMPACT_KEEP)) : rebuildUsd(to, ctx)
+          return <Button key={key} label={`${pretty(to)}${ctx >= 1000 ? ` · ${money(usd)}` : ''}`} onPress={() => moveModel($, s, dir, compact)} />
+        }
+        // two rows, so each button is only the model and its cost and fits the docked panel
+        const line = (when: string, compact: boolean) => (
+          <Box key={`router-move-${compact ? 'later' : 'now'}`} flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2}>
+            <Text dimColor>{when}</Text>{move(-1, compact)}{move(1, compact)}
+          </Box>
+        )
+        return field('router-move', 'Move', <Box key="router-move-col" flexDirection="column" flexShrink={1}>{line('Now', false)}{line('After compact', true)}</Box>)
+      })(),
       field('router-effort', 'Effort', choices('router-effort', [['auto', 'Auto'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra high'], ['max', 'Max']], picked.effort ?? 'auto', v => setChatEffort($, s, v === 'auto' ? null : v), v => (v === 'auto' ? undefined : shade(model, v, 'dark')))),
       f.feats.awake && field('router-chat-awake', 'Keep awake', choices('router-chat-awake', ONOFF, f.chatAwake ? 'on' : 'off', v => setChatAwake($, s, v === 'on'))),
       field('router-compact', 'Compact at', (

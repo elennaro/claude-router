@@ -2,6 +2,11 @@
 
 Newest first. Update with `/plugin marketplace update claude-router`, then `/plugin update router@claude-router`, then restart Claude Code.
 
+## 0.9.16: move the model a step from Settings
+
+- **Move** in Settings → *This chat*: the next model down or up (Haiku, Sonnet, Opus, Fable), **Now** (a plain swap) or **After compact** (compacts first, whatever the length), each with its cost. Auto stays on. A press while Claude answers is queued. At Haiku or Fable the button dims.
+- With *Training* on, a press labels the prompt for the classifier: the router's model, the one you wanted, and which way. One row per prompt; moved back to the router's choice, the label goes.
+
 ## 0.9.15: effort arrows in the band
 
 - **‹ high ›**: the arrows around the effort word set it one step lower or higher for the current task, from the next request (changing effort keeps the cache). Auto stays on, and a new task starts on auto again. At low or max the arrow dims.
