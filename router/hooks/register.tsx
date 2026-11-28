@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionMessage } from 'claude-code'
 
 import type { Advice, Away, Bucket, Cache, ChatModel, Cold, Features, Hint, Mix, Plan, Switch, Tally, RouterView, TurnLog, Why } from '../types'
-import { BOARD, SWEEP, cleanupSteps, effortRow, type EffortOf, type EffortWhy, livesQuery, livesOf, type Step, type Totals, IMPORTED, addCache, bucketsOf, dayRow, isAlreadyImported, labelOf, legacySteps, run, sessionRow, spawnRow, spendOf, spendSinceQuery, totalsOf, totalsQuery, usageRow, switchRow, labelRow, moodRow } from './db'
+import { BOARD, SWEEP, cleanupSteps, effortRow, type EffortOf, type EffortWhy, livesQuery, livesOf, type Step, type Totals, IMPORTED, addCache, bucketsOf, dayRow, isAlreadyImported, labelOf, legacySteps, run, sessionRow, spawnRow, spendOf, spendSinceQuery, totalsOf, totalsQuery, usageRow, switchRow, labelRow, moodRow, adjustRow } from './db'
 import { shield } from './guard'
 import { type SliderProps, sliderSvg } from './slider'
 import { claudeFamily } from './latest'
@@ -13,7 +13,7 @@ import {
 import {
   type Ask, AUTO, BUILTIN, DELEGATE_ID, delegateSection, wantsDelegate, CLASS_LABELS, type Config, type Usage, type SessionWindow, adviseSwitch, agentTier, autoModel, classifierPrompt, firstModel, parseSessionCheck, sessionCheckPrompt, sessionCheckSystem, classifierSystem, classifyByRules, costUsd, explicitAsk, family,
   classifyPlan, isCacheBreak, merge, settleAnswers, readLabel, prices, rank, setPrices, turnEffort, briefHash, isHarder, needsSecondSample, spawnPick, withoutRouter,
-  type Mood, longRun, moodPrompt, moodSystem, parseMood, raiseEffort, raiseSteps, stepUp, rebuildUsd, stepUsd, switchMath, FAMILIES, coldMath,
+  type Mood, longRun, moodPrompt, moodSystem, parseMood, raiseEffort, raiseSteps, shiftEffort, stepUp, rebuildUsd, stepUsd, switchMath, FAMILIES, coldMath,
   AWAKE_DEFAULT_HOURS, AWAKE_HOURS, AWAKE_MIN, AWAKE_PING_MS, AWAKE_TEXT, AWAY_COMPACT, awakeNext, isNudgeReply, type Gap, GAPS_KEPT, returnCurve, nudgePays, backAtAll, writeOverRead, doneSystem, donePrompt, parseDone, COMPACT_KEEP, compactUsd, compactsFirst,
   cheapestPoint, compactPoints, compactTone, compactStepUsd,
   SIZED, briefPaths, bucket, sizeOf, cacheSheet, PASTE_MIN, estTokens, keepsRaw, pasteModel, pasteSystem, pastePrompt, offloaded,
@@ -150,6 +150,9 @@ type State = {
   ownSwitch?: string // the family our own /model is moving to: its model-switch event is ours, not the person's
   answered?: number // the chat's answered turns: a long chat compacts before a model switch
   effortMine?: boolean // the person changed the picker's effort in this chat: it stays theirs
+  adjust?: number // the band's effort arrows: steps from the router's pick, for this task (a new task starts at 0)
+  autoTarget?: string // the effort the router picked at the last main step, before the arrows ('' when it did not route it)
+  adjustRow?: { id: string; turn: number } // this prompt's training row for the arrows, so more presses change one row
   keptGrowth?: number // the growth per step last kept for this chat, for after a restart (until 3 new steps tell it again)
   seg: { ctx: number; steps: number } // where the chat stood at its first step since the last compaction or clear: its growth per step
   briefRun: Map<string, string> // brief hash -> the agentId of its latest run
@@ -762,7 +765,7 @@ async function switchChat($: EngineInterface, s: State, model: string | null, is
 }
 function wait($: EngineInterface, s: State, w: NonNullable<State['waiting']>, why?: string) {
   s.waiting = w
-  $.ui.toast(why ? `${w.label} is queued: it runs when the next turn ends (now: ${why})` : `${w.label} is queued: it runs when this turn ends`)
+  $.ui.toast(why ? `${w.label} is queued: it runs when Claude's next reply finishes (now: ${why})` : `${w.label} is queued: it runs when Claude's reply finishes`)
   $.ui.invalidate('ui.render')
 }
 // A turn ended: the queued switch runs once.
@@ -794,7 +797,7 @@ async function clearChat($: EngineInterface, s: State) {
     session: '', label: '', lastLedgerTurn: '', stickyAsk: undefined, ask: undefined, seenPrompt: false, hasClassified: false,
     hadClass: false, lastClass: null, lastHintModel: null, switchTurn: false, sure: false, samples: [], turnCount: 0, quietUntil: 0, declined: null, unhappy: 0,
     prev: NO_PREV, lastContext: 0, mainSteps: 0, mainOut: 0, rerouted: 0, lastRerouted: '', lastSwitch: '', lastEffortSwitch: '', lastQuick: '', promptText: '', turnRows: [], lastRows: [], lastStay: -1,
-    waiting: undefined, answered: 0, effortMine: false,
+    waiting: undefined, answered: 0, effortMine: false, adjust: 0, autoTarget: '', adjustRow: undefined,
   })
   for (const m of [s.briefs, s.asideAgents, s.agentEffort, s.agentType, s.agentAsked, s.agentSpend, s.briefRun, s.wastedRuns]) m.clear()
   s.savedAgents = NO_AGENTS // the old chat's memory stays in the store, for a resume of it
@@ -831,6 +834,29 @@ async function pickModel($: EngineInterface, s: State, v: string) {
 }
 
 // "Not now": the same trigger stays quiet until a different one fires.
+// The band's effort arrows (owner ask 2026-11-28): a step under or over the router's pick for this task, from the next
+// request (an effort change keeps the cache); auto stays on, and a new task starts on auto again. With Training on, this
+// prompt's row says the router's effort was wrong and which way, for the classifier to learn from.
+async function adjustEffort($: EngineInterface, s: State, dir: 1 | -1) {
+  const pick = s.autoTarget
+  if (!pick) return
+  const now = shiftEffort(pick, s.adjust ?? 0)
+  if (shiftEffort(pick, (s.adjust ?? 0) + dir) === now) return void $.ui.toast(`Effort is already ${now}`)
+  s.adjust = (s.adjust ?? 0) + dir
+  const to = shiftEffort(pick, s.adjust)
+  $.ui.toast(`Effort ${to} for this task`)
+  $.ui.invalidate('ui.render')
+  if (s.headless || !(await read($, features)).labels) return
+  const why = s.adjust === 0 ? 'right' : s.adjust < 0 ? 'lower' : 'higher'
+  const at = await stamp($, s)
+  if (s.adjustRow?.turn !== s.turnCount) {
+    const model = family([...(await read($, log))].reverse().find(x => x.who === 'main')?.model ?? s.cfg.main.model)
+    s.adjustRow = { id: `${s.session}:${at.now}:adjust`, turn: s.turnCount }
+    later($, s, [switchRow(at.day, s.session, { id: s.adjustRow.id, at: at.now, who: 'main', kind: 'adjust', fromModel: model, fromEffort: pick, toModel: model, toEffort: to, cls: s.lastClass ?? 'default', why, undoUsd: 0, label: null }, s.promptText || null)])
+  }
+  later($, s, [adjustRow(s.adjustRow.id, to, why, at.now)])
+}
+
 async function decline($: EngineInterface, s: State) {
   s.declined = (await read($, advice))?.trigger ?? null
   await update($, advice, () => null)
@@ -1507,7 +1533,7 @@ export const register: Register = on => {
     const said = felt === 'unhappy' ? 'bad' : e.text.length <= 60 && HAPPY.test(e.text) ? 'good' : undefined
     if (said && s.lastRows.length) { const at = await $.clock.now(); later($, s, s.lastRows.map(id => moodRow(id, said, at))); s.lastRows = [] }
     if (felt === 'unhappy') s.unhappy++
-    else if (felt === 'new' || (felt === undefined && found !== undefined && found !== s.lastClass)) s.unhappy = 0 // a new task starts calm
+    else if (felt === 'new' || (felt === undefined && found !== undefined && found !== s.lastClass)) { s.unhappy = 0; s.adjust = 0 } // a new task starts calm, and on auto again
     if (midTurn && !(cls === null && strict) && !(cls && isHarder(cls, s.lastClass, s.cfg))) return go(e) // nothing harder: the turn keeps its routing
     s.switchTurn = !midTurn && Boolean(cls) && s.sure // every prompt starts on the picked model; only a sure quick task moves its own turn
     if (isFirst && !asked?.model && s.routeModels && !chosen.by) {
@@ -1631,7 +1657,9 @@ export const register: Register = on => {
         // and stays theirs for the chat, also when they set it back to where it started (owner case 2026-11-28)
         if (!s.aside && String(e.effort) !== s.baseEffort) s.effortMine = true // an ultrathink turn raises only its own
         const isDefault = !s.effortMine
-        if (s.cfg.mode !== 'off' && !s.headless && s.cfg.autoEffort && isDefault && v.perMessage !== 'unsupported' && !s.aside && target) { effort = target as typeof effort; why = raiseSteps(s.unhappy) > 0 ? 'unhappy' : 'class' }
+        const routes = s.cfg.mode !== 'off' && !s.headless && s.cfg.autoEffort && isDefault && v.perMessage !== 'unsupported' && !s.aside && !!target && !picked?.effort
+        s.autoTarget = routes ? target : ''
+        if (routes) { effort = shiftEffort(target, s.adjust ?? 0) as typeof effort; why = s.adjust ? 'adjust' : raiseSteps(s.unhappy) > 0 ? 'unhappy' : 'class' }
       }
     } else if (e.agentId && e.effort !== undefined && s.agentEffort.has(e.agentId)) {
       effort = s.agentEffort.get(e.agentId) as typeof effort
@@ -1801,6 +1829,8 @@ export const register: Register = on => {
     const awakeLabel = f.v.isOn && f.feats.awake && s.lastContext >= AWAKE_MIN ? (f.chatAwake ? 'Stop nudges' : 'Keep awake') : ''
     // the whole router on or off for this chat in one press (owner ask 2026-11-28): Settings > This chat > Routing, kept per chat
     const power = f.v.isOn ? 'Stop router' : 'Start router'
+    // the effort the next request runs at, with the arrows applied; '' when the router does not set it (off, your own effort)
+    const shownEffort = f.v.isOn && s.autoTarget ? shiftEffort(s.autoTarget, s.adjust ?? 0) : ''
     const lead = f.v.isOn ? `● ${f.now}` : `● Router off ${f.where}`
     const shown = bandFit(e.props.bodyColumns, e.surface === 'desktop', [
       { key: 'lead', forms: [lead], required: true },
@@ -1810,6 +1840,9 @@ export const register: Register = on => {
       { key: 'stats', forms: ['Stats'], button: true, required: true },
       { key: 'settings', forms: ['Settings'], button: true, required: true },
       { key: 'power', forms: [power], button: true },
+      // the effort arrows: two 1-cell buttons 2 cells off the effort, in place of the lead's ' (auto)'; on the desktop that
+      // nets about one 4-character button (its padding is the most of it)
+      { key: 'arrows', forms: shownEffort ? ['‹‹‹‹'] : [], button: true },
       { key: 'awake', forms: awakeLabel ? [awakeLabel] : [], button: true },
       { key: 'board', forms: ['Board'], button: true },
       { key: 'switches', forms: f.feats.labels ? ['Switches'] : [], button: true },
@@ -1825,7 +1858,17 @@ export const register: Register = on => {
       <Box key="router-row" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} width={e.props.bodyColumns}>
         <Box key="router-now" flexDirection="row" alignItems="center" columnGap={2} flexShrink={1}>
           {f.v.isOn
-            ? <Text wrap="truncate-end"><Text color={modelColor(f.main?.model ?? s.cfg.main.model)}>●</Text> {f.now}</Text>
+            ? shown.arrows
+              ? (
+                  <Box key="router-arrows" flexDirection="row" alignItems="center" columnGap={2}>
+                    <Text><Text color={modelColor(f.main?.model ?? s.cfg.main.model)}>●</Text> {pretty(f.main?.model ?? s.cfg.main.model)}</Text>
+                    {/* at the end of the range an arrow stays, dimmed, so the row never shifts */}
+                    <Button key="router-arrow-down" plain dimColor={shiftEffort(shownEffort, -1) === shownEffort} label="‹" onPress={() => adjustEffort($, s, -1)} />
+                    <Text tabular>{shownEffort}</Text>
+                    <Button key="router-arrow-up" plain dimColor={shiftEffort(shownEffort, 1) === shownEffort} label="›" onPress={() => adjustEffort($, s, 1)} />
+                  </Box>
+                )
+              : <Text wrap="truncate-end"><Text color={modelColor(f.main?.model ?? s.cfg.main.model)}>●</Text> {f.now}</Text>
             : <Text dimColor wrap="truncate-end"><Text color="inactive">●</Text> Router off {f.where}</Text>}
           {!!undoLabel && <Button key="router-chat-undo" plain dimColor label={undoLabel} onPress={undo} />}
           {f.v.isOn && <Text tabular dimColor={!isExtra(f.chat)} color={isExtra(f.chat) ? 'warning' : undefined} wrap="truncate-end">{net}</Text>}
@@ -1853,7 +1896,7 @@ export const register: Register = on => {
     const waitRow = s.waiting
       ? (
           <Box key="router-offer" flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={2} width={e.props.bodyColumns}>
-            <Text color="warning" wrap="wrap">{s.waiting.label}: queued, it runs when this turn ends.</Text>
+            <Text color="warning" wrap="wrap">{s.waiting.label}: queued, it runs when Claude's reply finishes.</Text>
             <Button key="router-wait-cancel" plain dimColor label="Cancel" onPress={() => { s.waiting = undefined; $.ui.invalidate('ui.render') }} />
           </Box>
         )

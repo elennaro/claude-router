@@ -121,7 +121,7 @@ export const usageRow = (day: string, session: string, who: string, model: strin
 // as-is: the effort the step came with (the picker's, or one the person set later); class: the task class's effort;
 // unhappy: the class's raised by unhappy replies; pick: the person's pick in Settings; asked: named in the prompt;
 // agent: a subagent's routed effort; nudge: keep-awake's low; probe: an eval's forced effort.
-export type EffortWhy = 'as-is' | 'class' | 'unhappy' | 'pick' | 'asked' | 'agent' | 'nudge' | 'probe'
+export type EffortWhy = 'as-is' | 'class' | 'unhappy' | 'pick' | 'asked' | 'agent' | 'nudge' | 'adjust' | 'probe'
 export type EffortOf = { effort: string; asked: string; cls: string; why: EffortWhy }
 export const effortRow = (day: string, session: string, who: string, model: string, d: EffortOf, usd: number, base: number, extra: number): Step => ({
   sql: `INSERT INTO efforts VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?) ON CONFLICT (day, session, who, model, effort, asked, cls, why) DO UPDATE SET steps = steps + 1, usd = usd + excluded.usd, base = base + excluded.base, extra = extra + excluded.extra`,
@@ -143,6 +143,12 @@ export const labelRow = (id: string, label: 'good' | 'bad', at: number): Step =>
 export const moodRow = (id: string, label: 'good' | 'bad', at: number): Step => ({
   sql: `UPDATE switches SET label = ?, source = 'mood', labelled = ? WHERE id = ? AND source IS NULL`,
   params: [label, at, id],
+})
+// The band's effort arrows (owner ask 2026-11-28): the router's effort for this prompt, set right by your hand. The row
+// says what it chose (from) and what you wanted (to), why lower or higher; arrowed back to its choice, it is unlabelled.
+export const adjustRow = (id: string, toEffort: string, why: 'lower' | 'higher' | 'right', at: number): Step => ({
+  sql: 'UPDATE switches SET to_effort = ?, why = ?, label = ?, source = ?, labelled = ? WHERE id = ?',
+  params: [toEffort, why, why === 'right' ? null : 'bad', why === 'right' ? null : 'adjust', why === 'right' ? null : at, id],
 })
 // Balance (owner, 2026-11-26): unlabelled rows would swamp the labelled ones and teach a model to keep everything as is,
 // so from before `day` (today's can still be rated) at most SILENT_PER_LABEL unlabelled rows per labelled one stay, the

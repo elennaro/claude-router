@@ -2,6 +2,12 @@
 
 Newest first. Update with `/plugin marketplace update claude-router`, then `/plugin update router@claude-router`, then restart Claude Code.
 
+## 0.9.15: effort arrows in the band
+
+- **‹ high ›**: the arrows around the effort word set it one step lower or higher for the current task, from the next request (changing effort keeps the cache). Auto stays on, and a new task starts on auto again. At low or max the arrow dims.
+- With *Training* on, a press labels the prompt for the classifier: what effort the router chose, what you wanted, and which way. One row per prompt; arrowed back to the router's choice, the label goes.
+- A queued switch says it runs when Claude's reply finishes (one reply can run many steps and subagents).
+
 ## 0.9.14: your model picker wins, switches wait for the turn
 
 - **The app's model picker always wins.** When the router or a band button moves the chat to another model, it switches the session's own model (`/model`, for this session only), so the picker shows what actually runs. Anything you pick there is yours for the chat, the model it already shows included. An effort you set in the picker stays yours too.

@@ -2997,8 +2997,8 @@ test('a switch pressed during a turn is queued with a Cancel, runs once when the
   await turnOn($, opts, clock, 'medium', false) // the turn runs
   await band.press({ key: 'router-switch' })
   expect(ran).toEqual([]) // nothing during the turn
-  expect(toasts.at(-1)).toBe('Switch to Fable is queued: it runs when this turn ends')
-  expect(await band.find({ type: 'Text', text: /Switch to Fable: queued, it runs when this turn ends/ })).toBeTruthy()
+  expect(toasts.at(-1)).toBe("Switch to Fable is queued: it runs when Claude's reply finishes")
+  expect(await band.find({ type: 'Text', text: /Switch to Fable: queued, it runs when Claude's reply finishes/ })).toBeTruthy()
   for await (const _ of $.turn.step({ turnId: 'u', index: 1, model: opts.model ?? 'claude-opus-5-5', effort: 'medium', messageCount: 2 })) { /* drain */ }
   expect(opts.models.at(-1)).toBe('claude-opus-5-5') // the running turn keeps its model
   await $.turn.complete({ turnId: 'u', answer: '', durationMs: 1, isAborted: false, reason: 'answer' })
@@ -3055,7 +3055,7 @@ test('a switch the engine refuses with no turn running waits for the next turn e
   for (let i = 0; i < 5; i++) await turnOn($, opts, clock)
   await $.prompt.submit({ text: 'Do a deep research of side jobs I could run online' })
   await band.press({ key: 'router-switch' })
-  expect(toasts.at(-1)).toMatch(/^Compact and switch to Fable is queued: it runs when the next turn ends \(now: .+\)$/)
+  expect(toasts.at(-1)).toMatch(/^Compact and switch to Fable is queued: it runs when Claude's next reply finishes \(now: .+\)$/)
   await turnOn($, opts, clock)
   expect(toasts.at(-1)).toMatch(/^Compact and switch to Fable did not run: .+/)
   expect(ran).toEqual([]) // no model switch without its compaction
@@ -3126,6 +3126,85 @@ test('Stop router in the band turns the whole router off for this chat in one pr
   expect(store.get('chat:sess-1')).toMatchObject({ mode: 'both' })
   await step($, 'medium')
   expect(sent.at(-1)).toBe('high')
+  await band.unmount()
+})
+
+test('the band effort arrows move this task one step at a time from the next request; auto stays on; a new task starts on auto again (owner ask 2026-11-28)', async (engine, on) => {
+  const $ = engine as any
+  const sent: Array<unknown> = []
+  const toasts: Array<string> = []
+  let said = 'critique 0.95'
+  wire(on, { sent, tokens: 5_000, haiku: () => said })
+  on('ui.toast', (_: unknown, e: { text: string }) => { toasts.push(e.text); return { value: undefined } })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
+  expect(await band.find({ key: 'router-arrow-up' })).toBeFalsy() // nothing routed yet
+  await $.prompt.submit({ text: 'please review this PR for bugs and missing edge cases' })
+  await step($, 'medium') // critique: high
+  await band.press({ key: 'router-arrow-up' })
+  expect(toasts.at(-1)).toBe('Effort xhigh for this task')
+  expect(await band.find({ type: 'Text', text: 'xhigh' })).toBeTruthy()
+  await step($, 'medium') // the next step of the same turn runs higher already
+  for (let i = 0; i < 3; i++) await band.press({ key: 'router-arrow-down' })
+  await step($, 'medium')
+  expect(sent).toEqual(['high', 'xhigh', 'low'])
+  await band.press({ key: 'router-arrow-down' })
+  expect(toasts.at(-1)).toBe('Effort is already low')
+  expect((await band.find({ key: 'router-arrow-down' }))?.props.dimColor).toBe(true) // stays, dimmed: the row never shifts
+  said = 'same 0.95 critique 0.95'
+  await $.prompt.submit({ text: 'and check the error handling there too' }) // the same task: the arrows hold
+  await step($, 'medium')
+  said = 'new 0.95 critique 0.95'
+  await $.prompt.submit({ text: 'now review the payments PR' }) // a new task: auto again
+  await step($, 'medium')
+  expect(sent.slice(3)).toEqual(['low', 'high'])
+  expect(await band.find({ key: 'router-power' })).toBeTruthy()
+  await band.unmount()
+})
+
+test('the effort arrows show only where the router sets the effort: not when off, not after you set it in Settings (owner ask 2026-11-28)', async (engine, on) => {
+  const $ = engine as any
+  wire(on, { sent: [], tokens: 5_000, haiku: 'critique 0.95' })
+  on('ui.toast', () => ({ value: undefined }))
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
+  await $.prompt.submit({ text: 'please review this PR for bugs and missing edge cases' })
+  await step($, 'medium')
+  expect(await band.find({ key: 'router-arrow-up' })).toBeTruthy()
+  await band.press({ key: 'router-power' })
+  expect(await band.find({ key: 'router-arrow-up' })).toBeFalsy()
+  await band.press({ key: 'router-power' })
+  await band.press({ key: 'router-settings' })
+  await band.press({ key: 'router-effort-high' }) // a fixed effort for the chat: yours, not auto
+  await step($, 'medium')
+  expect(await band.find({ key: 'router-arrow-up' })).toBeFalsy()
+  await band.unmount()
+})
+
+test('with Training on, the effort arrows label the prompt: what the router chose, what you wanted, which way; one row per prompt (owner ask 2026-11-28)', async (engine, on) => {
+  const $ = engine as any
+  const batches: Array<Array<Step>> = []
+  const store = new Map<string, unknown>([['features', { labels: true }]])
+  wire(on, { sent: [], batches, store, tokens: 5_000, haiku: 'critique 0.95', files: { '/home/.claude/routing.json': ROUTING } }) // files: the ledger runner can be written
+  on('ui.toast', () => ({ value: undefined }))
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  const band = await mountBoth($, { ...BAND, surface: 'desktop' })
+  await $.prompt.submit({ text: 'please review this PR for bugs and missing edge cases' })
+  await step($, 'medium')
+  await band.press({ key: 'router-arrow-up' })
+  await band.press({ key: 'router-arrow-up' }) // high → max: the same row, the last effort
+  await end($)
+  const all = batches.flat()
+  const added = all.filter(x => x.sql.includes('INTO switches') && x.params?.[5] === 'adjust')
+  expect(added.length).toBe(1)
+  expect(added[0]!.params!.slice(6, 12)).toEqual(['opus', 'high', 'opus', 'xhigh', 'code-review', 'higher'])
+  expect(added[0]!.params!.at(-1)).toBe('please review this PR for bugs and missing edge cases')
+  const set = all.filter(x => x.sql.startsWith('UPDATE switches SET to_effort'))
+  expect(set.at(-1)!.params!.slice(0, 4)).toEqual(['max', 'higher', 'bad', 'adjust'])
+  await band.press({ key: 'router-arrow-down' })
+  await band.press({ key: 'router-arrow-down' }) // back to the router's own pick: no label
+  await end($)
+  expect(batches.flat().filter(x => x.sql.startsWith('UPDATE switches SET to_effort')).at(-1)!.params!.slice(0, 4)).toEqual(['high', 'right', null, null])
   await band.unmount()
 })
 

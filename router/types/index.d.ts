@@ -88,7 +88,7 @@ export type Features = { autoSwitch: boolean; sizing: boolean; pastes: boolean; 
 // One switch the router made (training data, Settings > Training): no prompt text, only what moved and why.
 // kind: pick (the chat's model), quick (one turn on another model), effort (the main chat's effort), agent (a subagent spawn).
 // from: the no-router model and effort ('' effort: as the engine sends it). undoUsd: the cache rebuild going back costs.
-export type Switch = { id: string; at: number; who: string; kind: 'pick' | 'quick' | 'effort' | 'agent' | 'stay'; fromModel: string; fromEffort: string; toModel: string; toEffort: string; cls: string; why: string; undoUsd: number; label: 'good' | 'bad' | null }
+export type Switch = { id: string; at: number; who: string; kind: 'pick' | 'quick' | 'effort' | 'agent' | 'stay' | 'adjust'; fromModel: string; fromEffort: string; toModel: string; toEffort: string; cls: string; why: string; undoUsd: number; label: 'good' | 'bad' | null }
 // The offer after the cache lapsed anyway: what resuming re-reads, what compacting first adds, and what it saves per step.
 export type Cold = { cache: number; resume: number; extra: number; perStep: number; payback: number }
 // While you are away: the nudges sent since your last step, what they cost, what a rebuild would have cost, and whether

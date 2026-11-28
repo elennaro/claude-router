@@ -186,6 +186,8 @@ export function parseMood(reply: string, passAt = 0.7): Mood | undefined {
 // costs nothing; the 2nd raises, the 4th raises again and offers the next model).
 export const RAISE_MAX = 2
 export const raiseSteps = (unhappy: number) => Math.floor(unhappy / 2)
+// The band's effort arrows: steps up (+) or down (-) from the router's own pick, kept inside the ladder.
+export const shiftEffort = (effort: string, steps: number) => { const r = effortRank(effort); return r < 0 ? effort : EFFORTS[Math.max(0, Math.min(EFFORTS.length - 1, r + steps))]! }
 export function raiseEffort(effort: string, steps: number): string {
   const r = effortRank(effort)
   return r < 0 || steps <= 0 ? effort : EFFORTS[Math.min(EFFORTS.length - 1, r + Math.min(steps, RAISE_MAX))]!
