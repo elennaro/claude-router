@@ -1858,6 +1858,55 @@ test('keep awake stops when, by past gaps, a return is too unlikely to pay; "Sto
   await band.unmount()
 })
 
+test('keep-awake turned off in another copy of the plugin stops the nudges here too (owner case 2026-11-28)', async (engine, on) => {
+  const $ = engine as any
+  const nudges: Array<{ text: string }> = []
+  const store = new Map<string, unknown>([['gaps', []]])
+  wire(on, { sent: [], nudges, store, files: {}, read: 200_000, write: 0, ownClock: true })
+  const clock = mock.clock(on, { now: 1_000 })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await step($, 'medium')
+  // the plugin was reloaded (an update): the new copy saved "off" for this chat; this copy's own switch still says on
+  store.set('chat:sess-1', { awake: false })
+  await clock.advance(3_000_000)
+  expect(nudges.length).toBe(0) // the timer reads the saved setting
+  // a nudge the old copy already sent is dropped before it reaches the model
+  await $.prompt.submit({ text: AWAKE_TEXT, origin: { kind: 'plugin' }, wait: false })
+  expect(nudges.length).toBe(0)
+  // switched off everywhere in Settings (saved), same: no nudge goes through
+  store.set('chat:sess-1', { awake: true })
+  store.set('features', { autoSwitch: true, sizing: true, pastes: true, awake: false, labels: false })
+  await $.prompt.submit({ text: AWAKE_TEXT, origin: { kind: 'plugin' }, wait: false })
+  expect(nudges.length).toBe(0)
+  store.set('features', { autoSwitch: true, sizing: true, pastes: true, awake: true, labels: false })
+  await $.prompt.submit({ text: AWAKE_TEXT, origin: { kind: 'plugin' }, wait: false })
+  expect(nudges.length).toBe(1) // on in both places: the nudge goes through
+})
+
+test('keep-awake: any off wins, and one switched off while the stop check runs sends nothing (owner case 2026-11-28)', async (engine, on) => {
+  const $ = engine as any
+  const nudges: Array<{ text: string }> = []
+  const store = new Map<string, unknown>([['gaps', []]])
+  const messages = [{ role: 'user', text: 'run the long job', toolUses: [] }, { role: 'assistant', text: 'Started; it runs for a while.', toolUses: [] }]
+  // the stop check is the last await before a nudge: the person switches keep-awake off for the chat meanwhile
+  const haiku = (e: { system?: string }) => { if (e.system?.startsWith('You read the end of a conversation')) store.set('chat:sess-1', { awake: false }); return 'open 0.9' }
+  wire(on, { sent: [], nudges, store, messages, haiku, files: {}, read: 200_000, write: 0, ownClock: true })
+  on('ui.toast', () => ({ value: undefined }))
+  const clock = mock.clock(on, { now: 1_000 })
+  await $.session.start({ cwd: '/proj', surface: 'desktop', isInteractive: true })
+  await step($, 'medium')
+  await clock.advance(3_000_000)
+  expect(nudges.length).toBe(0)
+  // off in this copy, while the store still says on (its save not landed): off wins
+  store.set('chat:sess-1', { awake: true })
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop', props: { ...BAND.props, bodyColumns: 140 } })
+  await band.press({ key: 'router-awake' }) // Stop nudges: this copy's switch off (and saved off)
+  store.set('chat:sess-1', { awake: true }) // as if the save were still under way
+  await $.prompt.submit({ text: AWAKE_TEXT, origin: { kind: 'plugin' }, wait: false })
+  expect(nudges.length).toBe(0)
+  await band.unmount()
+})
+
 test('the band turns keep-awake off and on for this chat in one press (owner ask 2026-11-27)', async (engine, on) => {
   const $ = engine as any
   const nudges: Array<{ text: string }> = []
