@@ -81,6 +81,7 @@ async function states($: any, on: any, routing: string, setup: ($: any) => Promi
       const panel = await $.ui.mount({ plugin: 'router', component: 'Pane', requestId: 'router-panel', surface, props: { title: 'Router', isFocused: true, bodyColumns: width, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} } })
       for (const [state, key] of presses) {
         if (key) await ((await band.find({ key })) ? band : panel).press({ key })
+        if (!state) continue // a step on the way, checked by its own test: drawing it again only costs time
         const row = await band.drawn()
         issues.push(...audit(row, `${state} (band)`, surface, width))
         // the band never grows with what is open (owner case 2026-11-26: a tall band made the chat jump); only an offer adds a row
@@ -101,14 +102,16 @@ const stepped = async ($: any) => {
   for await (const _ of $.turn.step({ turnId: 't', index: 0, model: 'claude-opus-5-5', effort: 'high', messageCount: 1 })) { /* drain */ }
 }
 
-// 81 widths x 4 surfaces: 2.4-4.4 s on the CI runners, so the default 5 s timed out on macOS (2026-11-28)
-test('the band, Stats and Settings fit 40 to 120 cells, with sentence-case labels and clean numbers', { timeoutMs: 20_000 }, async (engine, on) => {
-  const issues = await states(engine as any, on, ROUTING, stepped, [['band', undefined], ['cache', 'router-cache'], ['stats', 'router-stats'], ['settings', 'router-settings']])
-  expect(issues).toEqual([])
-})
+// One test per view: all four in one test drew the band and panel 32 times, 2.4-4.4 s on the CI runners, and timed out
+// at the 5 s default on macOS (2026-11-28). Most of it is the engine drawing, so each view gets its own budget.
+for (const [state, key] of [['band', undefined], ['cache', 'router-cache'], ['stats', 'router-stats'], ['settings', 'router-settings']] as Array<[string, string | undefined]>) {
+  test(`the ${state} view fits 40 to 120 cells, with sentence-case labels and clean numbers`, async (engine, on) => {
+    expect(await states(engine as any, on, ROUTING, stepped, [[state, key]])).toEqual([])
+  })
+}
 
 test('Training on: the Switches list with its 👍 👎 fits every width', async (engine, on) => {
-  const presses: Array<[string, string | undefined]> = [['settings', 'router-settings'], ['training on', 'router-f-labels-on'], ['switches', 'router-tab-switches']]
+  const presses: Array<[string, string | undefined]> = [['', 'router-settings'], ['training on', 'router-f-labels-on'], ['switches', 'router-tab-switches']]
   expect(await states(engine as any, on, ROUTING, stepped, presses)).toEqual([])
 })
 
